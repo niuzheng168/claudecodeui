@@ -27,6 +27,7 @@ async function spawnClaude(command, options = {}, ws) {
     
     // Add print flag with command if we have a command
     if (command && command.trim()) {
+
       // Separate arguments for better cross-platform compatibility
       // This prevents issues with spaces and quotes on Windows
       args.push('--print');
