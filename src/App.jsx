@@ -635,6 +635,7 @@ function AppContent() {
       <ToolsSettings
         isOpen={showToolsSettings}
         onClose={() => setShowToolsSettings(false)}
+        projects={projects}
       />
 
       {/* Version Upgrade Modal */}

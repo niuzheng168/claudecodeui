@@ -1,12 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
-import { X, Plus, Settings, Shield, AlertTriangle, Moon, Sun, Server, Edit3, Trash2, Play, Globe, Terminal, Zap } from 'lucide-react';
+import { X, Plus, Settings, Shield, AlertTriangle, Moon, Sun, Server, Edit3, Trash2, Globe, Terminal, Zap, FolderOpen } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 
-function ToolsSettings({ isOpen, onClose }) {
+function ToolsSettings({ isOpen, onClose, projects = [] }) {
   const { isDarkMode, toggleDarkMode } = useTheme();
   const [allowedTools, setAllowedTools] = useState([]);
   const [disallowedTools, setDisallowedTools] = useState([]);
@@ -17,14 +16,14 @@ function ToolsSettings({ isOpen, onClose }) {
   const [saveStatus, setSaveStatus] = useState(null);
   const [projectSortOrder, setProjectSortOrder] = useState('name');
 
-  // MCP server management state
   const [mcpServers, setMcpServers] = useState([]);
   const [showMcpForm, setShowMcpForm] = useState(false);
   const [editingMcpServer, setEditingMcpServer] = useState(null);
   const [mcpFormData, setMcpFormData] = useState({
     name: '',
     type: 'stdio',
-    scope: 'user', // Always use user scope
+    scope: 'user',
+    projectPath: '', // For local scope
     config: {
       command: '',
       args: [],
@@ -42,7 +41,6 @@ function ToolsSettings({ isOpen, onClose }) {
   const [mcpToolsLoading, setMcpToolsLoading] = useState({});
   const [activeTab, setActiveTab] = useState('tools');
   const [jsonValidationError, setJsonValidationError] = useState('');
-
   // Common tool patterns
   const commonTools = [
     'Bash(git log:*)',
@@ -153,6 +151,8 @@ function ToolsSettings({ isOpen, onClose }) {
         body: JSON.stringify({
           name: serverData.name,
           type: serverData.type,
+          scope: serverData.scope,
+          projectPath: serverData.projectPath,
           command: serverData.config?.command,
           args: serverData.config?.args || [],
           url: serverData.config?.url,
@@ -285,8 +285,9 @@ function ToolsSettings({ isOpen, onClose }) {
         setProjectSortOrder('name');
       }
 
-      // Load MCP servers from API
+      // Load MCP servers and projects from API
       await fetchMcpServers();
+      await fetchAvailableProjects();
     } catch (error) {
       console.error('Error loading tool settings:', error);
       // Set defaults on error
@@ -354,7 +355,8 @@ function ToolsSettings({ isOpen, onClose }) {
     setMcpFormData({
       name: '',
       type: 'stdio',
-      scope: 'user', // Always use user scope for global availability
+      scope: 'user', // Default to user scope
+      projectPath: '',
       config: {
         command: '',
         args: [],
@@ -378,8 +380,11 @@ function ToolsSettings({ isOpen, onClose }) {
         name: server.name,
         type: server.type,
         scope: server.scope,
+        projectPath: server.projectPath || '',
         config: { ...server.config },
-        raw: server.raw // Store raw config for display
+        raw: server.raw, // Store raw config for display
+        importMode: 'form', // Always use form mode when editing
+        jsonInput: ''
       });
     } else {
       resetMcpForm();
@@ -404,7 +409,9 @@ function ToolsSettings({ isOpen, onClose }) {
           },
           body: JSON.stringify({
             name: mcpFormData.name,
-            jsonConfig: mcpFormData.jsonInput
+            jsonConfig: mcpFormData.jsonInput,
+            scope: mcpFormData.scope,
+            projectPath: mcpFormData.projectPath
           })
         });
         
@@ -973,38 +980,11 @@ function ToolsSettings({ isOpen, onClose }) {
                       
                       <div className="flex items-center gap-2 ml-4">
                         <Button
-                          onClick={() => handleMcpTest(server.id, server.scope)}
-                          variant="ghost"
-                          size="sm"
-                          disabled={mcpTestResults[server.id]?.loading}
-                          className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                          title="Test connection"
-                        >
-                          {mcpTestResults[server.id]?.loading ? (
-                            <div className="w-4 h-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
-                          ) : (
-                            <Play className="w-4 h-4" />
-                          )}
-                        </Button>
-                        <Button
-                          onClick={() => handleMcpToolsDiscovery(server.id, server.scope)}
-                          variant="ghost"
-                          size="sm"
-                          disabled={mcpToolsLoading[server.id]}
-                          className="text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300"
-                          title="Discover tools"
-                        >
-                          {mcpToolsLoading[server.id] ? (
-                            <div className="w-4 h-4 animate-spin rounded-full border-2 border-purple-600 border-t-transparent" />
-                          ) : (
-                            <Settings className="w-4 h-4" />
-                          )}
-                        </Button>
-                        <Button
                           onClick={() => openMcpForm(server)}
                           variant="ghost"
                           size="sm"
                           className="text-gray-600 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
+                          title="Edit server"
                         >
                           <Edit3 className="w-4 h-4" />
                         </Button>
@@ -1013,6 +993,7 @@ function ToolsSettings({ isOpen, onClose }) {
                           variant="ghost"
                           size="sm"
                           className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                          title="Delete server"
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>
@@ -1042,7 +1023,8 @@ function ToolsSettings({ isOpen, onClose }) {
                   </div>
                   
                   <form onSubmit={handleMcpSubmit} className="p-4 space-y-4">
-                    {/* Import Mode Toggle */}
+
+                    {!editingMcpServer && (
                     <div className="flex gap-2 mb-4">
                       <button
                         type="button"
@@ -1067,6 +1049,104 @@ function ToolsSettings({ isOpen, onClose }) {
                         JSON Import
                       </button>
                     </div>
+                    )}
+
+                    {/* Show current scope when editing */}
+                    {mcpFormData.importMode === 'form' && editingMcpServer && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                        <label className="block text-sm font-medium text-foreground mb-2">
+                          Scope
+                        </label>
+                        <div className="flex items-center gap-2">
+                          {mcpFormData.scope === 'user' ? <Globe className="w-4 h-4" /> : <FolderOpen className="w-4 h-4" />}
+                          <span className="text-sm">
+                            {mcpFormData.scope === 'user' ? 'User (Global)' : 'Project (Local)'}
+                          </span>
+                          {mcpFormData.scope === 'local' && mcpFormData.projectPath && (
+                            <span className="text-xs text-muted-foreground">
+                              - {mcpFormData.projectPath}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Scope cannot be changed when editing an existing server
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Scope Selection - Moved to top, disabled when editing */}
+                    {mcpFormData.importMode === 'form' && !editingMcpServer && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-foreground mb-2">
+                            Scope *
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setMcpFormData(prev => ({...prev, scope: 'user', projectPath: ''}))}
+                              className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                mcpFormData.scope === 'user'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                              }`}
+                            >
+                              <div className="flex items-center justify-center gap-2">
+                                <Globe className="w-4 h-4" />
+                                <span>User (Global)</span>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMcpFormData(prev => ({...prev, scope: 'local'}))}
+                              className={`flex-1 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                mcpFormData.scope === 'local'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                              }`}
+                            >
+                              <div className="flex items-center justify-center gap-2">
+                                <FolderOpen className="w-4 h-4" />
+                                <span>Project (Local)</span>
+                              </div>
+                            </button>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-2">
+                            {mcpFormData.scope === 'user' 
+                              ? 'User scope: Available across all projects on your machine'
+                              : 'Local scope: Only available in the selected project'
+                            }
+                          </p>
+                        </div>
+
+                        {/* Project Selection for Local Scope */}
+                        {mcpFormData.scope === 'local' && !editingMcpServer && (
+                          <div>
+                            <label className="block text-sm font-medium text-foreground mb-2">
+                              Project *
+                            </label>
+                            <select
+                              value={mcpFormData.projectPath}
+                              onChange={(e) => setMcpFormData(prev => ({...prev, projectPath: e.target.value}))}
+                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                              required={mcpFormData.scope === 'local'}
+                            >
+                              <option value="">Select a project...</option>
+                              {projects.map(project => (
+                                <option key={project.name} value={project.path || project.fullPath}>
+                                  {project.displayName || project.name}
+                                </option>
+                              ))}
+                            </select>
+                            {mcpFormData.projectPath && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Path: {mcpFormData.projectPath}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Basic Info */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1104,7 +1184,6 @@ function ToolsSettings({ isOpen, onClose }) {
                       )}
                     </div>
 
-                    {/* Scope is fixed to user - no selection needed */}
 
                     {/* Show raw configuration details when editing */}
                     {editingMcpServer && mcpFormData.raw && mcpFormData.importMode === 'form' && (
