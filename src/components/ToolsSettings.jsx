@@ -32,16 +32,16 @@ function ToolsSettings({ isOpen, onClose }) {
       url: '',
       headers: {},
       timeout: 30000
-    }
+    },
+    jsonInput: '', // For JSON import
+    importMode: 'form' // 'form' or 'json'
   });
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpTestResults, setMcpTestResults] = useState({});
-  const [mcpConfigTestResult, setMcpConfigTestResult] = useState(null);
-  const [mcpConfigTesting, setMcpConfigTesting] = useState(false);
-  const [mcpConfigTested, setMcpConfigTested] = useState(false);
   const [mcpServerTools, setMcpServerTools] = useState({});
   const [mcpToolsLoading, setMcpToolsLoading] = useState({});
   const [activeTab, setActiveTab] = useState('tools');
+  const [jsonValidationError, setJsonValidationError] = useState('');
 
   // Common tool patterns
   const commonTools = [
@@ -234,30 +234,6 @@ function ToolsSettings({ isOpen, onClose }) {
     }
   };
 
-  const testMcpConfiguration = async (formData) => {
-    try {
-      const token = localStorage.getItem('auth-token');
-      const response = await fetch('/api/mcp/servers/test', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(formData)
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        return data.testResult;
-      } else {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to test configuration');
-      }
-    } catch (error) {
-      console.error('Error testing MCP configuration:', error);
-      throw error;
-    }
-  };
 
   const discoverMcpTools = async (serverId, scope = 'user') => {
     try {
@@ -386,13 +362,13 @@ function ToolsSettings({ isOpen, onClose }) {
         url: '',
         headers: {},
         timeout: 30000
-      }
+      },
+      jsonInput: '',
+      importMode: 'form'
     });
     setEditingMcpServer(null);
     setShowMcpForm(false);
-    setMcpConfigTestResult(null);
-    setMcpConfigTested(false);
-    setMcpConfigTesting(false);
+    setJsonValidationError('');
   };
 
   const openMcpForm = (server = null) => {
@@ -417,9 +393,40 @@ function ToolsSettings({ isOpen, onClose }) {
     setMcpLoading(true);
     
     try {
-      await saveMcpServer(mcpFormData);
-      resetMcpForm();
-      setSaveStatus('success');
+      if (mcpFormData.importMode === 'json') {
+        // Use JSON import endpoint
+        const token = localStorage.getItem('auth-token');
+        const response = await fetch('/api/mcp/cli/add-json', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: mcpFormData.name,
+            jsonConfig: mcpFormData.jsonInput
+          })
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success) {
+            await fetchMcpServers(); // Refresh the list
+            resetMcpForm();
+            setSaveStatus('success');
+          } else {
+            throw new Error(result.error || 'Failed to add server via JSON');
+          }
+        } else {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to add server');
+        }
+      } else {
+        // Use regular form-based save
+        await saveMcpServer(mcpFormData);
+        resetMcpForm();
+        setSaveStatus('success');
+      }
     } catch (error) {
       alert(`Error: ${error.message}`);
       setSaveStatus('error');
@@ -485,28 +492,8 @@ function ToolsSettings({ isOpen, onClose }) {
         [key]: value
       }
     }));
-    // Reset test status when configuration changes
-    setMcpConfigTestResult(null);
-    setMcpConfigTested(false);
   };
 
-  const handleTestConfiguration = async () => {
-    setMcpConfigTesting(true);
-    try {
-      const result = await testMcpConfiguration(mcpFormData);
-      setMcpConfigTestResult(result);
-      setMcpConfigTested(true);
-    } catch (error) {
-      setMcpConfigTestResult({
-        success: false,
-        message: error.message,
-        details: []
-      });
-      setMcpConfigTested(true);
-    } finally {
-      setMcpConfigTesting(false);
-    }
-  };
 
   const getTransportIcon = (type) => {
     switch (type) {
@@ -1055,9 +1042,35 @@ function ToolsSettings({ isOpen, onClose }) {
                   </div>
                   
                   <form onSubmit={handleMcpSubmit} className="p-4 space-y-4">
+                    {/* Import Mode Toggle */}
+                    <div className="flex gap-2 mb-4">
+                      <button
+                        type="button"
+                        onClick={() => setMcpFormData(prev => ({...prev, importMode: 'form'}))}
+                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                          mcpFormData.importMode === 'form'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        Form Input
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMcpFormData(prev => ({...prev, importMode: 'json'}))}
+                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                          mcpFormData.importMode === 'json'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        JSON Import
+                      </button>
+                    </div>
+
                     {/* Basic Info */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
+                      <div className={mcpFormData.importMode === 'json' ? 'md:col-span-2' : ''}>
                         <label className="block text-sm font-medium text-foreground mb-2">
                           Server Name *
                         </label>
@@ -1065,38 +1078,36 @@ function ToolsSettings({ isOpen, onClose }) {
                           value={mcpFormData.name}
                           onChange={(e) => {
                             setMcpFormData(prev => ({...prev, name: e.target.value}));
-                            setMcpConfigTestResult(null);
-                            setMcpConfigTested(false);
                           }}
                           placeholder="my-server"
                           required
                         />
                       </div>
                       
-                      <div>
-                        <label className="block text-sm font-medium text-foreground mb-2">
-                          Transport Type *
-                        </label>
-                        <select
-                          value={mcpFormData.type}
-                          onChange={(e) => {
-                            setMcpFormData(prev => ({...prev, type: e.target.value}));
-                            setMcpConfigTestResult(null);
-                            setMcpConfigTested(false);
-                          }}
-                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-                        >
-                          <option value="stdio">stdio</option>
-                          <option value="sse">SSE</option>
-                          <option value="http">HTTP</option>
-                        </select>
-                      </div>
+                      {mcpFormData.importMode === 'form' && (
+                        <div>
+                          <label className="block text-sm font-medium text-foreground mb-2">
+                            Transport Type *
+                          </label>
+                          <select
+                            value={mcpFormData.type}
+                            onChange={(e) => {
+                              setMcpFormData(prev => ({...prev, type: e.target.value}));
+                            }}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            <option value="stdio">stdio</option>
+                            <option value="sse">SSE</option>
+                            <option value="http">HTTP</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
 
                     {/* Scope is fixed to user - no selection needed */}
 
                     {/* Show raw configuration details when editing */}
-                    {editingMcpServer && mcpFormData.raw && (
+                    {editingMcpServer && mcpFormData.raw && mcpFormData.importMode === 'form' && (
                       <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                         <h4 className="text-sm font-medium text-foreground mb-2">
                           Configuration Details (from {editingMcpServer.scope === 'global' ? '~/.claude.json' : 'project config'})
@@ -1107,8 +1118,59 @@ function ToolsSettings({ isOpen, onClose }) {
                       </div>
                     )}
 
-                    {/* Transport-specific Config */}
-                    {mcpFormData.type === 'stdio' && (
+                    {/* JSON Import Mode */}
+                    {mcpFormData.importMode === 'json' && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-foreground mb-2">
+                            JSON Configuration *
+                          </label>
+                          <textarea
+                            value={mcpFormData.jsonInput}
+                            onChange={(e) => {
+                              setMcpFormData(prev => ({...prev, jsonInput: e.target.value}));
+                              // Validate JSON as user types
+                              try {
+                                if (e.target.value.trim()) {
+                                  const parsed = JSON.parse(e.target.value);
+                                  // Basic validation
+                                  if (!parsed.type) {
+                                    setJsonValidationError('Missing required field: type');
+                                  } else if (parsed.type === 'stdio' && !parsed.command) {
+                                    setJsonValidationError('stdio type requires a command field');
+                                  } else if ((parsed.type === 'http' || parsed.type === 'sse') && !parsed.url) {
+                                    setJsonValidationError(`${parsed.type} type requires a url field`);
+                                  } else {
+                                    setJsonValidationError('');
+                                  }
+                                }
+                              } catch (err) {
+                                if (e.target.value.trim()) {
+                                  setJsonValidationError('Invalid JSON format');
+                                } else {
+                                  setJsonValidationError('');
+                                }
+                              }
+                            }}
+                            className={`w-full px-3 py-2 border ${jsonValidationError ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'} bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-lg focus:ring-blue-500 focus:border-blue-500 font-mono text-sm`}
+                            rows="8"
+                            placeholder={'{\n  "type": "stdio",\n  "command": "/path/to/server",\n  "args": ["--api-key", "abc123"],\n  "env": {\n    "CACHE_DIR": "/tmp"\n  }\n}'}
+                            required
+                          />
+                          {jsonValidationError && (
+                            <p className="text-xs text-red-500 mt-1">{jsonValidationError}</p>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-2">
+                            Paste your MCP server configuration in JSON format. Example formats:
+                            <br />• stdio: {`{"type":"stdio","command":"npx","args":["@upstash/context7-mcp"]}`}
+                            <br />• http/sse: {`{"type":"http","url":"https://api.example.com/mcp"}`}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Transport-specific Config - Only show in form mode */}
+                    {mcpFormData.importMode === 'form' && mcpFormData.type === 'stdio' && (
                       <div className="space-y-4">
                         <div>
                           <label className="block text-sm font-medium text-foreground mb-2">
@@ -1137,7 +1199,7 @@ function ToolsSettings({ isOpen, onClose }) {
                       </div>
                     )}
 
-                    {(mcpFormData.type === 'sse' || mcpFormData.type === 'http') && (
+                    {mcpFormData.importMode === 'form' && (mcpFormData.type === 'sse' || mcpFormData.type === 'http') && (
                       <div>
                         <label className="block text-sm font-medium text-foreground mb-2">
                           URL *
@@ -1152,8 +1214,9 @@ function ToolsSettings({ isOpen, onClose }) {
                       </div>
                     )}
 
-                    {/* Environment Variables */}
-                    <div>
+                    {/* Environment Variables - Only show in form mode */}
+                    {mcpFormData.importMode === 'form' && (
+                      <div>
                       <label className="block text-sm font-medium text-foreground mb-2">
                         Environment Variables (KEY=value, one per line)
                       </label>
@@ -1174,8 +1237,9 @@ function ToolsSettings({ isOpen, onClose }) {
                         placeholder="API_KEY=your-key&#10;DEBUG=true"
                       />
                     </div>
+                    )}
 
-                    {(mcpFormData.type === 'sse' || mcpFormData.type === 'http') && (
+                    {mcpFormData.importMode === 'form' && (mcpFormData.type === 'sse' || mcpFormData.type === 'http') && (
                       <div>
                         <label className="block text-sm font-medium text-foreground mb-2">
                           Headers (KEY=value, one per line)
@@ -1199,67 +1263,6 @@ function ToolsSettings({ isOpen, onClose }) {
                       </div>
                     )}
 
-                    {/* Test Configuration Section */}
-                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="font-medium text-foreground">Configuration Test</h4>
-                        <Button
-                          type="button"
-                          onClick={handleTestConfiguration}
-                          disabled={mcpConfigTesting || !mcpFormData.name.trim()}
-                          variant="outline"
-                          size="sm"
-                          className="text-blue-600 border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                        >
-                          {mcpConfigTesting ? (
-                            <>
-                              <div className="w-4 h-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent mr-2" />
-                              Testing...
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-4 h-4 mr-2" />
-                              Test Configuration
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      
-                      <p className="text-sm text-muted-foreground mb-3">
-                        You can test your configuration to verify it's working correctly.
-                      </p>
-                      
-                      {mcpConfigTestResult && (
-                        <div className={`p-3 rounded-lg text-sm ${
-                          mcpConfigTestResult.success 
-                            ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800' 
-                            : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
-                        }`}>
-                          <div className="font-medium flex items-center gap-2">
-                            {mcpConfigTestResult.success ? (
-                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                              </svg>
-                            ) : (
-                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                              </svg>
-                            )}
-                            {mcpConfigTestResult.message}
-                          </div>
-                          {mcpConfigTestResult.details && mcpConfigTestResult.details.length > 0 && (
-                            <ul className="mt-2 space-y-1 text-xs">
-                              {mcpConfigTestResult.details.map((detail, i) => (
-                                <li key={i} className="flex items-start gap-1">
-                                  <span className="text-gray-400 mt-0.5">•</span>
-                                  <span>{detail}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                    </div>
 
                     <div className="flex justify-end gap-2 pt-4">
                       <Button type="button" variant="outline" onClick={resetMcpForm}>

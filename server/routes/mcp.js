@@ -130,6 +130,91 @@ router.post('/cli/add', async (req, res) => {
   }
 });
 
+// POST /api/mcp/cli/add-json - Add MCP server using JSON format
+router.post('/cli/add-json', async (req, res) => {
+  try {
+    const { name, jsonConfig } = req.body;
+    
+    console.log('➕ Adding MCP server using JSON format:', name);
+    
+    // Validate and parse JSON config
+    let parsedConfig;
+    try {
+      parsedConfig = typeof jsonConfig === 'string' ? JSON.parse(jsonConfig) : jsonConfig;
+    } catch (parseError) {
+      return res.status(400).json({ 
+        error: 'Invalid JSON configuration', 
+        details: parseError.message 
+      });
+    }
+    
+    // Validate required fields
+    if (!parsedConfig.type) {
+      return res.status(400).json({ 
+        error: 'Invalid configuration', 
+        details: 'Missing required field: type' 
+      });
+    }
+    
+    if (parsedConfig.type === 'stdio' && !parsedConfig.command) {
+      return res.status(400).json({ 
+        error: 'Invalid configuration', 
+        details: 'stdio type requires a command field' 
+      });
+    }
+    
+    if ((parsedConfig.type === 'http' || parsedConfig.type === 'sse') && !parsedConfig.url) {
+      return res.status(400).json({ 
+        error: 'Invalid configuration', 
+        details: `${parsedConfig.type} type requires a url field` 
+      });
+    }
+    
+    const { spawn } = await import('child_process');
+    
+    // Build the command: claude mcp add-json --scope user <name> '<json>'
+    const cliArgs = ['mcp', 'add-json', '--scope', 'user', name];
+    
+    // Add the JSON config as a properly formatted string
+    const jsonString = JSON.stringify(parsedConfig);
+    cliArgs.push(jsonString);
+    
+    console.log('🔧 Running Claude CLI command:', 'claude', cliArgs[0], cliArgs[1], cliArgs[2], cliArgs[3], cliArgs[4], jsonString);
+    
+    const process = spawn('claude', cliArgs, {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    process.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    process.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    process.on('close', (code) => {
+      if (code === 0) {
+        res.json({ success: true, output: stdout, message: `MCP server "${name}" added successfully via JSON` });
+      } else {
+        console.error('Claude CLI error:', stderr);
+        res.status(400).json({ error: 'Claude CLI command failed', details: stderr });
+      }
+    });
+    
+    process.on('error', (error) => {
+      console.error('Error running Claude CLI:', error);
+      res.status(500).json({ error: 'Failed to run Claude CLI', details: error.message });
+    });
+  } catch (error) {
+    console.error('Error adding MCP server via JSON:', error);
+    res.status(500).json({ error: 'Failed to add MCP server', details: error.message });
+  }
+});
+
 // DELETE /api/mcp/cli/remove/:name - Remove MCP server using Claude CLI
 router.delete('/cli/remove/:name', async (req, res) => {
   try {
