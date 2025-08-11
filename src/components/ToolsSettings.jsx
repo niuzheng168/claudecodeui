@@ -66,7 +66,23 @@ function ToolsSettings({ isOpen, onClose }) {
     try {
       const token = localStorage.getItem('auth-token');
       
-      // First try to get servers using Claude CLI
+      // Try to read directly from config files for complete details
+      const configResponse = await fetch('/api/mcp/config/read', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (configResponse.ok) {
+        const configData = await configResponse.json();
+        if (configData.success && configData.servers) {
+          setMcpServers(configData.servers);
+          return;
+        }
+      }
+      
+      // Fallback to Claude CLI
       const cliResponse = await fetch('/api/mcp/cli/list', {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -99,7 +115,7 @@ function ToolsSettings({ isOpen, onClose }) {
         }
       }
       
-      // Fallback to direct config reading
+      // Final fallback to direct config reading
       const response = await fetch('/api/mcp/servers?scope=user', {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -167,8 +183,8 @@ function ToolsSettings({ isOpen, onClose }) {
     try {
       const token = localStorage.getItem('auth-token');
       
-      // Use Claude CLI to remove the server
-      const response = await fetch(`/api/mcp/cli/remove/${serverId}`, {
+      // Use Claude CLI to remove the server with proper scope
+      const response = await fetch(`/api/mcp/cli/remove/${serverId}?scope=${scope}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -362,7 +378,7 @@ function ToolsSettings({ isOpen, onClose }) {
     setMcpFormData({
       name: '',
       type: 'stdio',
-      scope: 'user', // Always use user scope
+      scope: 'user', // Always use user scope for global availability
       config: {
         command: '',
         args: [],
@@ -386,7 +402,8 @@ function ToolsSettings({ isOpen, onClose }) {
         name: server.name,
         type: server.type,
         scope: server.scope,
-        config: { ...server.config }
+        config: { ...server.config },
+        raw: server.raw // Store raw config for display
       });
     } else {
       resetMcpForm();
@@ -846,8 +863,13 @@ function ToolsSettings({ isOpen, onClose }) {
                             {server.type}
                           </Badge>
                           <Badge variant="outline" className="text-xs">
-                            {server.scope}
+                            {server.scope === 'local' ? '📁 local' : server.scope === 'user' ? '👤 user' : server.scope}
                           </Badge>
+                          {server.projectPath && (
+                            <Badge variant="outline" className="text-xs bg-purple-50 dark:bg-purple-900/20" title={server.projectPath}>
+                              {server.projectPath.split('/').pop()}
+                            </Badge>
+                          )}
                         </div>
                         
                         <div className="text-sm text-muted-foreground space-y-1">
@@ -859,6 +881,17 @@ function ToolsSettings({ isOpen, onClose }) {
                           )}
                           {server.config.args && server.config.args.length > 0 && (
                             <div>Args: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-xs">{server.config.args.join(' ')}</code></div>
+                          )}
+                          {server.config.env && Object.keys(server.config.env).length > 0 && (
+                            <div>Environment: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-xs">{Object.entries(server.config.env).map(([k, v]) => `${k}=${v}`).join(', ')}</code></div>
+                          )}
+                          {server.raw && (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">View full config</summary>
+                              <pre className="mt-1 text-xs bg-gray-100 dark:bg-gray-800 p-2 rounded overflow-x-auto">
+                                {JSON.stringify(server.raw, null, 2)}
+                              </pre>
+                            </details>
                           )}
                         </div>
 
@@ -1061,6 +1094,18 @@ function ToolsSettings({ isOpen, onClose }) {
                     </div>
 
                     {/* Scope is fixed to user - no selection needed */}
+
+                    {/* Show raw configuration details when editing */}
+                    {editingMcpServer && mcpFormData.raw && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <h4 className="text-sm font-medium text-foreground mb-2">
+                          Configuration Details (from {editingMcpServer.scope === 'global' ? '~/.claude.json' : 'project config'})
+                        </h4>
+                        <pre className="text-xs bg-gray-100 dark:bg-gray-800 p-3 rounded overflow-x-auto">
+                          {JSON.stringify(mcpFormData.raw, null, 2)}
+                        </pre>
+                      </div>
+                    )}
 
                     {/* Transport-specific Config */}
                     {mcpFormData.type === 'stdio' && (
