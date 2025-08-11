@@ -58,16 +58,16 @@ router.get('/cli/list', async (req, res) => {
 // POST /api/mcp/cli/add - Add MCP server using Claude CLI
 router.post('/cli/add', async (req, res) => {
   try {
-    const { name, type = 'stdio', command, args = [], url, headers = {}, env = {} } = req.body;
+    const { name, type = 'stdio', command, args = [], url, headers = {}, env = {}, scope = 'user', projectPath } = req.body;
     
-    console.log('➕ Adding MCP server using Claude CLI (user scope):', name);
+    console.log(`➕ Adding MCP server using Claude CLI (${scope} scope):`, name);
     
     const { spawn } = await import('child_process');
     
     let cliArgs = ['mcp', 'add'];
     
-    // Always add with user scope (global availability)
-    cliArgs.push('--scope', 'user');
+    // Add scope flag
+    cliArgs.push('--scope', scope);
     
     if (type === 'http') {
       cliArgs.push('--transport', 'http', name, url);
@@ -96,9 +96,17 @@ router.post('/cli/add', async (req, res) => {
     
     console.log('🔧 Running Claude CLI command:', 'claude', cliArgs.join(' '));
     
-    const process = spawn('claude', cliArgs, {
+    // For local scope, we need to run the command in the project directory
+    const spawnOptions = {
       stdio: ['pipe', 'pipe', 'pipe']
-    });
+    };
+    
+    if (scope === 'local' && projectPath) {
+      spawnOptions.cwd = projectPath;
+      console.log('📁 Running in project directory:', projectPath);
+    }
+    
+    const process = spawn('claude', cliArgs, spawnOptions);
     
     let stdout = '';
     let stderr = '';
@@ -133,7 +141,7 @@ router.post('/cli/add', async (req, res) => {
 // POST /api/mcp/cli/add-json - Add MCP server using JSON format
 router.post('/cli/add-json', async (req, res) => {
   try {
-    const { name, jsonConfig } = req.body;
+    const { name, jsonConfig, scope = 'user', projectPath } = req.body;
     
     console.log('➕ Adding MCP server using JSON format:', name);
     
@@ -172,8 +180,8 @@ router.post('/cli/add-json', async (req, res) => {
     
     const { spawn } = await import('child_process');
     
-    // Build the command: claude mcp add-json --scope user <name> '<json>'
-    const cliArgs = ['mcp', 'add-json', '--scope', 'user', name];
+    // Build the command: claude mcp add-json --scope <scope> <name> '<json>'
+    const cliArgs = ['mcp', 'add-json', '--scope', scope, name];
     
     // Add the JSON config as a properly formatted string
     const jsonString = JSON.stringify(parsedConfig);
@@ -181,9 +189,17 @@ router.post('/cli/add-json', async (req, res) => {
     
     console.log('🔧 Running Claude CLI command:', 'claude', cliArgs[0], cliArgs[1], cliArgs[2], cliArgs[3], cliArgs[4], jsonString);
     
-    const process = spawn('claude', cliArgs, {
+    // For local scope, we need to run the command in the project directory
+    const spawnOptions = {
       stdio: ['pipe', 'pipe', 'pipe']
-    });
+    };
+    
+    if (scope === 'local' && projectPath) {
+      spawnOptions.cwd = projectPath;
+      console.log('📁 Running in project directory:', projectPath);
+    }
+    
+    const process = spawn('claude', cliArgs, spawnOptions);
     
     let stdout = '';
     let stderr = '';
