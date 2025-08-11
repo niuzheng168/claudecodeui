@@ -285,9 +285,8 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
         setProjectSortOrder('name');
       }
 
-      // Load MCP servers and projects from API
+      // Load MCP servers from API
       await fetchMcpServers();
-      await fetchAvailableProjects();
     } catch (error) {
       console.error('Error loading tool settings:', error);
       // Set defaults on error
