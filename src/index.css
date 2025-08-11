@@ -559,16 +559,6 @@
       transform: inherit !important;
     }
     
-    /* Preserve backgrounds for containers and modals */
-    .fixed:hover,
-    .modal:hover,
-    .bg-white:hover,
-    .bg-gray-800:hover,
-    .bg-gray-900:hover,
-    [class*="bg-"]:hover {
-      background-color: revert !important;
-    }
-    
     /* Force buttons to be immediately clickable */
     button, [role="button"], .cursor-pointer {
       cursor: pointer !important;
