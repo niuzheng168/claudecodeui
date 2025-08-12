@@ -454,16 +454,19 @@ router.get('/sessions', async (req, res) => {
           }
         }
         
-        // Get message count from blobs table
+        // Get message count from JSON blobs only (actual messages, not DAG structure)
         try {
           const blobCount = await db.get(`
-            SELECT COUNT(*) as count FROM blobs
+            SELECT COUNT(*) as count 
+            FROM blobs 
+            WHERE substr(data, 1, 1) = X'7B'
           `);
           sessionData.messageCount = blobCount.count;
           
-          // Get the most recent blob for preview
+          // Get the most recent JSON blob for preview (actual message, not DAG structure)
           const lastBlob = await db.get(`
             SELECT data FROM blobs 
+            WHERE substr(data, 1, 1) = X'7B'
             ORDER BY rowid DESC 
             LIMIT 1
           `);
