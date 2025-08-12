@@ -1122,6 +1122,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [sessionMessages, setSessionMessages] = useState([]);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
+  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+  const [messagesOffset, setMessagesOffset] = useState(0);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [totalMessages, setTotalMessages] = useState(0);
+  const MESSAGES_PER_PAGE = 20;
   const [isSystemSessionChange, setIsSystemSessionChange] = useState(false);
   const [permissionMode, setPermissionMode] = useState('default');
   const [attachedImages, setAttachedImages] = useState([]);
@@ -1211,25 +1216,49 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     };
   }, []);
 
-  // Load session messages from API
-  const loadSessionMessages = useCallback(async (projectName, sessionId) => {
+  // Load session messages from API with pagination
+  const loadSessionMessages = useCallback(async (projectName, sessionId, loadMore = false) => {
     if (!projectName || !sessionId) return [];
     
-    setIsLoadingSessionMessages(true);
+    const isInitialLoad = !loadMore;
+    if (isInitialLoad) {
+      setIsLoadingSessionMessages(true);
+    } else {
+      setIsLoadingMoreMessages(true);
+    }
+    
     try {
-      const response = await api.sessionMessages(projectName, sessionId);
+      const currentOffset = loadMore ? messagesOffset : 0;
+      const response = await api.sessionMessages(projectName, sessionId, MESSAGES_PER_PAGE, currentOffset);
       if (!response.ok) {
         throw new Error('Failed to load session messages');
       }
       const data = await response.json();
-      return data.messages || [];
+      
+      // Handle paginated response
+      if (data.hasMore !== undefined) {
+        setHasMoreMessages(data.hasMore);
+        setTotalMessages(data.total);
+        setMessagesOffset(currentOffset + (data.messages?.length || 0));
+        return data.messages || [];
+      } else {
+        // Backward compatibility for non-paginated response
+        const messages = data.messages || [];
+        setHasMoreMessages(false);
+        setTotalMessages(messages.length);
+        return messages;
+      }
     } catch (error) {
       console.error('Error loading session messages:', error);
       return [];
     } finally {
-      setIsLoadingSessionMessages(false);
+      if (isInitialLoad) {
+        setIsLoadingSessionMessages(false);
+      } else {
+        setIsLoadingMoreMessages(false);
+      }
     }
-  }, []);
+  }, [messagesOffset]);
 
   // Load Cursor session messages from SQLite via backend
   const loadCursorSessionMessages = useCallback(async (projectPath, sessionId) => {
@@ -1475,19 +1504,52 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     return scrollHeight - scrollTop - clientHeight < 50;
   }, []);
 
-  // Handle scroll events to detect when user manually scrolls up
-  const handleScroll = useCallback(() => {
+  // Handle scroll events to detect when user manually scrolls up and load more messages
+  const handleScroll = useCallback(async () => {
     if (scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
       const nearBottom = isNearBottom();
       setIsUserScrolledUp(!nearBottom);
+      
+      // Check if we should load more messages (scrolled near top)
+      const scrolledNearTop = container.scrollTop < 100;
+      const provider = localStorage.getItem('selected-provider') || 'claude';
+      
+      if (scrolledNearTop && hasMoreMessages && !isLoadingMoreMessages && selectedSession && selectedProject && provider !== 'cursor') {
+        // Save current scroll position
+        const previousScrollHeight = container.scrollHeight;
+        const previousScrollTop = container.scrollTop;
+        
+        // Load more messages
+        const moreMessages = await loadSessionMessages(selectedProject.name, selectedSession.id, true);
+        
+        if (moreMessages.length > 0) {
+          // Prepend new messages to the existing ones
+          setSessionMessages(prev => [...moreMessages, ...prev]);
+          
+          // Restore scroll position after DOM update
+          setTimeout(() => {
+            if (scrollContainerRef.current) {
+              const newScrollHeight = scrollContainerRef.current.scrollHeight;
+              const scrollDiff = newScrollHeight - previousScrollHeight;
+              scrollContainerRef.current.scrollTop = previousScrollTop + scrollDiff;
+            }
+          }, 0);
+        }
+      }
     }
-  }, [isNearBottom]);
+  }, [isNearBottom, hasMoreMessages, isLoadingMoreMessages, selectedSession, selectedProject, loadSessionMessages]);
 
   useEffect(() => {
     // Load session messages when session changes
     const loadMessages = async () => {
       if (selectedSession && selectedProject) {
         const provider = localStorage.getItem('selected-provider') || 'claude';
+        
+        // Reset pagination state when switching sessions
+        setMessagesOffset(0);
+        setHasMoreMessages(false);
+        setTotalMessages(0);
         
         if (provider === 'cursor') {
           // For Cursor, set the session ID for resuming
@@ -1500,13 +1562,13 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           setSessionMessages([]);
           setChatMessages(converted);
         } else {
-          // For Claude, load messages normally
+          // For Claude, load messages normally with pagination
           setCurrentSessionId(selectedSession.id);
           
           // Only load messages from API if this is a user-initiated session change
           // For system-initiated changes, preserve existing messages and rely on WebSocket
           if (!isSystemSessionChange) {
-            const messages = await loadSessionMessages(selectedProject.name, selectedSession.id);
+            const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false);
             setSessionMessages(messages);
             // convertedMessages will be automatically updated via useMemo
             // Scroll to bottom after loading session messages if auto-scroll is enabled
@@ -1523,11 +1585,14 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         setSessionMessages([]);
         setCurrentSessionId(null);
         sessionStorage.removeItem('cursorSessionId');
+        setMessagesOffset(0);
+        setHasMoreMessages(false);
+        setTotalMessages(0);
       }
     };
     
     loadMessages();
-  }, [selectedSession, selectedProject, loadSessionMessages, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange]);
+  }, [selectedSession, selectedProject, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange]);
 
   // Update chatMessages when convertedMessages changes
   useEffect(() => {
@@ -2566,7 +2631,30 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           </div>
         ) : (
           <>
-            {chatMessages.length > visibleMessageCount && (
+            {/* Loading indicator for older messages */}
+            {isLoadingMoreMessages && (
+              <div className="text-center text-gray-500 dark:text-gray-400 py-3">
+                <div className="flex items-center justify-center space-x-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
+                  <p className="text-sm">Loading older messages...</p>
+                </div>
+              </div>
+            )}
+            
+            {/* Indicator showing there are more messages to load */}
+            {hasMoreMessages && !isLoadingMoreMessages && (
+              <div className="text-center text-gray-500 dark:text-gray-400 text-sm py-2 border-b border-gray-200 dark:border-gray-700">
+                {totalMessages > 0 && (
+                  <span>
+                    Showing {sessionMessages.length} of {totalMessages} messages • 
+                    <span className="text-xs">Scroll up to load more</span>
+                  </span>
+                )}
+              </div>
+            )}
+            
+            {/* Legacy message count indicator (for non-paginated view) */}
+            {!hasMoreMessages && chatMessages.length > visibleMessageCount && (
               <div className="text-center text-gray-500 dark:text-gray-400 text-sm py-2 border-b border-gray-200 dark:border-gray-700">
                 Showing last {visibleMessageCount} messages ({chatMessages.length} total) • 
                 <button 

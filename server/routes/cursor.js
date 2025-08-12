@@ -373,11 +373,18 @@ router.get('/sessions', async (req, res) => {
     for (const sessionId of sessionDirs) {
       const sessionPath = path.join(cursorChatsPath, sessionId);
       const storeDbPath = path.join(sessionPath, 'store.db');
+      let dbStatMtimeMs = null;
       
       try {
         // Check if store.db exists
         await fs.access(storeDbPath);
         
+        // Capture store.db mtime as a reliable fallback timestamp (last activity)
+        try {
+          const stat = await fs.stat(storeDbPath);
+          dbStatMtimeMs = stat.mtimeMs;
+        } catch (_) {}
+
         // Open SQLite database
         const db = await open({
           filename: storeDbPath,
@@ -412,7 +419,26 @@ router.get('/sessions', async (req, res) => {
                 
                 if (row.key === 'agent') {
                   sessionData.name = data.name || sessionData.name;
-                  sessionData.createdAt = data.createdAt;
+                  // Normalize createdAt to ISO string in milliseconds
+                  let createdAt = data.createdAt;
+                  if (typeof createdAt === 'number') {
+                    if (createdAt < 1e12) {
+                      createdAt = createdAt * 1000; // seconds -> ms
+                    }
+                    sessionData.createdAt = new Date(createdAt).toISOString();
+                  } else if (typeof createdAt === 'string') {
+                    const n = Number(createdAt);
+                    if (!Number.isNaN(n)) {
+                      const ms = n < 1e12 ? n * 1000 : n;
+                      sessionData.createdAt = new Date(ms).toISOString();
+                    } else {
+                      // Assume it's already an ISO/date string
+                      const d = new Date(createdAt);
+                      sessionData.createdAt = isNaN(d.getTime()) ? null : d.toISOString();
+                    }
+                  } else {
+                    sessionData.createdAt = sessionData.createdAt || null;
+                  }
                   sessionData.mode = data.mode;
                   sessionData.agentId = data.agentId;
                   sessionData.latestRootBlobId = data.latestRootBlobId;
@@ -497,6 +523,13 @@ router.get('/sessions', async (req, res) => {
         }
         
         await db.close();
+
+        // Finalize createdAt: use parsed meta value when valid, else fall back to store.db mtime
+        if (!sessionData.createdAt) {
+          if (dbStatMtimeMs && Number.isFinite(dbStatMtimeMs)) {
+            sessionData.createdAt = new Date(dbStatMtimeMs).toISOString();
+          }
+        }
         
         sessions.push(sessionData);
         
@@ -505,6 +538,18 @@ router.get('/sessions', async (req, res) => {
       }
     }
     
+    // Fallback: ensure createdAt is a valid ISO string (use session directory mtime as last resort)
+    for (const s of sessions) {
+      if (!s.createdAt) {
+        try {
+          const sessionDir = path.join(cursorChatsPath, s.id);
+          const st = await fs.stat(sessionDir);
+          s.createdAt = new Date(st.mtimeMs).toISOString();
+        } catch {
+          s.createdAt = new Date().toISOString();
+        }
+      }
+    }
     // Sort sessions by creation date (newest first)
     sessions.sort((a, b) => {
       if (!a.createdAt) return 1;

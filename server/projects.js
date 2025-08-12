@@ -385,8 +385,8 @@ async function parseJsonlSessions(filePath) {
   );
 }
 
-// Get messages for a specific session
-async function getSessionMessages(projectName, sessionId) {
+// Get messages for a specific session with pagination support
+async function getSessionMessages(projectName, sessionId, limit = null, offset = 0) {
   const projectDir = path.join(process.env.HOME, '.claude', 'projects', projectName);
   
   try {
@@ -394,7 +394,7 @@ async function getSessionMessages(projectName, sessionId) {
     const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
     
     if (jsonlFiles.length === 0) {
-      return [];
+      return { messages: [], total: 0, hasMore: false };
     }
     
     const messages = [];
@@ -423,12 +423,34 @@ async function getSessionMessages(projectName, sessionId) {
     }
     
     // Sort messages by timestamp
-    return messages.sort((a, b) => 
+    const sortedMessages = messages.sort((a, b) => 
       new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
     );
+    
+    const total = sortedMessages.length;
+    
+    // If no limit is specified, return all messages (backward compatibility)
+    if (limit === null) {
+      return sortedMessages;
+    }
+    
+    // Apply pagination - for recent messages, we need to slice from the end
+    // offset 0 should give us the most recent messages
+    const startIndex = Math.max(0, total - offset - limit);
+    const endIndex = total - offset;
+    const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
+    const hasMore = startIndex > 0;
+    
+    return {
+      messages: paginatedMessages,
+      total,
+      hasMore,
+      offset,
+      limit
+    };
   } catch (error) {
     console.error(`Error reading messages for session ${sessionId}:`, error);
-    return [];
+    return limit === null ? [] : { messages: [], total: 0, hasMore: false };
   }
 }
 
