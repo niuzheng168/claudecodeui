@@ -582,7 +582,6 @@ router.get('/sessions/:sessionId', async (req, res) => {
     const cwdId = crypto.createHash('md5').update(projectPath || process.cwd()).digest('hex');
     const storeDbPath = path.join(os.homedir(), '.cursor', 'chats', cwdId, sessionId, 'store.db');
     
-    console.log(`📖 Reading Cursor session from: ${storeDbPath}`);
     
     // Open SQLite database
     const db = await open({
@@ -592,9 +591,14 @@ router.get('/sessions/:sessionId', async (req, res) => {
     });
     
     // Get all blobs (conversation data)
-    // Use rowid for chronological ordering (it's an auto-incrementing integer)
+    // Use ROW_NUMBER() for clean sequential numbering and rowid for chronological ordering
     const blobs = await db.all(`
-      SELECT rowid, id, data FROM blobs 
+      SELECT 
+        ROW_NUMBER() OVER (ORDER BY rowid) as sequence_num,
+        rowid as original_rowid,
+        id,
+        data
+      FROM blobs 
       ORDER BY rowid ASC
     `);
     
@@ -661,7 +665,8 @@ router.get('/sessions/:sessionId', async (req, res) => {
           }
           messages.push({ 
             id: blob.id, 
-            rowid: blob.rowid, 
+            sequence: blob.sequence_num,
+            rowid: blob.original_rowid, 
             content: parsed 
           });
         }

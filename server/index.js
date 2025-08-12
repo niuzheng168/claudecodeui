@@ -1067,7 +1067,7 @@ async function startServer() {
             console.log(`Claude Code UI server running on http://0.0.0.0:${PORT}`);
 
             // Start watching the projects folder for changes
-            await setupProjectsWatcher(); // Re-enabled with better-sqlite3
+            await setupProjectsWatcher(); 
         });
     } catch (error) {
         console.error('❌ Failed to start server:', error);

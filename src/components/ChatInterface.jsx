@@ -1330,8 +1330,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                       converted.push({
                         type: 'assistant',
                         content: '',
-                        timestamp: new Date(Date.now() + blobIdx),
+                        timestamp: new Date(Date.now() + blobIdx * 1000),
                         blobId: blob.id,
+                        sequence: blob.sequence,
+                        rowid: blob.rowid,
                         isToolUse: true,
                         toolName: toolName,
                         toolId: toolCallId,
@@ -1367,8 +1369,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                         type: role,
                         content: textParts.join('\n'),
                         reasoning: reasoningText,
-                        timestamp: new Date(Date.now() + blobIdx),
-                        blobId: blob.id
+                        timestamp: new Date(Date.now() + blobIdx * 1000),
+                        blobId: blob.id,
+                        sequence: blob.sequence,
+                        rowid: blob.rowid
                       });
                       textParts.length = 0;
                       reasoningText = null;
@@ -1449,8 +1453,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                     const toolMessage = {
                       type: 'assistant',
                       content: '',
-                      timestamp: new Date(Date.now() + blobIdx),
+                      timestamp: new Date(Date.now() + blobIdx * 1000),
                       blobId: blob.id,
+                      sequence: blob.sequence,
+                      rowid: blob.rowid,
                       isToolUse: true,
                       toolName: toolName,
                       toolId: toolId,
@@ -1466,8 +1472,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                         type: role,
                         content: textParts.join('\n'),
                         reasoning: reasoningText,
-                        timestamp: new Date(Date.now() + blobIdx),
-                        blobId: blob.id
+                        timestamp: new Date(Date.now() + blobIdx * 1000),
+                        blobId: blob.id,
+                        sequence: blob.sequence,
+                        rowid: blob.rowid
                       });
                       textParts.length = 0;
                       reasoningText = null;
@@ -1479,8 +1487,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                     const toolMessage = {
                       type: 'assistant',
                       content: '',
-                      timestamp: new Date(Date.now() + blobIdx),
+                      timestamp: new Date(Date.now() + blobIdx * 1000),
                       blobId: blob.id,
+                      sequence: blob.sequence,
+                      rowid: blob.rowid,
                       isToolUse: true,
                       toolName: toolName,
                       toolId: toolId,
@@ -1503,8 +1513,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                       type: role,
                       content: '',
                       reasoning: reasoningText,
-                      timestamp: new Date(Date.now() + blobIdx),
-                      blobId: blob.id
+                      timestamp: new Date(Date.now() + blobIdx * 1000),
+                      blobId: blob.id,
+                      sequence: blob.sequence,
+                      rowid: blob.rowid
                     });
                     text = ''; // Clear to avoid duplicate
                   }
@@ -1537,8 +1549,10 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           const message = {
             type: role,
             content: text,
-            timestamp: new Date(Date.now() + blobIdx),
-            blobId: blob.id
+            timestamp: new Date(Date.now() + blobIdx * 1000),
+            blobId: blob.id,
+            sequence: blob.sequence,
+            rowid: blob.rowid
           };
           
           // Add reasoning if we have it
@@ -1550,11 +1564,15 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         }
       }
       
-      // Sort messages by blob ID to maintain chronological order
+      // Sort messages by sequence/rowid to maintain chronological order
       converted.sort((a, b) => {
-        // First sort by blobId if available
-        if (a.blobId && b.blobId) {
-          return parseInt(a.blobId) - parseInt(b.blobId);
+        // First sort by sequence if available (clean 1,2,3... numbering)
+        if (a.sequence !== undefined && b.sequence !== undefined) {
+          return a.sequence - b.sequence;
+        }
+        // Then try rowid (original SQLite row IDs)
+        if (a.rowid !== undefined && b.rowid !== undefined) {
+          return a.rowid - b.rowid;
         }
         // Fallback to timestamp
         return new Date(a.timestamp) - new Date(b.timestamp);
@@ -1774,11 +1792,18 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           setCurrentSessionId(selectedSession.id);
           sessionStorage.setItem('cursorSessionId', selectedSession.id);
           
-          // Load historical messages for Cursor session from SQLite
-          const projectPath = selectedProject.fullPath || selectedProject.path;
-          const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
-          setSessionMessages([]);
-          setChatMessages(converted);
+          // Only load messages from SQLite if this is NOT a system-initiated session change
+          // For system-initiated changes, preserve existing messages
+          if (!isSystemSessionChange) {
+            // Load historical messages for Cursor session from SQLite
+            const projectPath = selectedProject.fullPath || selectedProject.path;
+            const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+            setSessionMessages([]);
+            setChatMessages(converted);
+          } else {
+            // Reset the flag after handling system session change
+            setIsSystemSessionChange(false);
+          }
         } else {
           // For Claude, load messages normally with pagination
           setCurrentSessionId(selectedSession.id);
@@ -1799,8 +1824,12 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           }
         }
       } else {
-        setChatMessages([]);
-        setSessionMessages([]);
+        // Only clear messages if this is NOT a system-initiated session change AND we're not loading
+        // During system session changes or while loading, preserve the chat messages
+        if (!isSystemSessionChange && !isLoading) {
+          setChatMessages([]);
+          setSessionMessages([]);
+        }
         setCurrentSessionId(null);
         sessionStorage.removeItem('cursorSessionId');
         setMessagesOffset(0);
@@ -1810,7 +1839,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     };
     
     loadMessages();
-  }, [selectedSession, selectedProject, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange]);
+  }, [selectedSession, selectedProject, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange, isLoading]);
 
   // Update chatMessages when convertedMessages changes
   useEffect(() => {
@@ -2152,11 +2181,23 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             const raw = String(latestMessage.data ?? '');
             const cleaned = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
             if (cleaned) {
-              setChatMessages(prev => [...prev, {
-                type: 'assistant',
-                content: cleaned,
-                timestamp: new Date()
-              }]);
+              setChatMessages(prev => {
+                // If the last message is from assistant and not a tool use, append to it
+                if (prev.length > 0 && prev[prev.length - 1].type === 'assistant' && !prev[prev.length - 1].isToolUse) {
+                  const updatedMessages = [...prev];
+                  const lastMessage = updatedMessages[updatedMessages.length - 1];
+                  // Append with a newline if there's already content
+                  lastMessage.content = lastMessage.content ? `${lastMessage.content}\n${cleaned}` : cleaned;
+                  return updatedMessages;
+                } else {
+                  // Otherwise create a new assistant message
+                  return [...prev, {
+                    type: 'assistant',
+                    content: cleaned,
+                    timestamp: new Date()
+                  }];
+                }
+              });
             }
           } catch (e) {
             console.warn('Error handling cursor-output message:', e);
