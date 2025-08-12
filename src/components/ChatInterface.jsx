@@ -1151,6 +1151,9 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  // Streaming throttle buffers
+  const streamBufferRef = useRef('');
+  const streamTimerRef = useRef(null);
   const [debouncedInput, setDebouncedInput] = useState('');
   const [showFileDropdown, setShowFileDropdown] = useState(false);
   const [fileList, setFileList] = useState([]);
@@ -1839,7 +1842,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     };
     
     loadMessages();
-  }, [selectedSession, selectedProject, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange, isLoading]);
+  }, [selectedSession, selectedProject, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange]);
 
   // Update chatMessages when convertedMessages changes
   useEffect(() => {
@@ -1910,27 +1913,56 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           // Handle Cursor streaming format (content_block_delta / content_block_stop)
           if (messageData && typeof messageData === 'object' && messageData.type) {
             if (messageData.type === 'content_block_delta' && messageData.delta?.text) {
-              setChatMessages(prev => {
-                // Check if the last message is an assistant message we can append to
-                if (prev.length > 0 && prev[prev.length - 1].type === 'assistant' && !prev[prev.length - 1].isToolUse) {
-                  // Append to the last assistant message
-                  const updatedMessages = [...prev];
-                  const lastMessage = updatedMessages[updatedMessages.length - 1];
-                  lastMessage.content = (lastMessage.content || '') + messageData.delta.text;
-                  return updatedMessages;
-                } else {
-                  // Create a new assistant message for the first delta
-                  return [...prev, {
-                    type: 'assistant',
-                    content: messageData.delta.text,
-                    timestamp: new Date()
-                  }];
-                }
-              });
+              // Buffer deltas and flush periodically to reduce rerenders
+              streamBufferRef.current += messageData.delta.text;
+              if (!streamTimerRef.current) {
+                streamTimerRef.current = setTimeout(() => {
+                  const chunk = streamBufferRef.current;
+                  streamBufferRef.current = '';
+                  streamTimerRef.current = null;
+                  if (!chunk) return;
+                  setChatMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                      last.content = (last.content || '') + chunk;
+                    } else {
+                      updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                    }
+                    return updated;
+                  });
+                }, 100);
+              }
               return;
             }
             if (messageData.type === 'content_block_stop') {
-              // Nothing specific to do; leave as-is
+              // Flush any buffered text and mark streaming message complete
+              if (streamTimerRef.current) {
+                clearTimeout(streamTimerRef.current);
+                streamTimerRef.current = null;
+              }
+              const chunk = streamBufferRef.current;
+              streamBufferRef.current = '';
+              if (chunk) {
+                setChatMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                    last.content = (last.content || '') + chunk;
+                  } else {
+                    updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                  }
+                  return updated;
+                });
+              }
+              setChatMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.type === 'assistant' && last.isStreaming) {
+                  last.isStreaming = false;
+                }
+                return updated;
+              });
               return;
             }
           }
@@ -2075,11 +2107,30 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           break;
           
         case 'claude-output':
-          setChatMessages(prev => [...prev, {
-            type: 'assistant',
-            content: latestMessage.data,
-            timestamp: new Date()
-          }]);
+          {
+            const cleaned = String(latestMessage.data || '');
+            if (cleaned.trim()) {
+              streamBufferRef.current += (streamBufferRef.current ? `\n${cleaned}` : cleaned);
+              if (!streamTimerRef.current) {
+                streamTimerRef.current = setTimeout(() => {
+                  const chunk = streamBufferRef.current;
+                  streamBufferRef.current = '';
+                  streamTimerRef.current = null;
+                  if (!chunk) return;
+                  setChatMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                      last.content = last.content ? `${last.content}\n${chunk}` : chunk;
+                    } else {
+                      updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                    }
+                    return updated;
+                  });
+                }, 100);
+              }
+            }
+          }
           break;
         case 'claude-interactive-prompt':
           // Handle interactive prompts from CLI
@@ -2163,13 +2214,28 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           try {
             const r = latestMessage.data || {};
             const textResult = typeof r.result === 'string' ? r.result : '';
-            if (textResult && textResult.trim()) {
-              setChatMessages(prev => [...prev, {
-                type: r.is_error ? 'error' : 'assistant',
-                content: textResult,
-                timestamp: new Date()
-              }]);
+            // Flush buffered deltas before finalizing
+            if (streamTimerRef.current) {
+              clearTimeout(streamTimerRef.current);
+              streamTimerRef.current = null;
             }
+            const pendingChunk = streamBufferRef.current;
+            streamBufferRef.current = '';
+
+            setChatMessages(prev => {
+              const updated = [...prev];
+              // Try to consolidate into the last streaming assistant message
+              const last = updated[updated.length - 1];
+              if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                // Replace streaming content with the final content so deltas don't remain
+                const finalContent = textResult && textResult.trim() ? textResult : (last.content || '') + (pendingChunk || '');
+                last.content = finalContent;
+                last.isStreaming = false;
+              } else if (textResult && textResult.trim()) {
+                updated.push({ type: r.is_error ? 'error' : 'assistant', content: textResult, timestamp: new Date(), isStreaming: false });
+              }
+              return updated;
+            });
           } catch (e) {
             console.warn('Error handling cursor-result message:', e);
           }
@@ -2198,23 +2264,25 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             const raw = String(latestMessage.data ?? '');
             const cleaned = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
             if (cleaned) {
-              setChatMessages(prev => {
-                // If the last message is from assistant and not a tool use, append to it
-                if (prev.length > 0 && prev[prev.length - 1].type === 'assistant' && !prev[prev.length - 1].isToolUse) {
-                  const updatedMessages = [...prev];
-                  const lastMessage = updatedMessages[updatedMessages.length - 1];
-                  // Append with a newline if there's already content
-                  lastMessage.content = lastMessage.content ? `${lastMessage.content}\n${cleaned}` : cleaned;
-                  return updatedMessages;
-                } else {
-                  // Otherwise create a new assistant message
-                  return [...prev, {
-                    type: 'assistant',
-                    content: cleaned,
-                    timestamp: new Date()
-                  }];
-                }
-              });
+              streamBufferRef.current += (streamBufferRef.current ? `\n${cleaned}` : cleaned);
+              if (!streamTimerRef.current) {
+                streamTimerRef.current = setTimeout(() => {
+                  const chunk = streamBufferRef.current;
+                  streamBufferRef.current = '';
+                  streamTimerRef.current = null;
+                  if (!chunk) return;
+                  setChatMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+                      last.content = last.content ? `${last.content}\n${chunk}` : chunk;
+                    } else {
+                      updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+                    }
+                    return updated;
+                  });
+                }, 100);
+              }
             }
           } catch (e) {
             console.warn('Error handling cursor-output message:', e);
@@ -2636,12 +2704,12 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     setIsUserScrolledUp(false); // Reset scroll state so auto-scroll works for Claude's response
     setTimeout(() => scrollToBottom(), 100); // Longer delay to ensure message is rendered
 
+    // Determine effective session id for replies to avoid race on state updates
+    const effectiveSessionId = currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
+
     // Session Protection: Mark session as active to prevent automatic project updates during conversation
-    // This is crucial for maintaining chat state integrity. We handle two cases:
-    // 1. Existing sessions: Use the real currentSessionId
-    // 2. New sessions: Generate temporary identifier "new-session-{timestamp}" since real ID comes via WebSocket later
-    // This ensures no gap in protection between message send and session creation
-    const sessionToActivate = currentSessionId || `new-session-${Date.now()}`;
+    // Use existing session if available; otherwise a temporary placeholder until backend provides real ID
+    const sessionToActivate = effectiveSessionId || `new-session-${Date.now()}`;
     if (onSessionActive) {
       onSessionActive(sessionToActivate);
     }
@@ -2672,13 +2740,13 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       sendMessage({
         type: 'cursor-command',
         command: input,
-        sessionId: currentSessionId,
+        sessionId: effectiveSessionId,
         options: {
           // Prefer fullPath (actual cwd for project), fallback to path
           cwd: selectedProject.fullPath || selectedProject.path,
           projectPath: selectedProject.fullPath || selectedProject.path,
-          sessionId: currentSessionId,
-          resume: !!currentSessionId,
+          sessionId: effectiveSessionId,
+          resume: !!effectiveSessionId,
           model: cursorModel,
           skipPermissions: toolsSettings?.skipPermissions || false,
           toolsSettings: toolsSettings
@@ -3073,7 +3141,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           <div className="chat-message assistant">
             <div className="w-full">
               <div className="flex items-center space-x-3 mb-2">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1 bg-gray-600">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1 bg-transparent">
                   {(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? (
                     <CursorLogo className="w-full h-full" />
                   ) : (
@@ -3104,7 +3172,14 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         isInputFocused ? 'pb-2 sm:pb-4 md:pb-6' : 'pb-16 sm:pb-4 md:pb-6'
       }`}>
     
-        
+        <div className="flex-1">
+              <ClaudeStatus 
+                status={claudeStatus}
+                isLoading={isLoading}
+                onAbort={handleAbortSession}
+                provider={provider}
+              />
+              </div>
         {/* Permission Mode Selector with scroll to bottom button - Above input, clickable for mobile */}
         <div className="max-w-4xl mx-auto mb-3">
           <div className="flex items-center justify-center gap-3">

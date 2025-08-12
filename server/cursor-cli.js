@@ -26,8 +26,8 @@ async function spawnCursor(command, options = {}, ws) {
     const args = [];
     
     // Build flags allowing both resume and prompt together (reply in existing session)
-    if (resume && sessionId) {
-      // Resume existing session
+    // Treat presence of sessionId as intention to resume, regardless of resume flag
+    if (sessionId) {
       args.push('--resume=' + sessionId);
     }
 
@@ -36,7 +36,7 @@ async function spawnCursor(command, options = {}, ws) {
       args.push('-p', command);
 
       // Add model flag if specified (only meaningful for new sessions; harmless on resume)
-      if (!resume && model) {
+      if (!sessionId && model) {
         args.push('--model', model);
       }
 
