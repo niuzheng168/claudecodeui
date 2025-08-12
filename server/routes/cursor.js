@@ -622,15 +622,18 @@ router.get('/sessions/:sessionId', async (req, res) => {
       }
     }
     
-    // Parse blob data to extract messages
+    // Parse blob data to extract messages - only include blobs with valid JSON
     const messages = [];
     for (const blob of blobs) {
       try {
         // Attempt direct JSON parse first
         const raw = blob.data.toString('utf8');
         let parsed;
+        let isValidJson = false;
+        
         try {
           parsed = JSON.parse(raw);
+          isValidJson = true;
         } catch (_) {
           // If not JSON, try to extract JSON from within binary-looking string
           const cleaned = raw.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
@@ -640,20 +643,28 @@ router.get('/sessions/:sessionId', async (req, res) => {
             const jsonStr = cleaned.slice(start, end + 1);
             try {
               parsed = JSON.parse(jsonStr);
+              isValidJson = true;
             } catch (_) {
               parsed = null;
+              isValidJson = false;
             }
           }
         }
-        if (parsed) {
+        
+        // Only include blobs that contain valid JSON data
+        if (isValidJson && parsed) {
+          // Filter out ONLY system messages at the server level
+          // Check both direct role and nested message.role
+          const role = parsed?.role || parsed?.message?.role;
+          if (role === 'system') {
+            continue; // Skip only system messages
+          }
           messages.push({ id: blob.id, content: parsed });
-        } else {
-          // Fallback to cleaned text content
-          const text = raw.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '').trim();
-          messages.push({ id: blob.id, content: text });
         }
+        // Skip non-JSON blobs (binary data) completely
       } catch (e) {
-        messages.push({ id: blob.id, content: blob.data.toString() });
+        // Skip blobs that cause errors
+        console.log(`Skipping blob ${blob.id}: ${e.message}`);
       }
     }
     
