@@ -351,7 +351,6 @@ router.get('/sessions', async (req, res) => {
     const cwdId = crypto.createHash('md5').update(projectPath || process.cwd()).digest('hex');
     const cursorChatsPath = path.join(os.homedir(), '.cursor', 'chats', cwdId);
     
-    console.log(`🔍 Looking for Cursor sessions in: ${cursorChatsPath}`);
     
     // Check if the directory exists
     try {
@@ -465,7 +464,7 @@ router.get('/sessions', async (req, res) => {
           // Get the most recent blob for preview
           const lastBlob = await db.get(`
             SELECT data FROM blobs 
-            ORDER BY id DESC 
+            ORDER BY rowid DESC 
             LIMIT 1
           `);
           
@@ -593,9 +592,10 @@ router.get('/sessions/:sessionId', async (req, res) => {
     });
     
     // Get all blobs (conversation data)
+    // Use rowid for chronological ordering (it's an auto-incrementing integer)
     const blobs = await db.all(`
-      SELECT id, data FROM blobs 
-      ORDER BY id ASC
+      SELECT rowid, id, data FROM blobs 
+      ORDER BY rowid ASC
     `);
     
     // Get metadata from meta table
@@ -659,7 +659,11 @@ router.get('/sessions/:sessionId', async (req, res) => {
           if (role === 'system') {
             continue; // Skip only system messages
           }
-          messages.push({ id: blob.id, content: parsed });
+          messages.push({ 
+            id: blob.id, 
+            rowid: blob.rowid, 
+            content: parsed 
+          });
         }
         // Skip non-JSON blobs (binary data) completely
       } catch (e) {

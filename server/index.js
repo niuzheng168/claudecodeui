@@ -546,14 +546,17 @@ function handleShellConnection(ws) {
                 const projectPath = data.projectPath || process.cwd();
                 const sessionId = data.sessionId;
                 const hasSession = data.hasSession;
+                const provider = data.provider || 'claude';
 
                 console.log('🚀 Starting shell in:', projectPath);
                 console.log('📋 Session info:', hasSession ? `Resume session ${sessionId}` : 'New session');
+                console.log('🤖 Provider:', provider);
 
                 // First send a welcome message
+                const providerName = provider === 'cursor' ? 'Cursor' : 'Claude';
                 const welcomeMsg = hasSession ?
-                    `\x1b[36mResuming Claude session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
-                    `\x1b[36mStarting new Claude session in: ${projectPath}\x1b[0m\r\n`;
+                    `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
+                    `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
 
                 ws.send(JSON.stringify({
                     type: 'output',
@@ -561,20 +564,38 @@ function handleShellConnection(ws) {
                 }));
 
                 try {
-                    // Prepare the shell command adapted to the platform
+                    // Prepare the shell command adapted to the platform and provider
                     let shellCommand;
-                    if (os.platform() === 'win32') {
-                        if (hasSession && sessionId) {
-                            // Try to resume session, but with fallback to new session if it fails
-                            shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                    if (provider === 'cursor') {
+                        // Use cursor-agent command
+                        if (os.platform() === 'win32') {
+                            if (hasSession && sessionId) {
+                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent --resume="${sessionId}"`;
+                            } else {
+                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent`;
+                            }
                         } else {
-                shellCommand = `Set-Location -Path "${projectPath}"; claude`;
+                            if (hasSession && sessionId) {
+                                shellCommand = `cd "${projectPath}" && cursor-agent --resume="${sessionId}"`;
+                            } else {
+                                shellCommand = `cd "${projectPath}" && cursor-agent`;
+                            }
                         }
                     } else {
-                        if (hasSession && sessionId) {
-                            shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
+                        // Use claude command (default)
+                        if (os.platform() === 'win32') {
+                            if (hasSession && sessionId) {
+                                // Try to resume session, but with fallback to new session if it fails
+                                shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                            } else {
+                                shellCommand = `Set-Location -Path "${projectPath}"; claude`;
+                            }
                         } else {
-                shellCommand = `cd "${projectPath}" && claude`;
+                            if (hasSession && sessionId) {
+                                shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
+                            } else {
+                                shellCommand = `cd "${projectPath}" && claude`;
+                            }
                         }
                     }
 

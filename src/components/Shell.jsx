@@ -436,6 +436,7 @@ function Shell({ selectedProject, selectedSession, isActive }) {
                 projectPath: selectedProject.fullPath || selectedProject.path,
                 sessionId: selectedSession?.id,
                 hasSession: !!selectedSession,
+                provider: selectedSession?.__provider || 'claude',
                 cols: terminal.current.cols,
                 rows: terminal.current.rows
               };
