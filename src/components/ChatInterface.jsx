@@ -1910,11 +1910,23 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           // Handle Cursor streaming format (content_block_delta / content_block_stop)
           if (messageData && typeof messageData === 'object' && messageData.type) {
             if (messageData.type === 'content_block_delta' && messageData.delta?.text) {
-              setChatMessages(prev => [...prev, {
-                type: 'assistant',
-                content: messageData.delta.text,
-                timestamp: new Date()
-              }]);
+              setChatMessages(prev => {
+                // Check if the last message is an assistant message we can append to
+                if (prev.length > 0 && prev[prev.length - 1].type === 'assistant' && !prev[prev.length - 1].isToolUse) {
+                  // Append to the last assistant message
+                  const updatedMessages = [...prev];
+                  const lastMessage = updatedMessages[updatedMessages.length - 1];
+                  lastMessage.content = (lastMessage.content || '') + messageData.delta.text;
+                  return updatedMessages;
+                } else {
+                  // Create a new assistant message for the first delta
+                  return [...prev, {
+                    type: 'assistant',
+                    content: messageData.delta.text,
+                    timestamp: new Date()
+                  }];
+                }
+              });
               return;
             }
             if (messageData.type === 'content_block_stop') {
@@ -2168,10 +2180,15 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             onSessionInactive(cursorSessionId);
           }
           
-          // Store session ID for future use
+          // Store session ID for future use and trigger refresh
           if (cursorSessionId && !currentSessionId) {
             setCurrentSessionId(cursorSessionId);
             sessionStorage.removeItem('pendingSessionId');
+            
+            // Trigger a project refresh to update the sidebar with the new session
+            if (window.refreshProjects) {
+              setTimeout(() => window.refreshProjects(), 500);
+            }
           }
           break;
 
@@ -2223,6 +2240,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           if (pendingSessionId && !currentSessionId && latestMessage.exitCode === 0) {
                 setCurrentSessionId(pendingSessionId);
             sessionStorage.removeItem('pendingSessionId');
+            
+            // Trigger a project refresh to update the sidebar with the new session
+            if (window.refreshProjects) {
+              setTimeout(() => window.refreshProjects(), 500);
+            }
           }
           
           // Clear persisted chat messages after successful completion
@@ -2877,7 +2899,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           </div>
         ) : chatMessages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
-            {!selectedSession && (
+            {!selectedSession && !currentSessionId && (
               <div className="text-center px-6 sm:px-4 py-8">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Choose Your AI Assistant</h2>
                 <p className="text-gray-600 dark:text-gray-400 mb-8">
