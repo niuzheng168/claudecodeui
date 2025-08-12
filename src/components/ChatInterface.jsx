@@ -28,6 +28,49 @@ import { MicButton } from './MicButton.jsx';
 import { api, authenticatedFetch } from '../utils/api';
 
 
+// Format "Claude AI usage limit reached|<epoch>" into a local time string
+function formatUsageLimitText(text) {
+  try {
+    if (typeof text !== 'string') return text;
+    return text.replace(/Claude AI usage limit reached\|(\d{10,13})/g, (match, ts) => {
+      let timestampMs = parseInt(ts, 10);
+      if (!Number.isFinite(timestampMs)) return match;
+      if (timestampMs < 1e12) timestampMs *= 1000; // seconds → ms
+      const reset = new Date(timestampMs);
+
+      // Time HH:mm in local time
+      const timeStr = new Intl.DateTimeFormat(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).format(reset);
+
+      // Human-readable timezone: GMT±HH[:MM] (City)
+      const offsetMinutesLocal = -reset.getTimezoneOffset();
+      const sign = offsetMinutesLocal >= 0 ? '+' : '-';
+      const abs = Math.abs(offsetMinutesLocal);
+      const offH = Math.floor(abs / 60);
+      const offM = abs % 60;
+      const gmt = `GMT${sign}${offH}${offM ? ':' + String(offM).padStart(2, '0') : ''}`;
+      const tzId = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      const cityRaw = tzId.split('/').pop() || '';
+      const city = cityRaw
+        .replace(/_/g, ' ')
+        .toLowerCase()
+        .replace(/\b\w/g, c => c.toUpperCase());
+      const tzHuman = city ? `${gmt} (${city})` : gmt;
+
+      // Readable date like "8 Jun 2025"
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const dateReadable = `${reset.getDate()} ${months[reset.getMonth()]} ${reset.getFullYear()}`;
+
+      return `Claude usage limit reached. Your limit will reset at **${timeStr} ${tzHuman}** - ${dateReadable}`;
+    });
+  } catch {
+    return text;
+  }
+}
+
 // Safe localStorage utility to handle quota exceeded errors
 const safeLocalStorage = {
   setItem: (key, value) => {
@@ -1053,12 +1096,12 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
                         )
                       }}
                     >
-                      {String(message.content || '')}
+                      {formatUsageLimitText(String(message.content || ''))}
                     </ReactMarkdown>
                   </div>
                 ) : (
                   <div className="whitespace-pre-wrap">
-                    {message.content}
+                    {formatUsageLimitText(String(message.content || ''))}
                   </div>
                 )}
               </div>
@@ -2040,18 +2083,8 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                   toolResult: null // Will be updated when result comes in
                 }]);
               } else if (part.type === 'text' && part.text?.trim()) {
-                // Check for usage limit message and format it user-friendly
-                let content = part.text;
-                if (content.includes('Claude AI usage limit reached|')) {
-                  const parts = content.split('|');
-                  if (parts.length === 2) {
-                    const timestamp = parseInt(parts[1]);
-                    if (!isNaN(timestamp)) {
-                      const resetTime = new Date(timestamp * 1000);
-                      content = `Claude AI usage limit reached. The limit will reset on ${resetTime.toLocaleDateString()} at ${resetTime.toLocaleTimeString()}.`;
-                    }
-                  }
-                }
+                // Normalize usage limit message to local time
+                let content = formatUsageLimitText(part.text);
                 
                 // Add regular text message
                 setChatMessages(prev => [...prev, {
@@ -2062,18 +2095,8 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
               }
             }
           } else if (typeof messageData.content === 'string' && messageData.content.trim()) {
-            // Check for usage limit message and format it user-friendly
-            let content = messageData.content;
-            if (content.includes('Claude AI usage limit reached|')) {
-              const parts = content.split('|');
-              if (parts.length === 2) {
-                const timestamp = parseInt(parts[1]);
-                if (!isNaN(timestamp)) {
-                  const resetTime = new Date(timestamp * 1000);
-                  content = `Claude AI usage limit reached. The limit will reset on ${resetTime.toLocaleDateString()} at ${resetTime.toLocaleTimeString()}.`;
-                }
-              }
-            }
+            // Normalize usage limit message to local time
+            let content = formatUsageLimitText(messageData.content);
             
             // Add regular text message
             setChatMessages(prev => [...prev, {
