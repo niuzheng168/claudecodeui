@@ -38,9 +38,11 @@ import mime from 'mime-types';
 
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
 import { spawnClaude, abortClaudeSession } from './claude-cli.js';
+import { spawnCursor, abortCursorSession } from './cursor-cli.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
+import cursorRoutes from './routes/cursor.js';
 import { initializeDatabase } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 
@@ -174,6 +176,9 @@ app.use('/api/git', authenticateToken, gitRoutes);
 
 // MCP API Routes (protected)
 app.use('/api/mcp', authenticateToken, mcpRoutes);
+
+// Cursor API Routes (protected)
+app.use('/api/cursor', authenticateToken, cursorRoutes);
 
 // Static files served after API routes
 app.use(express.static(path.join(__dirname, '../dist')));
@@ -460,12 +465,39 @@ function handleChatConnection(ws) {
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 await spawnClaude(data.command, data.options, ws);
+            } else if (data.type === 'cursor-command') {
+                console.log('🖱️ Cursor message:', data.command || '[Continue/Resume]');
+                console.log('📁 Project:', data.options?.cwd || 'Unknown');
+                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
+                console.log('🤖 Model:', data.options?.model || 'default');
+                await spawnCursor(data.command, data.options, ws);
+            } else if (data.type === 'cursor-resume') {
+                // Backward compatibility: treat as cursor-command with resume and no prompt
+                console.log('🖱️ Cursor resume session (compat):', data.sessionId);
+                await spawnCursor('', {
+                    sessionId: data.sessionId,
+                    resume: true,
+                    cwd: data.options?.cwd
+                }, ws);
             } else if (data.type === 'abort-session') {
                 console.log('🛑 Abort session request:', data.sessionId);
-                const success = abortClaudeSession(data.sessionId);
+                const provider = data.provider || 'claude';
+                const success = provider === 'cursor' 
+                    ? abortCursorSession(data.sessionId)
+                    : abortClaudeSession(data.sessionId);
                 ws.send(JSON.stringify({
                     type: 'session-aborted',
                     sessionId: data.sessionId,
+                    provider,
+                    success
+                }));
+            } else if (data.type === 'cursor-abort') {
+                console.log('🛑 Abort Cursor session:', data.sessionId);
+                const success = abortCursorSession(data.sessionId);
+                ws.send(JSON.stringify({
+                    type: 'session-aborted',
+                    sessionId: data.sessionId,
+                    provider: 'cursor',
                     success
                 }));
             }

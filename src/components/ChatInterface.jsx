@@ -21,10 +21,11 @@ import ReactMarkdown from 'react-markdown';
 import { useDropzone } from 'react-dropzone';
 import TodoList from './TodoList';
 import ClaudeLogo from './ClaudeLogo.jsx';
+import CursorLogo from './CursorLogo.jsx';
 
 import ClaudeStatus from './ClaudeStatus';
 import { MicButton } from './MicButton.jsx';
-import { api } from '../utils/api';
+import { api, authenticatedFetch } from '../utils/api';
 
 // Safe localStorage utility to handle quota exceeded errors
 const safeLocalStorage = {
@@ -189,11 +190,15 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
                 </div>
               ) : (
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1">
-                  <ClaudeLogo className="w-full h-full" />
+                  {(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? (
+                    <CursorLogo className="w-full h-full" />
+                  ) : (
+                    <ClaudeLogo className="w-full h-full" />
+                  )}
                 </div>
               )}
               <div className="text-sm font-medium text-gray-900 dark:text-white">
-                {message.type === 'error' ? 'Error' : 'Claude'}
+                {message.type === 'error' ? 'Error' : ((localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? 'Cursor' : 'Claude')}
               </div>
             </div>
           )}
@@ -1143,6 +1148,48 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
   const [slashPosition, setSlashPosition] = useState(-1);
   const [visibleMessageCount, setVisibleMessageCount] = useState(100);
   const [claudeStatus, setClaudeStatus] = useState(null);
+  const [provider, setProvider] = useState(() => {
+    return localStorage.getItem('selected-provider') || 'claude';
+  });
+  const [cursorModel, setCursorModel] = useState(() => {
+    return localStorage.getItem('cursor-model') || 'gpt-5';
+  });
+  // When selecting a session from Sidebar, auto-switch provider to match session's origin
+  useEffect(() => {
+    if (selectedSession && selectedSession.__provider && selectedSession.__provider !== provider) {
+      setProvider(selectedSession.__provider);
+      localStorage.setItem('selected-provider', selectedSession.__provider);
+    }
+  }, [selectedSession]);
+  
+  // Load Cursor default model from config
+  useEffect(() => {
+    if (provider === 'cursor') {
+      fetch('/api/cursor/config', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth-token')}`
+        }
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.config?.model?.modelId) {
+          // Map Cursor model IDs to our simplified names
+          const modelMap = {
+            'gpt-5': 'gpt-5',
+            'claude-4-sonnet': 'sonnet-4',
+            'sonnet-4': 'sonnet-4',
+            'claude-4-opus': 'opus-4.1',
+            'opus-4.1': 'opus-4.1'
+          };
+          const mappedModel = modelMap[data.config.model.modelId] || data.config.model.modelId;
+          if (!localStorage.getItem('cursor-model')) {
+            setCursorModel(mappedModel);
+          }
+        }
+      })
+      .catch(err => console.error('Error loading Cursor config:', err));
+    }
+  }, [provider]);
 
 
   // Memoized diff calculation to prevent recalculating on every render
@@ -1178,6 +1225,97 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       return data.messages || [];
     } catch (error) {
       console.error('Error loading session messages:', error);
+      return [];
+    } finally {
+      setIsLoadingSessionMessages(false);
+    }
+  }, []);
+
+  // Load Cursor session messages from SQLite via backend
+  const loadCursorSessionMessages = useCallback(async (projectPath, sessionId) => {
+    if (!projectPath || !sessionId) return [];
+    setIsLoadingSessionMessages(true);
+    try {
+      const url = `/api/cursor/sessions/${encodeURIComponent(sessionId)}?projectPath=${encodeURIComponent(projectPath)}`;
+      const res = await authenticatedFetch(url);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const blobs = data?.session?.messages || [];
+      const converted = [];
+      const now = Date.now();
+      let idx = 0;
+      for (const blob of blobs) {
+        const content = blob.content;
+        let text = '';
+        let role = 'assistant';
+        try {
+          if (typeof content === 'string') {
+            // Attempt to extract embedded JSON first
+            const cleaned = content.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
+            let extractedTexts = [];
+            const start = cleaned.indexOf('{');
+            const end = cleaned.lastIndexOf('}');
+            if (start !== -1 && end !== -1 && end > start) {
+              const jsonStr = cleaned.slice(start, end + 1);
+              try {
+                const parsed = JSON.parse(jsonStr);
+                if (parsed && parsed.content && Array.isArray(parsed.content)) {
+                  for (const part of parsed.content) {
+                    if (part?.type === 'text' && part.text) {
+                      extractedTexts.push(part.text);
+                    }
+                  }
+                }
+              } catch (_) {
+                // JSON parse failed; fall back to cleaned text
+              }
+            }
+            if (extractedTexts.length > 0) {
+              extractedTexts.forEach(t => converted.push({ type: 'assistant', content: t, timestamp: new Date(now + (idx++)) }));
+              continue;
+            }
+            // No JSON; use cleaned readable text if any
+            const readable = cleaned.trim();
+            if (readable) {
+              // Heuristic: short single token like 'hey' → user, otherwise assistant
+              const isLikelyUser = /^[a-zA-Z0-9.,!?\s]{1,10}$/.test(readable) && readable.toLowerCase().includes('hey');
+              role = isLikelyUser ? 'user' : 'assistant';
+              text = readable;
+            } else {
+              text = '';
+            }
+          } else if (content?.message?.role && content?.message?.content) {
+            role = content.message.role === 'user' ? 'user' : 'assistant';
+            if (Array.isArray(content.message.content)) {
+              text = content.message.content
+                .map(p => (typeof p === 'string' ? p : (p?.text || '')))
+                .filter(Boolean)
+                .join('\n');
+            } else if (typeof content.message.content === 'string') {
+              text = content.message.content;
+            } else {
+              text = JSON.stringify(content.message.content);
+            }
+          } else if (content?.content) {
+            // Some Cursor blobs may have { content: string }
+            text = typeof content.content === 'string' ? content.content : JSON.stringify(content.content);
+          } else {
+            text = JSON.stringify(content);
+          }
+        } catch (e) {
+          text = String(content);
+        }
+        if (text && text.trim()) {
+          converted.push({
+            type: role,
+            content: text,
+            timestamp: new Date(now + (idx++))
+          });
+        }
+      }
+      return converted;
+    } catch (e) {
+      console.error('Error loading Cursor session messages:', e);
       return [];
     } finally {
       setIsLoadingSessionMessages(false);
@@ -1349,31 +1487,47 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     // Load session messages when session changes
     const loadMessages = async () => {
       if (selectedSession && selectedProject) {
-        setCurrentSessionId(selectedSession.id);
+        const provider = localStorage.getItem('selected-provider') || 'claude';
         
-        // Only load messages from API if this is a user-initiated session change
-        // For system-initiated changes, preserve existing messages and rely on WebSocket
-        if (!isSystemSessionChange) {
-          const messages = await loadSessionMessages(selectedProject.name, selectedSession.id);
-          setSessionMessages(messages);
-          // convertedMessages will be automatically updated via useMemo
-          // Scroll to bottom after loading session messages if auto-scroll is enabled
-          if (autoScrollToBottom) {
-            setTimeout(() => scrollToBottom(), 200);
-          }
+        if (provider === 'cursor') {
+          // For Cursor, set the session ID for resuming
+          setCurrentSessionId(selectedSession.id);
+          sessionStorage.setItem('cursorSessionId', selectedSession.id);
+          
+          // Load historical messages for Cursor session from SQLite
+          const projectPath = selectedProject.fullPath || selectedProject.path;
+          const converted = await loadCursorSessionMessages(projectPath, selectedSession.id);
+          setSessionMessages([]);
+          setChatMessages(converted);
         } else {
-          // Reset the flag after handling system session change
-          setIsSystemSessionChange(false);
+          // For Claude, load messages normally
+          setCurrentSessionId(selectedSession.id);
+          
+          // Only load messages from API if this is a user-initiated session change
+          // For system-initiated changes, preserve existing messages and rely on WebSocket
+          if (!isSystemSessionChange) {
+            const messages = await loadSessionMessages(selectedProject.name, selectedSession.id);
+            setSessionMessages(messages);
+            // convertedMessages will be automatically updated via useMemo
+            // Scroll to bottom after loading session messages if auto-scroll is enabled
+            if (autoScrollToBottom) {
+              setTimeout(() => scrollToBottom(), 200);
+            }
+          } else {
+            // Reset the flag after handling system session change
+            setIsSystemSessionChange(false);
+          }
         }
       } else {
         setChatMessages([]);
         setSessionMessages([]);
         setCurrentSessionId(null);
+        sessionStorage.removeItem('cursorSessionId');
       }
     };
     
     loadMessages();
-  }, [selectedSession, selectedProject, loadSessionMessages, scrollToBottom, isSystemSessionChange]);
+  }, [selectedSession, selectedProject, loadSessionMessages, loadCursorSessionMessages, scrollToBottom, isSystemSessionChange]);
 
   // Update chatMessages when convertedMessages changes
   useEffect(() => {
@@ -1441,6 +1595,22 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
         case 'claude-response':
           const messageData = latestMessage.data.message || latestMessage.data;
           
+          // Handle Cursor streaming format (content_block_delta / content_block_stop)
+          if (messageData && typeof messageData === 'object' && messageData.type) {
+            if (messageData.type === 'content_block_delta' && messageData.delta?.text) {
+              setChatMessages(prev => [...prev, {
+                type: 'assistant',
+                content: messageData.delta.text,
+                timestamp: new Date()
+              }]);
+              return;
+            }
+            if (messageData.type === 'content_block_stop') {
+              // Nothing specific to do; leave as-is
+              return;
+            }
+          }
+
           // Handle Claude CLI session duplication bug workaround:
           // When resuming a session, Claude CLI creates a new session instead of resuming.
           // We detect this by checking for system/init messages with session_id that differs
@@ -1603,6 +1773,113 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             content: `Error: ${latestMessage.error}`,
             timestamp: new Date()
           }]);
+          break;
+          
+        case 'cursor-system':
+          // Handle Cursor system/init messages similar to Claude
+          try {
+            const cdata = latestMessage.data;
+            if (cdata && cdata.type === 'system' && cdata.subtype === 'init' && cdata.session_id) {
+              // If we already have a session and this differs, switch (duplication/redirect)
+              if (currentSessionId && cdata.session_id !== currentSessionId) {
+                console.log('🔄 Cursor session switch detected:', { originalSession: currentSessionId, newSession: cdata.session_id });
+                setIsSystemSessionChange(true);
+                if (onNavigateToSession) {
+                  onNavigateToSession(cdata.session_id);
+                }
+                return;
+              }
+              // If we don't yet have a session, adopt this one
+              if (!currentSessionId) {
+                console.log('🔄 Cursor new session init detected:', { newSession: cdata.session_id });
+                setIsSystemSessionChange(true);
+                if (onNavigateToSession) {
+                  onNavigateToSession(cdata.session_id);
+                }
+                return;
+              }
+            }
+            // For other cursor-system messages, avoid dumping raw objects to chat
+            console.log('Cursor system message:', latestMessage.data);
+          } catch (e) {
+            console.warn('Error handling cursor-system message:', e);
+          }
+          break;
+          
+        case 'cursor-user':
+          // Handle Cursor user messages (usually echoes)
+          console.log('Cursor user message:', latestMessage.data);
+          // Don't add user messages as they're already shown from input
+          break;
+          
+        case 'cursor-tool-use':
+          // Handle Cursor tool use messages
+          setChatMessages(prev => [...prev, {
+            type: 'assistant',
+            content: `Using tool: ${latestMessage.tool} ${latestMessage.input ? `with ${latestMessage.input}` : ''}`,
+            timestamp: new Date(),
+            isToolUse: true,
+            toolName: latestMessage.tool,
+            toolInput: latestMessage.input
+          }]);
+          break;
+        
+        case 'cursor-error':
+          // Show Cursor errors as error messages in chat
+          setChatMessages(prev => [...prev, {
+            type: 'error',
+            content: `Cursor error: ${latestMessage.error || 'Unknown error'}`,
+            timestamp: new Date()
+          }]);
+          break;
+          
+        case 'cursor-result':
+          // Handle Cursor completion and final result text
+          setIsLoading(false);
+          setCanAbortSession(false);
+          setClaudeStatus(null);
+          try {
+            const r = latestMessage.data || {};
+            const textResult = typeof r.result === 'string' ? r.result : '';
+            if (textResult && textResult.trim()) {
+              setChatMessages(prev => [...prev, {
+                type: r.is_error ? 'error' : 'assistant',
+                content: textResult,
+                timestamp: new Date()
+              }]);
+            }
+          } catch (e) {
+            console.warn('Error handling cursor-result message:', e);
+          }
+          
+          // Mark session as inactive
+          const cursorSessionId = currentSessionId || sessionStorage.getItem('pendingSessionId');
+          if (cursorSessionId && onSessionInactive) {
+            onSessionInactive(cursorSessionId);
+          }
+          
+          // Store session ID for future use
+          if (cursorSessionId && !currentSessionId) {
+            setCurrentSessionId(cursorSessionId);
+            sessionStorage.removeItem('pendingSessionId');
+          }
+          break;
+
+        case 'cursor-output':
+          // Handle Cursor raw terminal output; strip ANSI and ignore empty control-only payloads
+          try {
+            const raw = String(latestMessage.data ?? '');
+            const cleaned = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
+            if (cleaned) {
+              setChatMessages(prev => [...prev, {
+                type: 'assistant',
+                content: cleaned,
+                timestamp: new Date()
+              }]);
+            }
+          } catch (e) {
+            console.warn('Error handling cursor-output message:', e);
+          }
           break;
           
         case 'claude-complete':
@@ -2027,10 +2304,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       onSessionActive(sessionToActivate);
     }
 
-    // Get tools settings from localStorage
+    // Get tools settings from localStorage based on provider
     const getToolsSettings = () => {
       try {
-        const savedSettings = safeLocalStorage.getItem('claude-tools-settings');
+        const settingsKey = provider === 'cursor' ? 'cursor-tools-settings' : 'claude-tools-settings';
+        const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
           return JSON.parse(savedSettings);
         }
@@ -2046,20 +2324,40 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
 
     const toolsSettings = getToolsSettings();
 
-    // Send command to Claude CLI via WebSocket with images
-    sendMessage({
-      type: 'claude-command',
-      command: input,
-      options: {
-        projectPath: selectedProject.path,
-        cwd: selectedProject.fullPath,
+    // Send command based on provider
+    if (provider === 'cursor') {
+      // Send Cursor command (always use cursor-command; include resume/sessionId when replying)
+      sendMessage({
+        type: 'cursor-command',
+        command: input,
         sessionId: currentSessionId,
-        resume: !!currentSessionId,
-        toolsSettings: toolsSettings,
-        permissionMode: permissionMode,
-        images: uploadedImages // Pass images to backend
-      }
-    });
+        options: {
+          // Prefer fullPath (actual cwd for project), fallback to path
+          cwd: selectedProject.fullPath || selectedProject.path,
+          projectPath: selectedProject.fullPath || selectedProject.path,
+          sessionId: currentSessionId,
+          resume: !!currentSessionId,
+          model: cursorModel,
+          skipPermissions: toolsSettings?.skipPermissions || false,
+          toolsSettings: toolsSettings
+        }
+      });
+    } else {
+      // Send Claude command (existing code)
+      sendMessage({
+        type: 'claude-command',
+        command: input,
+        options: {
+          projectPath: selectedProject.path,
+          cwd: selectedProject.fullPath,
+          sessionId: currentSessionId,
+          resume: !!currentSessionId,
+          toolsSettings: toolsSettings,
+          permissionMode: permissionMode,
+          images: uploadedImages // Pass images to backend
+        }
+      });
+    }
 
     setInput('');
     setAttachedImages([]);
@@ -2211,7 +2509,8 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     if (currentSessionId && canAbortSession) {
       sendMessage({
         type: 'abort-session',
-        sessionId: currentSessionId
+        sessionId: currentSessionId,
+        provider: provider
       });
     }
   };
@@ -2303,10 +2602,14 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           <div className="chat-message assistant">
             <div className="w-full">
               <div className="flex items-center space-x-3 mb-2">
-                <div className="w-8 h-8 bg-gray-600 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0">
-                  C
+                <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0 p-1 bg-gray-600">
+                  {(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? (
+                    <CursorLogo className="w-full h-full" />
+                  ) : (
+                    <ClaudeLogo className="w-full h-full" />
+                  )}
                 </div>
-                <div className="text-sm font-medium text-gray-900 dark:text-white">Claude</div>
+                <div className="text-sm font-medium text-gray-900 dark:text-white">{(localStorage.getItem('selected-provider') || 'claude') === 'cursor' ? 'Cursor' : 'Claude'}</div>
                 {/* Abort button removed - functionality not yet implemented at backend */}
               </div>
               <div className="w-full text-sm text-gray-500 dark:text-gray-400 pl-3 sm:pl-0">
@@ -2329,12 +2632,66 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
       <div className={`p-2 sm:p-4 md:p-6 flex-shrink-0 ${
         isInputFocused ? 'pb-2 sm:pb-4 md:pb-6' : 'pb-16 sm:pb-4 md:pb-6'
       }`}>
-        {/* Claude Working Status - positioned above the input form */}
-        <ClaudeStatus 
-          status={claudeStatus}
-          isLoading={isLoading}
-          onAbort={handleAbortSession}
-        />
+        {/* Provider Selection and Working Status - positioned above the input form */}
+        <div className="max-w-4xl mx-auto mb-2">
+          <div className="flex items-center justify-between gap-3">
+            {/* Provider & Model Selection or Fixed Provider for existing session */}
+            <div className="flex items-center gap-2">
+              {selectedSession?.__provider ? (
+                <div className="flex items-center gap-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg">
+                  {selectedSession.__provider === 'cursor' ? (
+                    <CursorLogo className="w-4 h-4" />
+                  ) : (
+                    <ClaudeLogo className="w-4 h-4" />
+                  )}
+                  <span className="text-sm capitalize">{selectedSession.__provider}</span>
+                </div>
+              ) : (
+                <>
+                  <select
+                    value={provider}
+                    onChange={(e) => {
+                      const newProvider = e.target.value;
+                      setProvider(newProvider);
+                      localStorage.setItem('selected-provider', newProvider);
+                    }}
+                    className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={isLoading}
+                  >
+                    <option value="claude">Claude</option>
+                    <option value="cursor">Cursor</option>
+                  </select>
+                  {provider === 'cursor' && (
+                    <select
+                      value={cursorModel}
+                      onChange={(e) => {
+                        const newModel = e.target.value;
+                        setCursorModel(newModel);
+                        localStorage.setItem('cursor-model', newModel);
+                      }}
+                      className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      disabled={isLoading}
+                    >
+                      <option value="gpt-5">GPT-5</option>
+                      <option value="sonnet-4">Sonnet-4</option>
+                      <option value="opus-4.1">Opus 4.1</option>
+                    </select>
+                  )}
+                </>
+              )}
+            </div>
+            
+            {/* Status Display */}
+            <div className="flex-1">
+              <ClaudeStatus 
+                status={claudeStatus}
+                isLoading={isLoading}
+                onAbort={handleAbortSession}
+                provider={provider}
+              />
+            </div>
+          </div>
+        </div>
         
         {/* Permission Mode Selector with scroll to bottom button - Above input, clickable for mobile */}
         <div className="max-w-4xl mx-auto mb-3">
