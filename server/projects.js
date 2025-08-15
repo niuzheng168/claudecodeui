@@ -37,9 +37,8 @@
  * 
  * ## Critical Limitations
  * 
- * - **CANNOT discover Cursor-only projects**: Since Cursor uses one-way MD5 hashes,
- *   we cannot reverse-engineer project paths. We can ONLY find Cursor sessions
- *   for projects we already know about from other sources.
+ * - **CANNOT discover Cursor-only projects**: From a quick check, there was no mention of
+ *   the cwd of each project. if someone has the time, you can try to reverse engineer it.
  * 
  * - **Project relocation breaks history**: If a project directory is moved or renamed,
  *   the MD5 hash changes, making old Cursor sessions inaccessible unless the old
