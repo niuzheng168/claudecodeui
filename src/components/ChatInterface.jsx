@@ -1063,7 +1063,7 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
                 )}
                 
                 {message.type === 'assistant' ? (
-                  <div className="prose prose-sm max-w-none dark:prose-invert prose-gray [&_code]:!bg-transparent [&_code]:!p-0">
+                  <div className="prose prose-sm max-w-none dark:prose-invert prose-gray [&_code]:!bg-transparent [&_code]:!p-0 [&_pre]:!bg-transparent [&_pre]:!border-0 [&_pre]:!p-0">
                     <ReactMarkdown
                       components={{
                         code: ({node, inline, className, children, ...props}) => {
@@ -1072,8 +1072,8 @@ const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFile
                               {children}
                             </strong>
                           ) : (
-                            <div className="bg-gray-100 dark:bg-gray-800 p-3 rounded-lg overflow-hidden my-2">
-                              <code className="text-gray-800 dark:text-gray-200 text-sm font-mono block whitespace-pre-wrap break-words" {...props}>
+                            <div className="bg-gray-800 dark:bg-gray-800 border border-gray-600/30 dark:border-gray-600/30 p-3 rounded-lg overflow-hidden my-2">
+                              <code className="text-gray-100 dark:text-gray-200 text-sm font-mono block whitespace-pre-wrap break-words" {...props}>
                                 {children}
                               </code>
                             </div>
