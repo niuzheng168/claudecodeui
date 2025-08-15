@@ -1,3 +1,63 @@
+/**
+ * PROJECT DISCOVERY AND MANAGEMENT SYSTEM
+ * ========================================
+ * 
+ * This module manages project discovery for both Claude CLI and Cursor CLI sessions.
+ * 
+ * ## Architecture Overview
+ * 
+ * 1. **Claude Projects** (stored in ~/.claude/projects/)
+ *    - Each project is a directory named with the project path encoded (/ replaced with -)
+ *    - Contains .jsonl files with conversation history including 'cwd' field
+ *    - Project metadata stored in ~/.claude/project-config.json
+ * 
+ * 2. **Cursor Projects** (stored in ~/.cursor/chats/)
+ *    - Each project directory is named with MD5 hash of the absolute project path
+ *    - Example: /Users/john/myproject -> MD5 -> a1b2c3d4e5f6...
+ *    - Contains session directories with SQLite databases (store.db)
+ *    - Project path is NOT stored in the database - only in the MD5 hash
+ * 
+ * ## Project Discovery Strategy
+ * 
+ * 1. **Claude Projects Discovery**:
+ *    - Scan ~/.claude/projects/ directory for Claude project folders
+ *    - Extract actual project path from .jsonl files (cwd field)
+ *    - Fall back to decoded directory name if no sessions exist
+ * 
+ * 2. **Cursor Sessions Discovery**:
+ *    - For each KNOWN project (from Claude or manually added)
+ *    - Compute MD5 hash of the project's absolute path
+ *    - Check if ~/.cursor/chats/{md5_hash}/ directory exists
+ *    - Read session metadata from SQLite store.db files
+ * 
+ * 3. **Manual Project Addition**:
+ *    - Users can manually add project paths via UI
+ *    - Stored in ~/.claude/project-config.json with 'manuallyAdded' flag
+ *    - Allows discovering Cursor sessions for projects without Claude sessions
+ * 
+ * ## Critical Limitations
+ * 
+ * - **CANNOT discover Cursor-only projects**: Since Cursor uses one-way MD5 hashes,
+ *   we cannot reverse-engineer project paths. We can ONLY find Cursor sessions
+ *   for projects we already know about from other sources.
+ * 
+ * - **Project relocation breaks history**: If a project directory is moved or renamed,
+ *   the MD5 hash changes, making old Cursor sessions inaccessible unless the old
+ *   path is known and manually added.
+ * 
+ * ## Error Handling
+ * 
+ * - Missing ~/.claude directory is handled gracefully with automatic creation
+ * - ENOENT errors are caught and handled without crashing
+ * - Empty arrays returned when no projects/sessions exist
+ * 
+ * ## Caching Strategy
+ * 
+ * - Project directory extraction is cached to minimize file I/O
+ * - Cache is cleared when project configuration changes
+ * - Session data is fetched on-demand, not cached
+ */
+
 import { promises as fs } from 'fs';
 import fsSync from 'fs';
 import path from 'path';
@@ -9,12 +69,10 @@ import os from 'os';
 
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
-let cacheTimestamp = Date.now();
 
 // Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
-  cacheTimestamp = Date.now();
 }
 
 // Load project configuration file
@@ -31,7 +89,18 @@ async function loadProjectConfig() {
 
 // Save project configuration file
 async function saveProjectConfig(config) {
-  const configPath = path.join(process.env.HOME, '.claude', 'project-config.json');
+  const claudeDir = path.join(process.env.HOME, '.claude');
+  const configPath = path.join(claudeDir, 'project-config.json');
+  
+  // Ensure the .claude directory exists
+  try {
+    await fs.mkdir(claudeDir, { recursive: true });
+  } catch (error) {
+    if (error.code !== 'EEXIST') {
+      throw error;
+    }
+  }
+  
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
 }
 
@@ -79,6 +148,9 @@ async function extractProjectDirectory(projectName) {
   let extractedPath;
   
   try {
+    // Check if the project directory exists
+    await fs.access(projectDir);
+    
     const files = await fs.readdir(projectDir);
     const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
     
@@ -156,9 +228,14 @@ async function extractProjectDirectory(projectName) {
     return extractedPath;
     
   } catch (error) {
-    console.error(`Error extracting project directory for ${projectName}:`, error);
-    // Fall back to decoded project name
-    extractedPath = projectName.replace(/-/g, '/');
+    // If the directory doesn't exist, just use the decoded project name
+    if (error.code === 'ENOENT') {
+      extractedPath = projectName.replace(/-/g, '/');
+    } else {
+      console.error(`Error extracting project directory for ${projectName}:`, error);
+      // Fall back to decoded project name for other errors
+      extractedPath = projectName.replace(/-/g, '/');
+    }
     
     // Cache the fallback result too
     projectDirectoryCache.set(projectName, extractedPath);
@@ -174,7 +251,10 @@ async function getProjects() {
   const existingProjects = new Set();
   
   try {
-    // First, get existing projects from the file system
+    // Check if the .claude/projects directory exists
+    await fs.access(claudeDir);
+    
+    // First, get existing Claude projects from the file system
     const entries = await fs.readdir(claudeDir, { withFileTypes: true });
     
     for (const entry of entries) {
@@ -223,7 +303,10 @@ async function getProjects() {
       }
     }
   } catch (error) {
-    console.error('Error reading projects directory:', error);
+    // If the directory doesn't exist (ENOENT), that's okay - just continue with empty projects
+    if (error.code !== 'ENOENT') {
+      console.error('Error reading projects directory:', error);
+    }
   }
   
   // Add manually configured projects that don't exist as folders yet
@@ -631,7 +714,8 @@ async function addProjectManually(projectPath, displayName = null) {
     fullPath: absolutePath,
     displayName: displayName || await generateDisplayName(projectName, absolutePath),
     isManuallyAdded: true,
-    sessions: []
+    sessions: [],
+    cursorSessions: []
   };
 }
 

@@ -105,6 +105,8 @@ temp/
 .taskmaster/
 .cline/
 .windsurf/
+CLAUDE.md
+
 
 # Database files
 *.db
@@ -124,5 +126,5 @@ dev-debug.log
 # OS specific
 
 # Task files
-tasks.json
-tasks/ 
+# tasks.json
+# tasks/ 
