@@ -8,7 +8,10 @@ import { FolderOpen, Folder, Plus, MessageSquare, Clock, ChevronDown, ChevronRig
 import { cn } from '../lib/utils';
 import ClaudeLogo from './ClaudeLogo';
 import CursorLogo from './CursorLogo.jsx';
+import TaskIndicator from './TaskIndicator';
 import { api } from '../utils/api';
+import { useTaskMaster } from '../contexts/TaskMasterContext';
+import { useTasksSettings } from '../contexts/TasksSettingsContext';
 
 // Move formatTimeAgo outside component to avoid recreation on every render
 const formatTimeAgo = (dateString, currentTime) => {
@@ -69,6 +72,10 @@ function Sidebar({
   const [editingSessionName, setEditingSessionName] = useState('');
   const [generatingSummary, setGeneratingSummary] = useState({});
   const [searchFilter, setSearchFilter] = useState('');
+
+  // TaskMaster context
+  const { setCurrentProject, mcpServerStatus } = useTaskMaster();
+  const { tasksEnabled } = useTasksSettings();
 
   
   // Starred projects state - persisted in localStorage
@@ -417,6 +424,15 @@ function Sidebar({
     return displayName.includes(searchLower) || projectName.includes(searchLower);
   });
 
+  // Enhanced project selection that updates both the main UI and TaskMaster context
+  const handleProjectSelect = (project) => {
+    // Call the original project select handler
+    onProjectSelect(project);
+    
+    // Update TaskMaster context with the selected project
+    setCurrentProject(project);
+  };
+
   return (
     <div className="h-full flex flex-col bg-card md:select-none">
       {/* Header */}
@@ -500,6 +516,7 @@ function Sidebar({
         </div>
       </div>
       
+
       {/* New Project Form */}
       {showNewProject && (
         <div className="md:p-3 md:border-b md:border-border md:bg-muted/30">
@@ -717,9 +734,25 @@ function Sidebar({
                                 />
                               ) : (
                                 <>
-                                  <h3 className="text-sm font-medium text-foreground truncate">
-                                    {project.displayName}
-                                  </h3>
+                                  <div className="flex items-center justify-between min-w-0 flex-1">
+                                    <h3 className="text-sm font-medium text-foreground truncate">
+                                      {project.displayName}
+                                    </h3>
+                                    {tasksEnabled && (
+                                      <TaskIndicator 
+                                        status={(() => {
+                                          const projectConfigured = project.taskmaster?.hasTaskmaster;
+                                          const mcpConfigured = mcpServerStatus?.hasMCPServer && mcpServerStatus?.isConfigured;
+                                          if (projectConfigured && mcpConfigured) return 'fully-configured';
+                                          if (projectConfigured) return 'taskmaster-only';
+                                          if (mcpConfigured) return 'mcp-only';
+                                          return 'not-configured';
+                                        })()} 
+                                        size="xs"
+                                        className="flex-shrink-0 ml-2"
+                                      />
+                                    )}
+                                  </div>
                                   <p className="text-xs text-muted-foreground">
                                     {(() => {
                                       const sessionCount = getAllSessions(project).length;
@@ -825,13 +858,13 @@ function Sidebar({
                       onClick={() => {
                         // Desktop behavior: select project and toggle
                         if (selectedProject?.name !== project.name) {
-                          onProjectSelect(project);
+                          handleProjectSelect(project);
                         }
                         toggleProject(project.name);
                       }}
                       onTouchEnd={handleTouchClick(() => {
                         if (selectedProject?.name !== project.name) {
-                          onProjectSelect(project);
+                          handleProjectSelect(project);
                         }
                         toggleProject(project.name);
                       })}
@@ -1013,11 +1046,11 @@ function Sidebar({
                                   isActive ? "border-green-500/30 bg-green-50/5 dark:bg-green-900/5" : "border-border/30"
                                 )}
                                 onClick={() => {
-                                  onProjectSelect(project);
+                                  handleProjectSelect(project);
                                   onSessionSelect(session);
                                 }}
                                 onTouchEnd={handleTouchClick(() => {
-                                  onProjectSelect(project);
+                                  handleProjectSelect(project);
                                   onSessionSelect(session);
                                 })}
                               >
@@ -1239,7 +1272,7 @@ function Sidebar({
                         <button
                           className="w-full h-8 bg-primary hover:bg-primary/90 text-primary-foreground rounded-md flex items-center justify-center gap-2 font-medium text-xs active:scale-[0.98] transition-all duration-150"
                           onClick={() => {
-                            onProjectSelect(project);
+                            handleProjectSelect(project);
                             onNewSession(project);
                           }}
                         >
