@@ -77,6 +77,35 @@ function AppContent() {
   const [activeSessions, setActiveSessions] = useState(new Set()); // Track sessions with active conversations
   
   const { ws, sendMessage, messages } = useWebSocketContext();
+  
+  // Detect if running as PWA
+  const [isPWA, setIsPWA] = useState(false);
+  
+  useEffect(() => {
+    // Check if running in standalone mode (PWA)
+    const checkPWA = () => {
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+                          window.navigator.standalone ||
+                          document.referrer.includes('android-app://');
+      setIsPWA(isStandalone);
+      
+      // Add class to body for CSS targeting
+      if (isStandalone) {
+        document.body.classList.add('pwa-mode');
+      } else {
+        document.body.classList.remove('pwa-mode');
+      }
+    };
+    
+    checkPWA();
+    
+    // Listen for changes
+    window.matchMedia('(display-mode: standalone)').addEventListener('change', checkPWA);
+    
+    return () => {
+      window.matchMedia('(display-mode: standalone)').removeEventListener('change', checkPWA);
+    };
+  }, []);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -561,6 +590,8 @@ function AppContent() {
               latestVersion={latestVersion}
               currentVersion={currentVersion}
               onShowVersionModal={() => setShowVersionModal(true)}
+              isPWA={isPWA}
+              isMobile={isMobile}
             />
           </div>
         </div>
@@ -606,6 +637,8 @@ function AppContent() {
               latestVersion={latestVersion}
               currentVersion={currentVersion}
               onShowVersionModal={() => setShowVersionModal(true)}
+              isPWA={isPWA}
+              isMobile={isMobile}
             />
           </div>
         </div>
@@ -622,6 +655,7 @@ function AppContent() {
           sendMessage={sendMessage}
           messages={messages}
           isMobile={isMobile}
+          isPWA={isPWA}
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}

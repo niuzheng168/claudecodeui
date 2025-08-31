@@ -54,7 +54,9 @@ function Sidebar({
   updateAvailable,
   latestVersion,
   currentVersion,
-  onShowVersionModal
+  onShowVersionModal,
+  isPWA,
+  isMobile
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [editingProject, setEditingProject] = useState(null);
@@ -434,7 +436,10 @@ function Sidebar({
   };
 
   return (
-    <div className="h-full flex flex-col bg-card md:select-none">
+    <div 
+      className="h-full flex flex-col bg-card md:select-none"
+      style={isPWA && isMobile ? { paddingTop: '44px' } : {}}
+    >
       {/* Header */}
       <div className="md:p-4 md:border-b md:border-border">
         {/* Desktop Header */}
@@ -479,7 +484,10 @@ function Sidebar({
         </div>
         
         {/* Mobile Header */}
-        <div className="md:hidden p-3 border-b border-border">
+        <div 
+          className="md:hidden p-3 border-b border-border"
+          style={isPWA && isMobile ? { paddingTop: '16px' } : {}}
+        >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
