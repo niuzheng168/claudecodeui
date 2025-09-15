@@ -572,48 +572,61 @@ async function getSessions(projectName, limit = 5, offset = 0) {
       }
     });
     
-    // Detect session continuations using leafUuid
-    const sessionContinuations = new Map();
-    let pendingContinuationInfo = null;
-    
+    // Group sessions by first user message ID
+    const sessionGroups = new Map(); // firstUserMsgId -> { latestSession, allSessions[] }
+    const sessionToFirstUserMsgId = new Map(); // sessionId -> firstUserMsgId
+
+    // Find the first user message for each session
     allEntries.forEach(entry => {
-      // Summary entries without sessionId indicate a session continuation
-      if (entry.type === 'summary' && !entry.sessionId && (entry.leafUuid || entry.leafUUID)) {
-        pendingContinuationInfo = {
-          leafUuid: entry.leafUuid || entry.leafUUID,
-          summary: entry.summary || 'Continued Session'
-        };
-        return;
-      }
-      
-      if (entry.sessionId) {
-        const session = allSessions.get(entry.sessionId);
-        
-        // Apply pending continuation info
-        if (session && pendingContinuationInfo) {
-          const previousSession = uuidToSessionMap.get(pendingContinuationInfo.leafUuid);
-          if (previousSession) {
-            session.summary = pendingContinuationInfo.summary;
-            sessionContinuations.set(entry.sessionId, previousSession);
-          }
-          pendingContinuationInfo = null;
-        }
-        
-        // Handle summary entries with sessionId that have leafUuid
-        if (entry.type === 'summary' && (entry.leafUuid || entry.leafUUID)) {
-          const leafUuid = entry.leafUuid || entry.leafUUID;
-          const previousSession = uuidToSessionMap.get(leafUuid);
-          if (previousSession && session) {
-            sessionContinuations.set(entry.sessionId, previousSession);
+      if (entry.sessionId && entry.type === 'user' && entry.parentUuid === null && entry.uuid) {
+        // This is a first user message in a session (parentUuid is null)
+        const firstUserMsgId = entry.uuid;
+
+        if (!sessionToFirstUserMsgId.has(entry.sessionId)) {
+          sessionToFirstUserMsgId.set(entry.sessionId, firstUserMsgId);
+
+          const session = allSessions.get(entry.sessionId);
+          if (session) {
+            if (!sessionGroups.has(firstUserMsgId)) {
+              sessionGroups.set(firstUserMsgId, {
+                latestSession: session,
+                allSessions: [session]
+              });
+            } else {
+              const group = sessionGroups.get(firstUserMsgId);
+              group.allSessions.push(session);
+
+              // Update latest session if this one is more recent
+              if (new Date(session.lastActivity) > new Date(group.latestSession.lastActivity)) {
+                group.latestSession = session;
+              }
+            }
           }
         }
       }
     });
-    
-    // Filter out continued sessions - only show the latest in each timeline
-    const continuedSessions = new Set(sessionContinuations.values());
-    const visibleSessions = Array.from(allSessions.values())
-      .filter(session => !continuedSessions.has(session.id))
+
+    // Collect all sessions that don't belong to any group (standalone sessions)
+    const groupedSessionIds = new Set();
+    sessionGroups.forEach(group => {
+      group.allSessions.forEach(session => groupedSessionIds.add(session.id));
+    });
+
+    const standaloneSessionsArray = Array.from(allSessions.values())
+      .filter(session => !groupedSessionIds.has(session.id));
+
+    // Combine grouped sessions (only show latest from each group) + standalone sessions
+    const latestFromGroups = Array.from(sessionGroups.values()).map(group => {
+      const session = { ...group.latestSession };
+      // Add metadata about grouping
+      if (group.allSessions.length > 1) {
+        session.isGrouped = true;
+        session.groupSize = group.allSessions.length;
+        session.groupSessions = group.allSessions.map(s => s.id);
+      }
+      return session;
+    });
+    const visibleSessions = [...latestFromGroups, ...standaloneSessionsArray]
       .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
     
     const total = visibleSessions.length;

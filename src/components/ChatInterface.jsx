@@ -2017,6 +2017,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
           // When resuming a session, Claude CLI creates a new session instead of resuming.
           // We detect this by checking for system/init messages with session_id that differs
           // from our current session. When found, we need to switch the user to the new session.
+          // This works exactly like new session detection - preserve messages during navigation.
           if (latestMessage.data.type === 'system' && 
               latestMessage.data.subtype === 'init' && 
               latestMessage.data.session_id && 
@@ -2029,6 +2030,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
             });
             
             // Mark this as a system-initiated session change to preserve messages
+            // This works exactly like new session init - messages stay visible during navigation
             setIsSystemSessionChange(true);
             
             // Switch to the new session using React Router navigation
@@ -2743,7 +2745,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
     // Get tools settings from localStorage based on provider
     const getToolsSettings = () => {
       try {
-        const settingsKey = provider === 'cursor' ? 'cursor-tools-settings' : 'claude-tools-settings';
+        const settingsKey = provider === 'cursor' ? 'cursor-tools-settings' : 'claude-settings';
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
           return JSON.parse(savedSettings);

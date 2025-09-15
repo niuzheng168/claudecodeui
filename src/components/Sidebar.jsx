@@ -145,7 +145,7 @@ function Sidebar({
   useEffect(() => {
     const loadSortOrder = () => {
       try {
-        const savedSettings = localStorage.getItem('claude-tools-settings');
+        const savedSettings = localStorage.getItem('claude-settings');
         if (savedSettings) {
           const settings = JSON.parse(savedSettings);
           setProjectSortOrder(settings.projectSortOrder || 'name');
@@ -160,7 +160,7 @@ function Sidebar({
 
     // Listen for storage changes
     const handleStorageChange = (e) => {
-      if (e.key === 'claude-tools-settings') {
+      if (e.key === 'claude-settings') {
         loadSortOrder();
       }
     };
@@ -766,8 +766,8 @@ function Sidebar({
           </div>
           
           {/* Mobile Form - Simple Overlay */}
-          <div className="md:hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm">
-            <div className="absolute bottom-0 left-0 right-0 bg-card rounded-t-lg border-t border-border p-4 space-y-4 animate-in slide-in-from-bottom duration-300">
+          <div className="md:hidden fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end justify-center px-4 pb-24">
+            <div className="w-full max-w-sm bg-card rounded-t-lg border-t border-border p-4 space-y-4 animate-in slide-in-from-bottom duration-300">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 bg-primary/10 rounded-md flex items-center justify-center">
@@ -1647,7 +1647,7 @@ function Sidebar({
           onClick={onShowSettings}
         >
           <Settings className="w-3 h-3" />
-          <span className="text-xs">Tools Settings</span>
+          <span className="text-xs">Settings</span>
         </Button>
       </div>
     </div>
