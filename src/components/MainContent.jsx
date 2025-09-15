@@ -15,7 +15,7 @@ import React, { useState, useEffect } from 'react';
 import ChatInterface from './ChatInterface';
 import FileTree from './FileTree';
 import CodeEditor from './CodeEditor';
-import Shell from './Shell';
+import StandaloneShell from './StandaloneShell';
 import GitPanel from './GitPanel';
 import ErrorBoundary from './ErrorBoundary';
 import ClaudeLogo from './ClaudeLogo';
@@ -436,10 +436,11 @@ function MainContent({
           <FileTree selectedProject={selectedProject} />
         </div>
         <div className={`h-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
-          <Shell 
-            selectedProject={selectedProject} 
-            selectedSession={selectedSession}
+          <StandaloneShell
+            project={selectedProject}
+            session={selectedSession}
             isActive={activeTab === 'shell'}
+            showHeader={false}
           />
         </div>
         <div className={`h-full overflow-hidden ${activeTab === 'git' ? 'block' : 'hidden'}`}>
