@@ -899,22 +899,16 @@ async function addProjectManually(projectPath, displayName = null) {
   // Generate project name (encode path for use as directory name)
   const projectName = absolutePath.replace(/\//g, '-');
   
-  // Check if project already exists in config or as a folder
+  // Check if project already exists in config
   const config = await loadProjectConfig();
   const projectDir = path.join(process.env.HOME, '.claude', 'projects', projectName);
-  
-  try {
-    await fs.access(projectDir);
-    throw new Error(`Project already exists for path: ${absolutePath}`);
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      throw error;
-    }
-  }
-  
+
   if (config[projectName]) {
     throw new Error(`Project already configured for path: ${absolutePath}`);
   }
+
+  // Allow adding projects even if the directory exists - this enables tracking
+  // existing Claude Code or Cursor projects in the UI
   
   // Add to config as manually added project
   config[projectName] = {
