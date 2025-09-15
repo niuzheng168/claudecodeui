@@ -23,7 +23,7 @@ import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from '
 import Sidebar from './components/Sidebar';
 import MainContent from './components/MainContent';
 import MobileNav from './components/MobileNav';
-import ToolsSettings from './components/ToolsSettings';
+import Settings from './components/Settings';
 import QuickSettingsPanel from './components/QuickSettingsPanel';
 
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -52,7 +52,7 @@ function AppContent() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [showToolsSettings, setShowToolsSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showQuickSettings, setShowQuickSettings] = useState(false);
   const [autoExpandTools, setAutoExpandTools] = useState(() => {
     const saved = localStorage.getItem('autoExpandTools');
@@ -556,7 +556,7 @@ function AppContent() {
               onProjectDelete={handleProjectDelete}
               isLoading={isLoadingProjects}
               onRefresh={handleSidebarRefresh}
-              onShowSettings={() => setShowToolsSettings(true)}
+              onShowSettings={() => setShowSettings(true)}
               updateAvailable={updateAvailable}
               latestVersion={latestVersion}
               currentVersion={currentVersion}
@@ -584,9 +584,10 @@ function AppContent() {
             }}
           />
           <div 
-            className={`relative w-[85vw] max-w-sm sm:w-80 bg-card border-r border-border h-full transform transition-transform duration-150 ease-out ${
+            className={`relative w-[85vw] max-w-sm sm:w-80 bg-card border-r border-border transform transition-transform duration-150 ease-out ${
               sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
+            style={{ height: 'calc(100vh - 80px)' }}
             onClick={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
@@ -601,7 +602,7 @@ function AppContent() {
               onProjectDelete={handleProjectDelete}
               isLoading={isLoadingProjects}
               onRefresh={handleSidebarRefresh}
-              onShowSettings={() => setShowToolsSettings(true)}
+              onShowSettings={() => setShowSettings(true)}
               updateAvailable={updateAvailable}
               latestVersion={latestVersion}
               currentVersion={currentVersion}
@@ -629,7 +630,7 @@ function AppContent() {
           onSessionInactive={markSessionAsInactive}
           onReplaceTemporarySession={replaceTemporarySession}
           onNavigateToSession={(sessionId) => navigate(`/session/${sessionId}`)}
-          onShowSettings={() => setShowToolsSettings(true)}
+          onShowSettings={() => setShowSettings(true)}
           autoExpandTools={autoExpandTools}
           showRawParameters={showRawParameters}
           autoScrollToBottom={autoScrollToBottom}
@@ -674,10 +675,10 @@ function AppContent() {
         />
       )}
 
-      {/* Tools Settings Modal */}
-      <ToolsSettings
-        isOpen={showToolsSettings}
-        onClose={() => setShowToolsSettings(false)}
+      {/* Settings Modal */}
+      <Settings
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
         projects={projects}
       />
 

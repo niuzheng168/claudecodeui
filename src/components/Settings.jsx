@@ -2,11 +2,14 @@ import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
-import { X, Plus, Settings, Shield, AlertTriangle, Moon, Sun, Server, Edit3, Trash2, Globe, Terminal, Zap, FolderOpen } from 'lucide-react';
+import { X, Plus, Settings as SettingsIcon, Shield, AlertTriangle, Moon, Sun, Server, Edit3, Trash2, Globe, Terminal, Zap, FolderOpen, LogIn } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useTasksSettings } from '../contexts/TasksSettingsContext';
+import StandaloneShell from './StandaloneShell';
+import ClaudeLogo from './ClaudeLogo';
+import CursorLogo from './CursorLogo';
 
-function ToolsSettings({ isOpen, onClose, projects = [] }) {
+function Settings({ isOpen, onClose, projects = [] }) {
   const { isDarkMode, toggleDarkMode } = useTheme();
   const { 
     tasksEnabled, 
@@ -59,6 +62,11 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
   const [newCursorCommand, setNewCursorCommand] = useState('');
   const [newCursorDisallowedCommand, setNewCursorDisallowedCommand] = useState('');
   const [cursorMcpServers, setCursorMcpServers] = useState([]);
+
+  // Login modal states
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginProvider, setLoginProvider] = useState(''); // 'claude' or 'cursor'
+  const [selectedProject, setSelectedProject] = useState(null);
   // Common tool patterns for Claude
   const commonTools = [
     'Bash(git log:*)',
@@ -325,7 +333,7 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
     try {
       
       // Load Claude settings from localStorage
-      const savedSettings = localStorage.getItem('claude-tools-settings');
+      const savedSettings = localStorage.getItem('claude-settings');
       
       if (savedSettings) {
         const settings = JSON.parse(savedSettings);
@@ -371,6 +379,26 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
     }
   };
 
+  // Login handlers
+  const handleClaudeLogin = () => {
+    setLoginProvider('claude');
+    setSelectedProject(projects?.[0] || { name: 'default', fullPath: process.cwd() });
+    setShowLoginModal(true);
+  };
+
+  const handleCursorLogin = () => {
+    setLoginProvider('cursor');
+    setSelectedProject(projects?.[0] || { name: 'default', fullPath: process.cwd() });
+    setShowLoginModal(true);
+  };
+
+  const handleLoginComplete = (exitCode) => {
+    if (exitCode === 0) {
+      // Login successful - could show a success message here
+    }
+    setShowLoginModal(false);
+  };
+
   const saveSettings = () => {
     setIsSaving(true);
     setSaveStatus(null);
@@ -394,7 +422,7 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
       };
       
       // Save to localStorage
-      localStorage.setItem('claude-tools-settings', JSON.stringify(claudeSettings));
+      localStorage.setItem('claude-settings', JSON.stringify(claudeSettings));
       localStorage.setItem('cursor-tools-settings', JSON.stringify(cursorSettings));
       
       setSaveStatus('success');
@@ -600,7 +628,7 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
       <div className="bg-background border border-border md:rounded-lg shadow-xl w-full md:max-w-4xl h-full md:h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-3">
-            <Settings className="w-5 h-5 md:w-6 md:h-6 text-blue-600" />
+            <SettingsIcon className="w-5 h-5 md:w-6 md:h-6 text-blue-600" />
             <h2 className="text-lg md:text-xl font-semibold text-foreground">
               Settings
             </h2>
@@ -739,7 +767,10 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
                       : 'border-transparent text-muted-foreground hover:text-foreground'
                   }`}
                 >
-                  Claude Tools
+                  <div className="flex items-center gap-2">
+                    <ClaudeLogo className="w-4 h-4" />
+                    <span>Claude</span>
+                  </div>
                 </button>
                 <button
                   onClick={() => setToolsProvider('cursor')}
@@ -749,12 +780,15 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
                       : 'border-transparent text-muted-foreground hover:text-foreground'
                   }`}
                 >
-                  Cursor Tools
+                  <div className="flex items-center gap-2">
+                    <CursorLogo className="w-4 h-4" />
+                    <span>Cursor</span>
+                  </div>
                 </button>
               </div>
             </div>
             
-            {/* Claude Tools Content */}
+            {/* Claude Content */}
             {toolsProvider === 'claude' && (
               <div className="space-y-6 md:space-y-8">
             
@@ -783,6 +817,36 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
                     </div>
                   </div>
                 </label>
+              </div>
+            </div>
+
+            {/* Claude Login */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <LogIn className="w-5 h-5 text-blue-500" />
+                <h3 className="text-lg font-medium text-foreground">
+                  Authentication
+                </h3>
+              </div>
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-medium text-blue-900 dark:text-blue-100">
+                      Claude CLI Login
+                    </div>
+                    <div className="text-sm text-blue-700 dark:text-blue-300">
+                      Sign in to your Claude account to enable AI features
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleClaudeLogin}
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                    size="sm"
+                  >
+                    <LogIn className="w-4 h-4 mr-2" />
+                    Login
+                  </Button>
+                </div>
               </div>
             </div>
 
@@ -1484,7 +1548,7 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
               </div>
             )}
             
-            {/* Cursor Tools Content */}
+            {/* Cursor Content */}
             {toolsProvider === 'cursor' && (
               <div className="space-y-6 md:space-y-8">
                 
@@ -1513,6 +1577,36 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
                         </div>
                       </div>
                     </label>
+                  </div>
+                </div>
+
+                {/* Cursor Login */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <LogIn className="w-5 h-5 text-purple-500" />
+                    <h3 className="text-lg font-medium text-foreground">
+                      Authentication
+                    </h3>
+                  </div>
+                  <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-medium text-purple-900 dark:text-purple-100">
+                          Cursor CLI Login
+                        </div>
+                        <div className="text-sm text-purple-700 dark:text-purple-300">
+                          Sign in to your Cursor account to enable AI features
+                        </div>
+                      </div>
+                      <Button
+                        onClick={handleCursorLogin}
+                        className="bg-purple-600 hover:bg-purple-700 text-white"
+                        size="sm"
+                      >
+                        <LogIn className="w-4 h-4 mr-2" />
+                        Login
+                      </Button>
+                    </div>
                   </div>
                 </div>
 
@@ -1895,8 +1989,35 @@ function ToolsSettings({ isOpen, onClose, projects = [] }) {
           </div>
         </div>
       </div>
+
+      {/* Login Modal */}
+      {showLoginModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl h-3/4 flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                {loginProvider === 'claude' ? 'Claude CLI Login' : 'Cursor CLI Login'}
+              </h3>
+              <button
+                onClick={() => setShowLoginModal(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <StandaloneShell
+                project={selectedProject}
+                command={loginProvider === 'claude' ? 'claude /login' : 'cursor-agent login'}
+                onComplete={handleLoginComplete}
+                showHeader={false}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export default ToolsSettings;
+export default Settings;
