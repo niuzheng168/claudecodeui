@@ -155,7 +155,6 @@ function MainContent({
         {isMobile && (
           <div 
             className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-3 sm:p-4 pwa-header-safe flex-shrink-0"
-            style={isPWA && isMobile ? { paddingTop: '56px' } : {}}
           >
             <button
               onClick={onMenuClick}
@@ -194,7 +193,6 @@ function MainContent({
         {isMobile && (
           <div 
             className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-3 sm:p-4 pwa-header-safe flex-shrink-0"
-            style={isPWA && isMobile ? { paddingTop: '56px' } : {}}
           >
             <button
               onClick={onMenuClick}
@@ -233,7 +231,6 @@ function MainContent({
       {/* Header with tabs */}
       <div 
         className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-3 sm:p-4 pwa-header-safe flex-shrink-0"
-        style={isPWA && isMobile ? { paddingTop: '56px' } : {}}
       >
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2 sm:space-x-3">

@@ -89,10 +89,12 @@ function AppContent() {
                           document.referrer.includes('android-app://');
       setIsPWA(isStandalone);
       
-      // Add class to body for CSS targeting
+      // Add class to html and body for CSS targeting
       if (isStandalone) {
+        document.documentElement.classList.add('pwa-mode');
         document.body.classList.add('pwa-mode');
       } else {
+        document.documentElement.classList.remove('pwa-mode');
         document.body.classList.remove('pwa-mode');
       }
     };
