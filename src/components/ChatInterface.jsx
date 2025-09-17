@@ -157,9 +157,11 @@ const safeLocalStorage = {
 
 // Memoized message component to prevent unnecessary re-renders
 const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFileOpen, onShowSettings, autoExpandTools, showRawParameters }) => {
-  const isGrouped = prevMessage && prevMessage.type === message.type && 
-                   prevMessage.type === 'assistant' && 
-                   !prevMessage.isToolUse && !message.isToolUse;
+  const isGrouped = prevMessage && prevMessage.type === message.type &&
+                   ((prevMessage.type === 'assistant') ||
+                    (prevMessage.type === 'user') ||
+                    (prevMessage.type === 'tool') ||
+                    (prevMessage.type === 'error'));
   const messageRef = React.useRef(null);
   const [isExpanded, setIsExpanded] = React.useState(false);
   React.useEffect(() => {
