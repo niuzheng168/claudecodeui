@@ -157,9 +157,11 @@ const safeLocalStorage = {
 
 // Memoized message component to prevent unnecessary re-renders
 const MessageComponent = memo(({ message, index, prevMessage, createDiff, onFileOpen, onShowSettings, autoExpandTools, showRawParameters }) => {
-  const isGrouped = prevMessage && prevMessage.type === message.type && 
-                   prevMessage.type === 'assistant' && 
-                   !prevMessage.isToolUse && !message.isToolUse;
+  const isGrouped = prevMessage && prevMessage.type === message.type &&
+                   ((prevMessage.type === 'assistant') ||
+                    (prevMessage.type === 'user') ||
+                    (prevMessage.type === 'tool') ||
+                    (prevMessage.type === 'error'));
   const messageRef = React.useRef(null);
   const [isExpanded, setIsExpanded] = React.useState(false);
   React.useEffect(() => {
@@ -3217,7 +3219,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
 
       {/* Input Area - Fixed Bottom */}
       <div className={`p-2 sm:p-4 md:p-4 flex-shrink-0 ${
-        isInputFocused ? 'pb-2 sm:pb-4 md:pb-6' : 'pb-16 sm:pb-4 md:pb-6'
+        isInputFocused ? 'pb-2 sm:pb-4 md:pb-6' : 'pb-2 sm:pb-4 md:pb-6'
       }`}>
     
         <div className="flex-1">
