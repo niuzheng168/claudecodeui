@@ -4,6 +4,11 @@
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
   "main": "server/index.js",
+  "files": [
+    "server/",
+    "dist/",
+    "README.md"
+  ],
   "homepage": "https://claudecodeui.siteboon.ai",
   "repository": {
     "type": "git",
