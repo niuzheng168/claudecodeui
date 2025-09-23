@@ -1,0 +1,18 @@
+{
+  "git": {
+    "commitMessage": "Release ${version}",
+    "tagName": "v${version}",
+    "changelog": "git log --pretty=format:\"* %s (%h)\" ${from}...${to}"
+  },
+  "npm": {
+    "publish": true
+  },
+  "github": {
+    "release": true,
+    "releaseName": "Claude Code UI v${version}",
+    "autoGenerate": true
+  },
+  "hooks": {
+    "before:init": ["npm run build"]
+  }
+}

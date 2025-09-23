@@ -59,7 +59,17 @@ A desktop and mobile UI for [Claude Code](https://docs.anthropic.com/en/docs/cla
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured, and/or
 - [Cursor CLI](https://docs.cursor.com/en/cli/overview) installed and configured
 
-### Installation
+### One-click Operation (Recommended)
+
+No installation required, direct operation:
+
+```bash
+npx @siteboon/claude-code-ui
+```
+
+Your default browser will automatically open the Claude Code UI interface.
+
+### Local Development Installation
 
 1. **Clone the repository:**
 ```bash
