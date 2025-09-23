@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Load environment variables from .env file
 import fs from 'fs';
 import path from 'path';
