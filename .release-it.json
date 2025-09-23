@@ -1,8 +1,7 @@
 {
   "git": {
     "commitMessage": "chore: release v${version}",
-    "tagName": "v${version}",
-    "changelog": "npx auto-changelog --stdout --commit-limit false --unreleased --template https://raw.githubusercontent.com/release-it/release-it/master/templates/changelog-compact.hbs"
+    "tagName": "v${version}"
   },
   "npm": {
     "publish": true
@@ -10,10 +9,9 @@
   "github": {
     "release": true,
     "releaseName": "Claude Code UI v${version}",
-    "releaseNotes": "## Installation\n\n```bash\nnpx @siteboon/claude-code-ui@${version}\n```\n\n## Changes\n\n${changelog}"
+    "releaseNotes": "## Installation\n\n```bash\nnpx @siteboon/claude-code-ui@${version}\n```"
   },
   "hooks": {
-    "before:init": ["npm run build"],
-    "after:release": ["npx auto-changelog --package"]
+    "before:init": ["npm run build"]
   }
 }
