@@ -10,7 +10,7 @@
   "github": {
     "release": true,
     "releaseName": "Claude Code UI v${version}",
-    "releaseNotes": "## Installation\n\n```bash\nnpx @siteboon/claude-code-ui@${version}\n```"
+    "autoGenerate": true
   },
   "hooks": {
     "before:init": ["npm run build"]
