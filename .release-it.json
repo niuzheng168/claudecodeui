@@ -1,7 +1,8 @@
 {
   "git": {
-    "commitMessage": "chore: release v${version}",
-    "tagName": "v${version}"
+    "commitMessage": "Release ${version}",
+    "tagName": "v${version}",
+    "changelog": "git log --pretty=format:\"* %s (%h)\" ${from}...${to}"
   },
   "npm": {
     "publish": true
@@ -9,7 +10,7 @@
   "github": {
     "release": true,
     "releaseName": "Claude Code UI v${version}",
-    "releaseNotes": "## Installation\n\n```bash\nnpx @siteboon/claude-code-ui@${version}\n```"
+    "releaseNotes": "## Installation\n\n```bash\nnpx @siteboon/claude-code-ui@${version}\n```\n\n## Changes\n\n${changelog}",
   },
   "hooks": {
     "before:init": ["npm run build"]
