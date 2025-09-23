@@ -11,7 +11,7 @@
     "release": true,
     "releaseName": "Claude Code UI v${version}",
     "releaseNotes": {
-      "commit": "* ${commit.subject} (${commit.hash}) - thanks @${author.login}!",
+      "commit": "* ${commit.subject} (${sha}){ - thanks @${author.login}!}",
       "excludeMatches": ["viper151"]
     }
   },
