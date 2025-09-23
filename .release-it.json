@@ -10,7 +10,10 @@
   "github": {
     "release": true,
     "releaseName": "Claude Code UI v${version}",
-    "autoGenerate": true
+    "releaseNotes": {
+      "commit": "* ${commit.subject} (${sha}){ - thanks @${author.login}!}",
+      "excludeMatches": ["viper151"]
+    }
   },
   "hooks": {
     "before:init": ["npm run build"]
