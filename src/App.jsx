@@ -491,9 +491,10 @@ function AppContent() {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
         {/* Backdrop */}
-        <div 
+        <button
           className="fixed inset-0 bg-black/50 backdrop-blur-sm"
           onClick={() => setShowVersionModal(false)}
+          aria-label="Close version upgrade modal"
         />
         
         {/* Modal */}
@@ -604,7 +605,7 @@ function AppContent() {
         <div className={`fixed inset-0 z-50 flex transition-all duration-150 ease-out ${
           sidebarOpen ? 'opacity-100 visible' : 'opacity-0 invisible'
         }`}>
-          <div 
+          <button
             className="fixed inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-150 ease-out"
             onClick={(e) => {
               e.stopPropagation();
@@ -615,6 +616,7 @@ function AppContent() {
               e.stopPropagation();
               setSidebarOpen(false);
             }}
+            aria-label="Close sidebar"
           />
           <div 
             className={`relative w-[85vw] max-w-sm sm:w-80 bg-card border-r border-border transform transition-transform duration-150 ease-out ${
