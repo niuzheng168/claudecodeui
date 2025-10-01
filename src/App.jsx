@@ -33,6 +33,7 @@ import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
 import { WebSocketProvider, useWebSocketContext } from './contexts/WebSocketContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import { useVersionCheck } from './hooks/useVersionCheck';
+import useLocalStorage from './hooks/useLocalStorage';
 import { api, authenticatedFetch } from './utils/api';
 
 
@@ -54,22 +55,10 @@ function AppContent() {
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showQuickSettings, setShowQuickSettings] = useState(false);
-  const [autoExpandTools, setAutoExpandTools] = useState(() => {
-    const saved = localStorage.getItem('autoExpandTools');
-    return saved !== null ? JSON.parse(saved) : false;
-  });
-  const [showRawParameters, setShowRawParameters] = useState(() => {
-    const saved = localStorage.getItem('showRawParameters');
-    return saved !== null ? JSON.parse(saved) : false;
-  });
-  const [autoScrollToBottom, setAutoScrollToBottom] = useState(() => {
-    const saved = localStorage.getItem('autoScrollToBottom');
-    return saved !== null ? JSON.parse(saved) : true;
-  });
-  const [sendByCtrlEnter, setSendByCtrlEnter] = useState(() => {
-    const saved = localStorage.getItem('sendByCtrlEnter');
-    return saved !== null ? JSON.parse(saved) : false;
-  });
+  const [autoExpandTools, setAutoExpandTools] = useLocalStorage('autoExpandTools', false);
+  const [showRawParameters, setShowRawParameters] = useLocalStorage('showRawParameters', false);
+  const [autoScrollToBottom, setAutoScrollToBottom] = useLocalStorage('autoScrollToBottom', true);
+  const [sendByCtrlEnter, setSendByCtrlEnter] = useLocalStorage('sendByCtrlEnter', false);
   // Session Protection System: Track sessions with active conversations to prevent
   // automatic project updates from interrupting ongoing chats. When a user sends
   // a message, the session is marked as "active" and project updates are paused
@@ -491,9 +480,10 @@ function AppContent() {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center">
         {/* Backdrop */}
-        <div 
+        <button
           className="fixed inset-0 bg-black/50 backdrop-blur-sm"
           onClick={() => setShowVersionModal(false)}
+          aria-label="Close version upgrade modal"
         />
         
         {/* Modal */}
@@ -604,7 +594,7 @@ function AppContent() {
         <div className={`fixed inset-0 z-50 flex transition-all duration-150 ease-out ${
           sidebarOpen ? 'opacity-100 visible' : 'opacity-0 invisible'
         }`}>
-          <div 
+          <button
             className="fixed inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-150 ease-out"
             onClick={(e) => {
               e.stopPropagation();
@@ -615,6 +605,7 @@ function AppContent() {
               e.stopPropagation();
               setSidebarOpen(false);
             }}
+            aria-label="Close sidebar"
           />
           <div 
             className={`relative w-[85vw] max-w-sm sm:w-80 bg-card border-r border-border transform transition-transform duration-150 ease-out ${
@@ -688,25 +679,13 @@ function AppContent() {
           isOpen={showQuickSettings}
           onToggle={setShowQuickSettings}
           autoExpandTools={autoExpandTools}
-          onAutoExpandChange={(value) => {
-            setAutoExpandTools(value);
-            localStorage.setItem('autoExpandTools', JSON.stringify(value));
-          }}
+          onAutoExpandChange={setAutoExpandTools}
           showRawParameters={showRawParameters}
-          onShowRawParametersChange={(value) => {
-            setShowRawParameters(value);
-            localStorage.setItem('showRawParameters', JSON.stringify(value));
-          }}
+          onShowRawParametersChange={setShowRawParameters}
           autoScrollToBottom={autoScrollToBottom}
-          onAutoScrollChange={(value) => {
-            setAutoScrollToBottom(value);
-            localStorage.setItem('autoScrollToBottom', JSON.stringify(value));
-          }}
+          onAutoScrollChange={setAutoScrollToBottom}
           sendByCtrlEnter={sendByCtrlEnter}
-          onSendByCtrlEnterChange={(value) => {
-            setSendByCtrlEnter(value);
-            localStorage.setItem('sendByCtrlEnter', JSON.stringify(value));
-          }}
+          onSendByCtrlEnterChange={setSendByCtrlEnter}
           isMobile={isMobile}
         />
       )}
