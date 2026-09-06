@@ -1,14 +1,16 @@
-import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
+  resolveCodexHomeDirectory,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 
@@ -18,17 +20,96 @@ type ParsedSession = {
   sessionName?: string;
 };
 
+let daemonSyncInFlight: Promise<{ known: Set<string>; changed: string[] }> | null = null;
+
+/**
+ * Used by the Codex synchronizer and the provider watcher. Desktop threads may
+ * exist in paginated storage before any JSONL is exported, so discover them
+ * through the owning daemon as well as the legacy filesystem scan.
+ */
+export async function synchronizeCodexDaemonSessions(): Promise<{ known: Set<string>; changed: string[] }> {
+  if (daemonSyncInFlight) return daemonSyncInFlight;
+  daemonSyncInFlight = synchronizeDaemonIndex().finally(() => { daemonSyncInFlight = null; });
+  return daemonSyncInFlight;
+}
+
+async function synchronizeDaemonIndex(): Promise<{ known: Set<string>; changed: string[] }> {
+  const known = new Set<string>();
+  const changed: string[] = [];
+  const client = await CodexDaemonClient.connect();
+  if (!client) return { known, changed };
+  try {
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    do {
+      const result = await client.request('thread/list', {
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+        sourceKinds: ['cli', 'vscode', 'exec', 'appServer'],
+        archived: false,
+        sortKey: 'updated_at',
+        useStateDbOnly: true,
+      });
+      for (const thread of Array.isArray(result.data) ? result.data : []) {
+        if (typeof thread?.id !== 'string' || typeof thread.cwd !== 'string' || !thread.cwd) continue;
+        if (sessionsDb.isProviderSessionSuperseded(thread.id, 'codex')) continue;
+        known.add(thread.id);
+        const existing = sessionsDb.getSessionByProviderSessionId(thread.id);
+        // Polling is not an instruction to undo the user's local archive.
+        if (existing?.isArchived) continue;
+        const nativeName = typeof thread.name === 'string' && thread.name.trim()
+          ? normalizeSessionName(thread.name, 'Untitled Codex Session')
+          : existing?.custom_name || 'Untitled Codex Session';
+        const name = existing?.custom_name && existing.custom_name !== 'Untitled Codex Session'
+          ? existing.custom_name : nativeName;
+        const createdAt = new Date(Number(thread.createdAt || 0) * 1000).toISOString();
+        const updatedAt = new Date(Number(thread.updatedAt || thread.createdAt || 0) * 1000).toISOString();
+        let transcriptPath: string | null = typeof thread.path === 'string' && thread.path ? thread.path : null;
+        if (transcriptPath) {
+          try { await access(transcriptPath); } catch { transcriptPath = null; }
+        }
+        // A removed legacy rollout can leave a stale state-db row behind.
+        // Native paginated threads, unlike legacy ones, need no export.
+        if (!transcriptPath && await readCodexHistoryMode(thread.id) === 'legacy') continue;
+        if (existing && existing.updated_at === updatedAt && existing.custom_name === name
+          && existing.jsonl_path === transcriptPath && existing.project_path === thread.cwd && !existing.isArchived) {
+          continue;
+        }
+        changed.push(sessionsDb.createSession(
+          thread.id, 'codex', thread.cwd, name, createdAt, updatedAt, transcriptPath,
+        ));
+      }
+      cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined;
+      if (cursor && seenCursors.has(cursor)) throw new Error('Codex repeated a thread-list cursor.');
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+    return { known, changed };
+  } finally {
+    client.close();
+  }
+}
+
 /**
  * Session indexer for Codex transcript artifacts.
  */
 export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'codex' as const;
-  private readonly codexHome = path.join(os.homedir(), '.codex');
+  private get codexHome(): string {
+    return resolveCodexHomeDirectory();
+  }
 
   /**
    * Scans ~/.codex/sessions and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
+    let nativeIds = new Set<string>();
+    try {
+      nativeIds = (await synchronizeCodexDaemonSessions()).known;
+    } catch (error) {
+      // Preserve CLI-only discovery when a desktop daemon cannot be reached.
+      // Its index is retried independently, without the JSONL birthtime cursor.
+      console.warn('[Codex] Desktop session discovery unavailable:', error instanceof Error ? error.message : String(error));
+    }
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.codexHome, 'sessions'),
@@ -36,10 +117,10 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       since ?? null
     );
 
-    let processed = 0;
+    let processed = nativeIds.size;
     for (const filePath of files) {
       const parsed = await this.processSessionFile(filePath, nameMap);
-      if (!parsed) {
+      if (!parsed || nativeIds.has(parsed.sessionId)) {
         continue;
       }
 
@@ -135,6 +216,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     // ids must be resolved through the provider-id mapping first.
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
+    if (existingSession?.isArchived) return null;
     const existingSessionName = existingSession?.custom_name;
     if (existingSessionName && existingSessionName !== 'Untitled Codex Session') {
       return {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
   FetchHistoryOptions,
@@ -445,7 +446,12 @@ export const sessionsService = {
     // re-parsing the whole file per request. Cursor and OpenCode read their
     // messages from elsewhere (store.db / shared SQLite), so that file's stat
     // says nothing about their history — they stay on the direct path.
-    const transcriptPath = provider === 'claude' || provider === 'codex'
+    const codexMode = provider === 'codex' ? await readCodexHistoryMode(providerSessionId) : null;
+    const nativeCodexHistory = Boolean(codexMode && codexMode !== 'legacy');
+    // An exported JSONL is not the native history's invalidation signal.
+    // Otherwise a desktop turn could remain invisible until that export
+    // changes, even though the daemon already returned the newer messages.
+    const transcriptPath = provider === 'claude' || (provider === 'codex' && !nativeCodexHistory)
       ? session.jsonl_path
       : null;
     const fullHistory = await sessionHistoryCache.getFullHistory({
@@ -597,6 +603,16 @@ export const sessionsService = {
       };
     }
 
+    if (session.provider === 'codex' && session.provider_session_id && options.deletedFromDisk) {
+      const mode = await readCodexHistoryMode(session.provider_session_id);
+      if (mode && mode !== 'legacy') {
+        throw new AppError('Permanently delete this native session in Codex app. Deleting its JSONL export does not delete its history safely.', {
+          code: 'CODEX_NATIVE_DELETE_UNSUPPORTED',
+          statusCode: 409,
+        });
+      }
+    }
+
     let removedFromDisk = false;
     if (options.deletedFromDisk) {
       // Every file the conversation has lived in, not just the one the row
@@ -613,12 +629,23 @@ export const sessionsService = {
       }
     }
 
-    sessionsDb.clearSupersededProviderSessions(sessionId);
+    if (session.provider !== 'codex' || options.deletedFromDisk) {
+      sessionsDb.clearSupersededProviderSessions(sessionId);
+    }
     const deleted = sessionsDb.deleteSessionById(sessionId);
     if (!deleted) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',
         statusCode: 404,
+      });
+    }
+    if (session.provider === 'codex' && session.provider_session_id) {
+      // Native discovery polls the authoritative index. Keep a local exclusion
+      // after a user deletes this Codey row, or it would reappear on the next
+      // poll. This does not delete or modify the original Codex conversation.
+      sessionsDb.markProviderSessionSuperseded({
+        providerSessionId: session.provider_session_id,
+        provider: 'codex', sessionId, jsonlPath: null,
       });
     }
 

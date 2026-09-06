@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 
 import { AppError } from '@/shared/utils.js';
+import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 
 /**
  * Minimal JSON-RPC client for `codex app-server`.
@@ -16,9 +17,9 @@ import { AppError } from '@/shared/utils.js';
  * primitive, `thread/fork`, which is what the Codex IDE clients build their
  * own "fork" and "edit an earlier message" on top of.
  *
- * So this is a second transport to the same CLI, opened only for the
- * operations the SDK cannot express. Everything else still goes through the
- * SDK.
+ * This standalone transport is retained only for legacy fork operations.
+ * Normal web turns use CodexSharedRuntime and the already-running desktop
+ * daemon when available; native paginated forks must stay in Codex app.
  */
 
 /** How long a single request may take before the child is killed. */
@@ -209,6 +210,13 @@ export const codexAppServer = {
     lastTurnId?: string;
     cwd: string;
   }): Promise<CodexThreadFork> {
+    const historyMode = await readCodexHistoryMode(input.threadId);
+    if (historyMode && historyMode !== 'legacy') {
+      throw new AppError('Fork or edit this native paginated session in Codex app. The legacy Codey fork adapter cannot safely copy its history.', {
+        code: 'CODEX_NATIVE_FORK_UNSUPPORTED',
+        statusCode: 409,
+      });
+    }
     return withAppServer(async (call) => {
       const result = await call('thread/fork', {
         threadId: input.threadId,
