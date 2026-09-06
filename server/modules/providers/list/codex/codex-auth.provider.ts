@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import TOML from '@iarna/toml';
 import spawn from 'cross-spawn';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
@@ -14,6 +15,44 @@ type CodexCredentialsStatus = {
   method: string | null;
   error?: string;
 };
+
+/**
+ * Resolves authentication for the active Codex custom provider. Used by
+ * CodexProviderAuth and its provider-module tests so providers declaring
+ * `requires_openai_auth = false` do not incorrectly prompt for OpenAI login.
+ */
+export function resolveCodexCustomProviderCredentials(
+  configContent: string,
+  environment: NodeJS.ProcessEnv,
+): CodexCredentialsStatus | null {
+  try {
+    const config = readObjectRecord(TOML.parse(configContent));
+    const providerName = readOptionalString(config?.model_provider);
+    const providers = readObjectRecord(config?.model_providers);
+    const provider = providerName ? readObjectRecord(providers?.[providerName]) : null;
+    if (!providerName || !provider || provider.requires_openai_auth !== false) {
+      return null;
+    }
+
+    const environmentKey = readOptionalString(provider.env_key);
+    if (environmentKey && !environment[environmentKey]?.trim()) {
+      return {
+        authenticated: false,
+        email: null,
+        method: 'custom_provider',
+        error: `Missing ${environmentKey} for Codex provider ${providerName}`,
+      };
+    }
+
+    return {
+      authenticated: true,
+      email: providerName,
+      method: 'custom_provider',
+    };
+  } catch {
+    return null;
+  }
+}
 
 export class CodexProviderAuth implements IProviderAuth {
   /**
@@ -49,6 +88,19 @@ export class CodexProviderAuth implements IProviderAuth {
    * Reads Codex auth.json and checks OAuth tokens or an API key fallback.
    */
   private async checkCredentials(): Promise<CodexCredentialsStatus> {
+    try {
+      const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+      const customProvider = resolveCodexCustomProviderCredentials(
+        await readFile(configPath, 'utf8'),
+        process.env,
+      );
+      if (customProvider) {
+        return customProvider;
+      }
+    } catch {
+      // Fall through to the standard Codex auth.json check.
+    }
+
     try {
       const authPath = path.join(os.homedir(), '.codex', 'auth.json');
       const content = await readFile(authPath, 'utf8');

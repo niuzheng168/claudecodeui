@@ -9,6 +9,7 @@ import { createSystemUpdateService } from './system.service.js';
 type SystemModuleOptions = {
   appRoot: string;
   installMode: 'git' | 'npm';
+  isCodeyManaged: boolean;
   isPlatform: boolean;
 };
 

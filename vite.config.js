@@ -12,6 +12,8 @@ const pkg = createRequire(import.meta.url)('./package.json')
 export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current working directory.
   const env = loadEnv(mode, process.cwd(), '')
+  const configuredBasePath = String(env.VITE_BASE_PATH || '/').trim()
+  const base = `${configuredBasePath.startsWith('/') ? configuredBasePath : `/${configuredBasePath}`}`.replace(/\/+$/, '') + '/'
 
   const configuredHost = env.HOST || '0.0.0.0'
   // if the host is not a loopback address, it should be used directly. 
@@ -25,6 +27,7 @@ export default defineConfig(({ mode }) => {
   const serverPort = env.SERVER_PORT || env.PORT || 3001
 
   return {
+    base,
     plugins: [react()],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version)

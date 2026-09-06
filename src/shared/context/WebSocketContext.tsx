@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '@/modules/auth';
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, isCodeyPortalSso, withDeploymentBasePath } from '@/shared/utils';
 import { expireAuthSession, isAuthTokenExpired } from '@/shared/authToken';
 import type { ServerEvent } from '@/shared/types';
 
@@ -35,13 +35,14 @@ export const useWebSocket = () => {
 
 const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
+  const socketPath = withDeploymentBasePath('/ws');
+  if (IS_PLATFORM || isCodeyPortalSso()) return `${protocol}//${window.location.host}${socketPath}`;
   if (!token) return null;
   if (isAuthTokenExpired(token)) {
     expireAuthSession();
     return null;
   }
-  return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
+  return `${protocol}//${window.location.host}${socketPath}?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
 };
 
 const useWebSocketProviderState = (): WebSocketContextType => {

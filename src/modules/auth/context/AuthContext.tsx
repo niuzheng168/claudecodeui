@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, isCodeyPortalSso, returnToCodeyLogin } from '@/shared/utils';
 import { api } from '@/shared/api';
-import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
+import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT, AUTH_TOKEN_STORAGE_KEY, getAuthTokenRefreshDelay, isValidRefreshedToken, storeAuthToken } from '@/shared/authToken';
 import { hydrateChatDrafts, resetChatDrafts } from '@/shared/chatDrafts';
 import { hydrateUserPreferences, resetUserPreferences } from '@/shared/userSettings';
 /** The signed-in account held by AuthContext - a required `username` plus an optional id and any additional fields the auth API returns - and should be read through `useAuth()` rather than re-derived from raw auth responses. */
@@ -12,8 +12,6 @@ type AuthUser = {
   username: string;
   [key: string]: unknown;
 };
-
-const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
 
 const AUTH_ERROR_MESSAGES = {
   authStatusCheckFailed: 'Failed to check authentication status',
@@ -34,6 +32,8 @@ type AuthSessionPayload = {
 
 type AuthStatusPayload = {
   needsSetup?: boolean;
+  managedAuthentication?: boolean;
+  user?: AuthUser;
 };
 
 type AuthUserPayload = {
@@ -84,7 +84,7 @@ function resolveApiErrorMessage(payload: ApiErrorPayload | null, fallback: strin
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+const readStoredToken = (): string | null => isCodeyPortalSso() ? null : localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 
 const persistToken = (token: string) => {
   storeAuthToken(token);
@@ -211,6 +211,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
       const statusResponse = await api.auth.status();
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
 
+      if (isCodeyPortalSso()) {
+        if (!statusResponse.ok || !statusPayload?.managedAuthentication || !statusPayload.user) {
+          clearSession();
+          if (statusResponse.status === 401) returnToCodeyLogin();
+          setError(AUTH_ERROR_MESSAGES.authStatusCheckFailed);
+          return;
+        }
+        clearStoredToken();
+        setUser(statusPayload.user);
+        setToken(null);
+        setNeedsSetup(false);
+        await checkOnboardingStatus();
+        return;
+      }
+
       if (statusPayload?.needsSetup) {
         setNeedsSetup(true);
         return;
@@ -293,6 +308,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {
+      if (isCodeyPortalSso()) {
+        returnToCodeyLogin();
+        return { success: false, error: 'Please sign in to Codey' };
+      }
       try {
         setError(null);
         const response = await api.auth.login(username, password);
@@ -319,6 +338,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const register = useCallback<AuthContextValue['register']>(
     async (username, password) => {
+      if (isCodeyPortalSso()) {
+        return { success: false, error: 'Accounts are managed by Codey' };
+      }
       try {
         setError(null);
         const response = await api.auth.register(username, password);
@@ -344,10 +366,38 @@ export function AuthProvider({ children }: AuthProviderProps) {
   );
 
   const logout = useCallback(() => {
+    if (isCodeyPortalSso()) {
+      void api.auth.portalLogout().then((response) => {
+        if (response.ok || response.status === 401) {
+          clearSession();
+          returnToCodeyLogin();
+        } else setError('Unable to sign out of Codey. Please retry.');
+      }).catch(() => setError('Unable to sign out of Codey. Please retry.'));
+      return;
+    }
     // JWT logout is client-side: the server endpoint does not maintain a
     // revocation list, so clearing the session is the complete operation.
     clearSession();
   }, [clearSession]);
+
+  useEffect(() => {
+    if (!isCodeyPortalSso() || !user) return undefined;
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      void api.auth.portalSession().then((response) => {
+        if (response.status === 401) {
+          clearSession();
+          returnToCodeyLogin();
+        }
+      }).catch(() => {});
+    };
+    const timer = window.setInterval(check, 60000);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, [clearSession, user]);
 
   const contextValue = useMemo<AuthContextValue>(
     () => ({

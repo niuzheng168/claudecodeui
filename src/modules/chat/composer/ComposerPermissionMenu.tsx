@@ -88,6 +88,7 @@ function ComposerPermissionMenu({
   providerLabel,
 }: ComposerPermissionMenuProps) {
   const { t } = useTranslation('chat');
+  // Approval choices remain a dedicated, visible safety control rather than an overflow action.
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close, 22 * 16);
@@ -112,11 +113,11 @@ function ComposerPermissionMenu({
           updateAnchor();
           setIsOpen((current) => !current);
         }}
-        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${activeAppearance.trigger}`}
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeAppearance.trigger}`}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        aria-label={heading}
-        title={t('input.clickToChangeMode')}
+        aria-label={`${heading} ${t(`codex.modes.${permissionMode}`, { defaultValue: permissionMode })}`}
+        title={`${t('input.clickToChangeMode')} · ${t(`codex.modes.${permissionMode}`, { defaultValue: permissionMode })}`}
       >
         <ActiveIcon className="h-4 w-4" />
       </button>

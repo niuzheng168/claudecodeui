@@ -1,4 +1,5 @@
 import type { LLMProvider, ProviderAuthStatusMap } from '@/shared/types';
+import { getEnabledProviders } from '@/shared/utils';
 import AgentConnectionCard from '@/modules/onboarding/AgentConnectionCard';
 
 type AgentConnectionsStepProps = {
@@ -37,6 +38,9 @@ const providerCards = [
   },
 ];
 
+const enabledProviderIds = new Set(getEnabledProviders());
+const enabledProviderCards = providerCards.filter(({ provider }) => enabledProviderIds.has(provider));
+
 /** Rendered by Onboarding as its second step, listing every CLI provider the user can log into. */
 export default function AgentConnectionsStep({
   providerStatuses,
@@ -52,7 +56,7 @@ export default function AgentConnectionsStep({
       </div>
 
       <div className="-mr-1 max-h-[38vh] space-y-2 overflow-y-auto pr-1">
-        {providerCards.map((providerCard) => (
+        {enabledProviderCards.map((providerCard) => (
           <AgentConnectionCard
             key={providerCard.provider}
             provider={providerCard.provider}

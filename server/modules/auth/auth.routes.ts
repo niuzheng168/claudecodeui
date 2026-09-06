@@ -12,11 +12,25 @@ type AuthenticatedRequest = express.Request & { user?: unknown };
 export function createAuthRouter(
   service: ReturnType<typeof createAuthService>,
   authenticateToken: RequestHandler,
+  portalSsoEnabled = false,
 ): express.Router {
   const router = express.Router();
+  if (portalSsoEnabled) router.use(authenticateToken);
 
-  router.get('/status', (_req, res, next) => {
+  router.use((req, res, next) => {
+    if (portalSsoEnabled && !(req.method === 'GET' && ['/status', '/user'].includes(req.path))) {
+      res.status(403).json({ error: 'Account login, logout and credentials are managed by Codey' });
+      return;
+    }
+    next();
+  });
+
+  router.get('/status', (req, res, next) => {
     try {
+      if (portalSsoEnabled) {
+        res.json({ needsSetup: false, isAuthenticated: true, managedAuthentication: true, user: (req as AuthenticatedRequest).user });
+        return;
+      }
       res.json(service.getStatus());
     } catch (error) {
       next(error);

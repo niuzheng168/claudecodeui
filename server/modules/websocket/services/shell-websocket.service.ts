@@ -330,6 +330,7 @@ export function handleShellConnection(
           !!initialCommand &&
           (initialCommand.includes('setup-token') ||
             initialCommand.includes('cursor-agent login') ||
+            initialCommand.includes('codex login') ||
             initialCommand.includes('auth login'));
 
         const commandSuffix =

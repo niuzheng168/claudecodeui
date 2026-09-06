@@ -583,10 +583,11 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
-/** Viewport-relative placement box (right/bottom offsets plus max height and width) computed for a composer popover so the model and permission menus stay inside the window. */
+/** Viewport-relative composer popup bounds; exactly one of top/bottom anchors the surface without overflowing narrow or short windows. */
 export type ComposerMenuAnchor = {
   right: number;
-  bottom: number;
+  bottom?: number;
+  top?: number;
   maxHeight: number;
   maxWidth: number;
 };
@@ -609,8 +610,26 @@ type CommandModalKind = 'help' | 'models' | 'cost' | 'status';
 
 //----------------- CHAT VOICE ------------
 
-/** Lifecycle state of the composer's push-to-talk microphone: 'idle', 'recording' or 'transcribing'. */
-export type VoiceInputState = 'idle' | 'recording' | 'transcribing';
+/** Microphone permission, capture and upload lifecycle displayed by the chat composer. */
+export type VoiceInputState = 'idle' | 'requesting' | 'recording' | 'transcribing';
+
+/** Server-managed transcription choices; never a URL or a browser-supplied credential. */
+export type CodeyVoiceProvider = 'azure-speech' | 'mai-transcribe';
+
+/** Supported dictation language hints; auto delegates language detection to the selected service. */
+export type CodeyVoiceLanguage = 'auto' | 'zh-CN' | 'en-US';
+
+/** Credential-free Codey voice capabilities scoped to the authenticated Workspace owner. */
+export type CodeyVoiceConfig = {
+  userId: string;
+  providers: { id: CodeyVoiceProvider; label: string; configured: boolean }[];
+  languages: CodeyVoiceLanguage[];
+  maxDurationSeconds: number;
+  defaultProvider: CodeyVoiceProvider;
+};
+
+/** Non-secret, per-account browser preferences shared by voice settings and the composer. */
+export type CodeyVoicePreferences = { provider: CodeyVoiceProvider; language: CodeyVoiceLanguage };
 
 /** Immutable snapshot of the app-level text-to-speech player for one utterance — its play state plus any error message — read by components so read-aloud state survives re-renders and chat switches. */
 export type VoiceSnapshot = { state: VoicePlayState; error: string | null };

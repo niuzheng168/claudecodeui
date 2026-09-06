@@ -10,29 +10,28 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
+import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
+import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import { isCodeyPortalSso } from '@/shared/utils';
 import type { QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
   PromptInputBody,
   PromptInputTextarea,
-  PromptInputFooter,
-  PromptInputTools,
-  PromptInputButton,
   PromptInputSubmit,
 } from '@/modules/chat/composer/PromptInput';
 import CommandMenu from '@/modules/chat/composer/CommandMenu';
 import ActivityIndicator from '@/modules/chat/composer/ActivityIndicator';
 import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
-import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
+import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
+import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
-import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
-import { ScheduleMessagePopover } from '@/modules/chat/composer/ScheduleMessagePopover';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -102,6 +101,8 @@ type ChatComposerProps = {
   textareaRef: RefObject<HTMLTextAreaElement>;
   input: string;
   onVoiceTranscript?: (text: string, send?: boolean) => void;
+  voiceContextKey?: string;
+  voiceRecordingAllowed?: boolean;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => void;
   onTextareaKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -175,6 +176,8 @@ export default function ChatComposer({
   textareaRef,
   input,
   onVoiceTranscript,
+  voiceContextKey,
+  voiceRecordingAllowed = true,
   onInputChange,
   onTextareaClick,
   onTextareaKeyDown,
@@ -223,21 +226,37 @@ export default function ChatComposer({
 
   // Voice state is hosted here (not in the mic button) so the main Send button can stop
   // recording and send the transcript in one tap, the way the mic button drops it in the box.
-  const voiceAvailable = useVoiceAvailable();
+  const standaloneVoiceAvailable = useVoiceAvailable();
+  const managedVoice = isCodeyPortalSso();
+  const { voiceEnabled } = useUiPreferences();
+  const codeyVoice = useCodeyVoice(managedVoice && voiceEnabled);
+  const voiceVisible = managedVoice ? voiceEnabled : standaloneVoiceAvailable;
+  const voiceAvailable = managedVoice
+    ? Boolean(codeyVoice.config?.providers.find((item) => item.id === codeyVoice.preferences.provider)?.configured)
+    : standaloneVoiceAvailable;
+  // Brief, localized recording errors belong to the active composer, never another session's draft.
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const voiceErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleVoiceError = useCallback((msg: string) => {
-    setVoiceError(msg);
+    setVoiceError(t(`voice.errors.${msg}`, { defaultValue: t('voice.failed') }));
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
     voiceErrorTimer.current = setTimeout(() => setVoiceError(null), 4000);
-  }, []);
+  }, [t]);
   useEffect(() => () => {
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
   }, []);
   const noopTranscript = useCallback(() => {}, []);
-  const { state: voiceState, toggle: voiceToggle, stop: voiceStop } = useVoiceInput(
+  const { state: voiceState, toggle: voiceToggle, stop: voiceStop, cancel: voiceCancel, activePreferences: recordingPreferences } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
+    {
+      contextKey: voiceContextKey,
+      enabled: voiceVisible && voiceAvailable && voiceRecordingAllowed,
+      managed: managedVoice ? {
+        ...codeyVoice.preferences,
+        maxDurationSeconds: codeyVoice.config?.maxDurationSeconds || 120,
+      } : undefined,
+    },
   );
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
@@ -429,56 +448,20 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter className="flex-wrap gap-y-1">
-          <PromptInputTools className="min-w-0">
-            <PromptInputButton
-              tooltip={{ content: t('input.attachFiles') }}
-              onClick={openAttachmentPicker}
-              aria-label={t('input.attachFiles')}
-            >
-              <PaperclipIcon />
-            </PromptInputButton>
-
-            {onVoiceTranscript && voiceAvailable && (
-              <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
-            )}
-
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
-
-            <PromptInputButton
-              tooltip={{ content: t('input.showAllCommands') }}
-              onClick={onToggleCommandMenu}
-              className="relative"
-            >
-              <MessageSquareIcon />
-              {slashCommandsCount > 0 && (
-                <span
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground"
-                >
-                  {slashCommandsCount}
-                </span>
-              )}
-            </PromptInputButton>
-
-            {hasInput && (
-              <PromptInputButton
-                tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
-                onClick={onClearInput}
-                className="hidden sm:flex"
-              >
-                <XIcon />
-              </PromptInputButton>
-            )}
-
-          </PromptInputTools>
-
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
-            <ScheduleMessagePopover
-              disabled={!input.trim()}
-              onSchedule={onScheduleMessage}
-            />
-
-            <ComposerModelMenu
+        <ComposerToolbar
+          onAttachFiles={openAttachmentPicker}
+          voiceControl={onVoiceTranscript && voiceVisible ? (
+            <ComposerVoiceControl state={voiceState} onToggle={voiceToggle} onCancel={voiceCancel}
+              disabled={!voiceAvailable || !voiceRecordingAllowed}
+              managed={managedVoice ? {
+                config: codeyVoice.config,
+                preferences: recordingPreferences || codeyVoice.preferences,
+                onChange: codeyVoice.update,
+                onRefresh: codeyVoice.refresh,
+                loadFailed: Boolean(codeyVoice.error),
+              } : undefined} />
+          ) : null}
+          modelControl={<ComposerModelMenu
               effort={effort}
               effortOptions={availableEffortOptions}
               onSelectEffort={onSelectEffort}
@@ -486,16 +469,14 @@ export default function ChatComposer({
               modelOptions={availableModelOptions}
               onSelectModel={onSelectModel}
               modelsLoading={modelsLoading}
-            />
-
-            <ComposerPermissionMenu
+            />}
+          permissionControl={<ComposerPermissionMenu
               permissionMode={permissionMode}
               permissionModes={availablePermissionModes}
               onSelectPermissionMode={onSelectPermissionMode}
               providerLabel={providerLabel}
-            />
-
-            <PromptInputSubmit
+            />}
+          submitControl={<PromptInputSubmit
               onClick={
                 canQueueDraft
                   ? (e: MouseEvent<HTMLButtonElement>) => {
@@ -522,24 +503,27 @@ export default function ChatComposer({
               }
               aria-label={submitAriaLabel}
               title={submitAriaLabel}
-              className="h-10 w-10 sm:h-10 sm:w-10"
+              className="h-9 w-9"
             >
               {isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : canQueueDraft ? (
                 <ArrowUpIcon className="h-4 w-4" />
               ) : undefined}
-            </PromptInputSubmit>
-          </div>
-
-          <div
-            className={`order-last hidden basis-full px-2 text-center text-xs leading-4 text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-              input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
-            {submitHint}
-          </div>
-        </PromptInputFooter>
+            </PromptInputSubmit>}
+          tokenUsage={tokenBudget}
+          onShowTokenUsage={onShowTokenUsage}
+          commandsCount={slashCommandsCount}
+          onShowCommands={onToggleCommandMenu}
+          hasInput={hasInput}
+          onClearInput={onClearInput}
+          canSchedule={Boolean(input.trim())}
+          onSchedule={onScheduleMessage}
+          submitHint={submitHint}
+          hideHint={Boolean(input.trim() && !canQueueDraft)}
+          voiceStatus={voiceState === 'idle' ? undefined : t(`voice.${voiceState}`)}
+          voiceError={voiceVisible ? voiceError : null}
+        />
       </PromptInput>
       </div>}
     </div>

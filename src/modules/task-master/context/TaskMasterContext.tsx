@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
+import { isCodeyPortalSso } from '@/shared/utils';
 import { useAuth } from '@/modules/auth';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import type { Project, ServerEvent, TaskMasterProject, TaskMasterProjectInfo, TaskMasterTask } from '@/shared/types';
@@ -155,7 +156,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
 
   const refreshCurrentProjectTaskMaster = useCallback(
     async (projectId: string) => {
-      if (!projectId || !user || !token) {
+      if (!projectId || !user || (!token && !isCodeyPortalSso())) {
         return;
       }
 
@@ -236,7 +237,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     // TaskMaster tasks endpoint now lives under /api/taskmaster/tasks/:projectId.
     const projectId = currentProject?.projectId;
 
-    if (!projectId || !user || !token) {
+    if (!projectId || !user || (!token && !isCodeyPortalSso())) {
       setTasks([]);
       setNextTask(null);
       return;
@@ -267,7 +268,7 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
   }, [clearError, currentProject?.projectId, handleError, token, user]);
 
   const refreshMCPStatus = useCallback(async () => {
-    if (!user || !token) {
+    if (!user || (!token && !isCodeyPortalSso())) {
       setMcpServerStatus(null);
       return;
     }

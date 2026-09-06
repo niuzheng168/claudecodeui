@@ -1,3 +1,5 @@
+import { deploymentStorageKey, isCodeyPortalSso, returnToCodeyLogin } from '@/shared/utils';
+
 /**
  * The client's half of the JWT session: parsing, expiry, storage and the two
  * events the auth context listens to.
@@ -9,6 +11,9 @@
 
 export const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 export const AUTH_SESSION_EXPIRED_EVENT = 'auth-session-expired';
+
+/** Storage key for this deployment's JWT; Codey subpaths receive distinct keys. */
+export const AUTH_TOKEN_STORAGE_KEY = deploymentStorageKey('auth-token');
 
 // Only accept a refreshed token that has this app's issued JWT shape
 // (three base64url segments). An attacker-injected/malformed header value
@@ -72,14 +77,16 @@ export const getAuthTokenRefreshDelay = (token: unknown): number | null => {
 };
 
 export const expireAuthSession = (): void => {
-  localStorage.removeItem('auth-token');
+  localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT));
+    if (isCodeyPortalSso()) returnToCodeyLogin();
   }
 };
 
 export const getStoredAuthToken = (): string | null => {
-  const token = localStorage.getItem('auth-token');
+  if (isCodeyPortalSso()) return null;
+  const token = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
   if (token && isAuthTokenExpired(token)) {
     expireAuthSession();
     return null;
@@ -88,11 +95,12 @@ export const getStoredAuthToken = (): string | null => {
 };
 
 export const storeAuthToken = (token: unknown): boolean => {
+  if (isCodeyPortalSso()) return false;
   if (!isValidRefreshedToken(token)) {
     return false;
   }
 
-  localStorage.setItem('auth-token', token);
+  localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(AUTH_TOKEN_REFRESHED_EVENT, { detail: token }));
   }

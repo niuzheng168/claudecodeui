@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { ActivityIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
@@ -32,31 +33,29 @@ const readUsageNumber = (value: unknown) => {
 };
 
 /**
- * Rendered by chat's ChatComposer to show the session's context-window usage
- * and open the detailed token breakdown on click.
+ * ComposerToolbar's quiet secondary row shows usage and keeps the detailed
+ * breakdown reachable without a large pill competing with the Send button.
  */
 function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+  const { t } = useTranslation('chat');
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
       ? usage.breakdown as Record<string, unknown>
       : null;
   const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
-  const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
+  const usedTokens = Math.max(0, readUsageNumber(usage?.used) || inputTokens + outputTokens);
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/70 px-2 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:gap-2 sm:px-2.5"
-      title={`${usedTokens.toLocaleString()} tokens used`}
-      aria-label="Show token usage"
+      className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={t('composer.tokensUsed', { tokens: usedTokens.toLocaleString() })}
+      aria-label={t('composer.tokenUsage')}
     >
-      <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/10 text-primary">
-        <ActivityIcon className="h-3.5 w-3.5" />
-      </span>
-      <span className="font-medium text-foreground">{formatTokenCount(usedTokens)}</span>
-      <span className="hidden text-muted-foreground/70 sm:inline">tokens</span>
+      <ActivityIcon className="h-3 w-3" />
+      <span>{t('composer.tokenCount', { tokens: formatTokenCount(usedTokens) })}</span>
     </button>
   );
 }

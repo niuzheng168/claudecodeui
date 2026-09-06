@@ -17,6 +17,7 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/types';
+import { getEnabledProviders, resolveEnabledProvider } from '@/shared/utils';
 
 const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'claude', label: 'Claude' },
@@ -24,6 +25,9 @@ const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'cursor', label: 'Cursor' },
   { id: 'opencode', label: 'OpenCode' },
 ];
+
+const enabledProviderIds = new Set(getEnabledProviders());
+const enabledProviders = PROVIDERS.filter(({ id }) => enabledProviderIds.has(id));
 
 type ModelLibraryPanelProps = {
   initialProvider: LLMProvider;
@@ -46,7 +50,11 @@ export default function ModelLibraryPanel({
   actions,
   onDone,
 }: ModelLibraryPanelProps) {
-  const [selectedProvider, setSelectedProvider] = useState(initialProvider);
+  // Keeps the editor on a provider exposed by this deployment when the panel
+  // is opened from stored or historical state.
+  const [selectedProvider, setSelectedProvider] = useState(
+    resolveEnabledProvider(initialProvider),
+  );
   const [editing, setEditing] = useState<ProviderModelOption | null>(null);
   const [model, setModel] = useState('');
   const [modelId, setModelId] = useState('');
@@ -57,7 +65,7 @@ export default function ModelLibraryPanel({
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    setSelectedProvider(initialProvider);
+    setSelectedProvider(resolveEnabledProvider(initialProvider));
   }, [initialProvider]);
 
   const options = useMemo(
@@ -181,7 +189,7 @@ export default function ModelLibraryPanel({
       </div>
 
       <div className="scrollbar-thin flex shrink-0 gap-1 overflow-x-auto rounded-xl border border-border/70 bg-muted/25 p-1">
-        {PROVIDERS.map((provider) => {
+        {enabledProviders.map((provider) => {
           const selected = provider.id === selectedProvider;
           return (
             <button
@@ -213,7 +221,7 @@ export default function ModelLibraryPanel({
                 {editing ? 'Edit custom model' : 'Add a custom model'}
               </p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                The ID is sent to {PROVIDERS.find((entry) => entry.id === selectedProvider)?.label} exactly as written.
+                The ID is sent to {enabledProviders.find((entry) => entry.id === selectedProvider)?.label} exactly as written.
               </p>
             </div>
             {editing && (

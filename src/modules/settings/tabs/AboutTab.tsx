@@ -6,7 +6,7 @@ import { IS_PLATFORM } from '@/shared/utils';
 import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
 import PremiumFeatureCard from '@/modules/settings/PremiumFeatureCard';
 
-const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
+const GITHUB_REPO_URL = 'https://github.com/niuzheng168/claudecodeui';
 const DISCORD_URL = 'https://discord.gg/buxwujPNRE';
 const DOCS_URL = 'https://cloudcli.ai/docs/plugin-overview';
 const CLOUDCLI_URL = 'https://cloudcli.ai';
@@ -30,7 +30,7 @@ function DiscordIcon({ className }: { className?: string }) {
 /** Rendered by Settings for the "about" tab, showing version, links and premium upsell cards. */
 export default function AboutTab() {
   const { t } = useTranslation('settings');
-  const { updateAvailable, latestVersion, currentVersion, releaseInfo } = useVersionCheck('siteboon', 'claudecodeui');
+  const { updateAvailable, latestVersion, currentVersion, releaseInfo } = useVersionCheck('niuzheng168', 'claudecodeui');
   const releasesUrl = releaseInfo?.htmlUrl || `${GITHUB_REPO_URL}/releases`;
 
   return (

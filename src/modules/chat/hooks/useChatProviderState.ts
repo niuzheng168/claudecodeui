@@ -11,6 +11,7 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelsDefinition } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
+import { isCodeyManagedDeployment } from '@/shared/utils';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
   // Superset used only before the model catalog loads; `ultracode` belongs to the
@@ -28,14 +29,14 @@ const toProviderEffortOptions = (
   values: readonly string[],
 ): NonNullable<ProviderModelOption['effort']>['values'] => values.map((value) => ({ value }));
 
-const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
+const fallbackDefaultModel: Record<LLMProvider, string> = {
   claude: 'default',
   cursor: 'gpt-5.3-codex',
-  codex: 'gpt-5.4',
+  codex: isCodeyManagedDeployment() ? 'gpt-6-astra' : 'gpt-5.6-sol',
   opencode: 'anthropic/claude-sonnet-4-5',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const providers = Object.keys(fallbackDefaultModel) as LLMProvider[];
 
 /** localStorage key holding the user's default model for one provider. */
 const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
@@ -135,14 +136,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // must restore the model that provider was last used with, and the catalogue
   // that validates them arrives asynchronously per provider.
   const [providerModels, setProviderModels] = useState<Record<LLMProvider, string>>(() => {
-    return PROVIDERS.reduce<Record<LLMProvider, string>>((acc, targetProvider) => {
+    return providers.reduce<Record<LLMProvider, string>>((acc, targetProvider) => {
       acc[targetProvider] = localStorage.getItem(providerModelStorageKey(targetProvider))
-        || FALLBACK_DEFAULT_MODEL[targetProvider];
+        || fallbackDefaultModel[targetProvider];
       return acc;
     }, {} as Record<LLMProvider, string>);
   });
   const [providerEfforts, setProviderEfforts] = useState<Partial<Record<LLMProvider, string>>>(() => {
-    return PROVIDERS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
+    return providers.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
       acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
       return acc;
     }, {});
@@ -194,7 +195,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     try {
       const results = await Promise.all(
-        PROVIDERS.map(async (p) => {
+        providers.map(async (p) => {
           const response = await api.providers.models(p);
           const body = (await response.json()) as ProviderModelsApiResponse;
           if (!body.success || !body.data?.models) {
@@ -211,7 +212,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
 
-      PROVIDERS.forEach((p, i) => {
+      providers.forEach((p, i) => {
         const entry = results[i];
         if (!entry) {
           return;
@@ -362,7 +363,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   useEffect(() => {
     const reconciledModels: Partial<Record<LLMProvider, string>> = {};
 
-    for (const targetProvider of PROVIDERS) {
+    for (const targetProvider of providers) {
       const catalog = providerModelCatalog[targetProvider];
       if (!catalog) {
         continue;
@@ -389,7 +390,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
     let hasUpdates = false;
 
-    for (const targetProvider of PROVIDERS) {
+    for (const targetProvider of providers) {
       const currentEffort = providerEfforts[targetProvider] ?? DEFAULT_EFFORT_VALUE;
       const nextEffort = reconcileStoredEffort(targetProvider, providerModels[targetProvider], currentEffort);
       if (nextEffort === currentEffort) {

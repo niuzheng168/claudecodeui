@@ -2,8 +2,9 @@ import { useCallback, useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { LLMProvider, ProviderAuthStatus, ProviderAuthStatusMap } from '@/shared/types';
+import { getEnabledProviders } from '@/shared/utils';
 
-const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const cliProviders = getEnabledProviders();
 
 const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
   claude: { authenticated: false, email: null, method: null, error: null, loading },
@@ -107,7 +108,7 @@ export function useProviderAuthStatus(
     }
   }, [setProviderLoading, setProviderStatus]);
 
-  const refreshProviderAuthStatuses = useCallback(async (providers: LLMProvider[] = CLI_PROVIDERS) => {
+  const refreshProviderAuthStatuses = useCallback(async (providers: LLMProvider[] = cliProviders) => {
     await Promise.all(providers.map((provider) => checkProviderAuthStatus(provider)));
   }, [checkProviderAuthStatus]);
 

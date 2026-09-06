@@ -546,6 +546,8 @@ function ChatInterface({
           textareaRef={textareaRef}
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
+          voiceContextKey={JSON.stringify([selectedProject.name, selectedProject.fullPath, currentSessionId || selectedSession?.id || 'new', isActive])}
+          voiceRecordingAllowed={isActive}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
           onTextareaKeyDown={handleKeyDown}
