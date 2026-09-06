@@ -7,6 +7,7 @@ import { I18nextProvider } from 'react-i18next';
 import '@/index.css';
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
 import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
+import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import { PromptInput, PromptInputBody, PromptInputSubmit, PromptInputTextarea } from '@/modules/chat/composer/PromptInput';
@@ -30,12 +31,19 @@ const config: CodeyVoiceConfig = {
     { id: 'azure-speech', label: 'Azure Speech', configured: true },
     { id: 'mai-transcribe', label: 'MAI Transcribe', configured: true },
   ],
+  rewrite: { configured: true },
 };
 const voiceModes: VoiceInputState[] = ['idle', 'requesting', 'recording', 'transcribing'];
 
 function ComposerToolbarPreview() {
   // The preview draft is local to this disposable browser context.
   const [input, setInput] = useState(params.get('draft') || '');
+  // The preview simulates only presentation/undo, never a real rewrite request.
+  const [rewriteBusy, setRewriteBusy] = useState(params.get('rewrite') === 'busy');
+  // Retain both versions to exercise local undo/restore and the regeneration menu visually.
+  const [rewriteSnapshot, setRewriteSnapshot] = useState<{ original: string; rewritten: string } | null>(
+    params.get('rewrite') === 'done' ? { original: '原始语音文字', rewritten: input } : null,
+  );
   // These states exercise presentation only; no MediaRecorder or getUserMedia exists in this fixture.
   const [voiceState, setVoiceState] = useState<VoiceInputState>(voiceModes.find((value) => value === params.get('state')) || 'idle');
   // Selectors update this in-memory fixture, not a real user's saved provider.
@@ -50,6 +58,8 @@ function ComposerToolbarPreview() {
   const modelLabel = params.get('long') === '1'
     ? 'An intentionally very long custom Codex deployment name (872K context)'
     : 'GPT-6 Astra (872K context)';
+  const rewriteAllowed = !rewriteBusy && voiceState === 'idle' && Boolean(input.trim()) &&
+    (!rewriteSnapshot || [rewriteSnapshot.original, rewriteSnapshot.rewritten].includes(input));
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'hsl(var(--background))', color: 'hsl(var(--foreground))' }}>
@@ -65,10 +75,27 @@ function ComposerToolbarPreview() {
           </PromptInputBody>
           <ComposerToolbar onAttachFiles={() => record('attach')}
             voiceControl={<ComposerVoiceControl state={voiceState} disabled={false}
-              onToggle={() => { record('mic'); setVoiceState((value) => value === 'idle' ? 'recording' : 'idle'); }}
+              onToggle={() => {
+                record('mic');
+                if (voiceState === 'idle') setRewriteSnapshot(null);
+                setVoiceState((value) => value === 'idle' ? 'recording' : 'idle');
+              }}
               onCancel={() => { record('cancel-voice'); setVoiceState('idle'); }}
               managed={{ config, preferences, onChange: (patch) => setPreferences((value) => ({ ...value, ...patch })),
                 onRefresh: () => record('refresh-voice'), loadFailed: false }} />}
+            rewriteControl={<VoiceRewriteControl busy={rewriteBusy} canRewrite={rewriteAllowed}
+              canUndo={Boolean(rewriteAllowed && rewriteSnapshot && input === rewriteSnapshot.rewritten && input !== rewriteSnapshot.original)}
+              canRestore={Boolean(rewriteAllowed && rewriteSnapshot && input === rewriteSnapshot.original && input !== rewriteSnapshot.rewritten)}
+              hasPreviousRewrite={rewriteSnapshot !== null} configured
+              onRewrite={() => {
+                record('rewrite');
+                const rewritten = locale === 'zh-CN' ? '请检查 westus2 的语音配置，不要重启服务。' : 'Check the voice settings without restarting.';
+                setRewriteSnapshot({ original: rewriteSnapshot?.original ?? input, rewritten });
+                setInput(rewritten);
+              }}
+              onCancel={() => { record('cancel-rewrite'); setRewriteBusy(false); }}
+              onUndo={() => { if (rewriteSnapshot) { record('undo-rewrite'); setInput(rewriteSnapshot.original); } }}
+              onRestore={() => { if (rewriteSnapshot) { record('restore-rewrite'); setInput(rewriteSnapshot.rewritten); } }} />}
             modelControl={<ComposerModelMenu effort={effort} effortOptions={['low', 'medium', 'high', 'max'].map((value) => ({ value }))}
               onSelectEffort={(value) => { setEffort(value); record(`effort:${value}`); }}
               model="gpt-6-astra" modelOptions={[{ value: 'gpt-6-astra', label: modelLabel }]}

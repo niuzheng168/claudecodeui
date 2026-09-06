@@ -51,6 +51,7 @@
     "cancelChanges": "取消更改"
   },
   "voiceSettings": {
+    "rewriteHistory": "点击润色时，参考当前会话最近最多 3 轮聊天正文（不发送工具输出）。",
     "inputTitle": "语音输入",
     "managedDescription": "录音后由 Azure Speech 或 MAI Transcribe 转为文字。点击麦克风开始，再次点击停止；默认填入输入框。",
     "enableInput": "启用语音输入",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -919,13 +919,26 @@ export function useChatComposerState({
   // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
   const handleVoiceTranscript = useCallback((text: string, send?: boolean) => {
     const base = inputValueRef.current.trim();
-    const next = base ? `${base} ${text}` : text;
+    const prefix = base ? `${base} ` : '';
+    const next = `${prefix}${text}`;
     setInput(next);
     inputValueRef.current = next;
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
+    return { prefix, transcript: text, draft: next };
   }, [setInput]);
 
-  useEffect(() => {
+  // React's functional update is the final compare-and-set: a pending local
+  // edit or a hydrated draft wins even if a network callback saw older props.
+  const replaceVoiceDraft = useCallback((expected: string, replacement: string) => {
+    const scope = draftScope;
+    if (draftScopeRef.current !== scope) return;
+    setInputState((previous) => previous.scope === scope && previous.value === expected &&
+      draftScopeRef.current === scope ? { scope, value: replacement } : previous);
+  }, [draftScope]);
+
+  // A committed rewrite/undo must reach the submit reader before the next
+  // keyboard event, without sending anything from the rewrite callback itself.
+  useLayoutEffect(() => {
     inputValueRef.current = input;
   }, [input]);
 
@@ -1222,6 +1235,7 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
+    replaceVoiceDraft,
     handleInputChange,
     handleKeyDown,
     handlePaste,

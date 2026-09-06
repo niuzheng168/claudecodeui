@@ -160,3 +160,37 @@ test('clearing the composer clears that session\'s stored draft', async () => {
 
   assert.equal(readDraftText('session-a'), '');
 });
+
+test('voice insertion provides an exact receipt and rewrite/undo preserves the typed prefix', async () => {
+  const view = renderComposer({ id: 'session-a' });
+  await act(async () => view.result.current.setInput('Typed prefix.'));
+  let receipt = { prefix: '', transcript: '', draft: '' };
+  await act(async () => { receipt = view.result.current.handleVoiceTranscript('呃，检查配置。', false); });
+  assert.deepEqual(receipt, { prefix: 'Typed prefix. ', transcript: '呃，检查配置。', draft: 'Typed prefix. 呃，检查配置。' });
+  await act(async () => view.result.current.replaceVoiceDraft(receipt.draft, receipt.prefix + '请检查配置。'));
+  assert.equal(view.result.current.input, 'Typed prefix. 请检查配置。');
+  assert.equal(readDraftText('session-a'), view.result.current.input);
+  await act(async () => view.result.current.replaceVoiceDraft('Typed prefix. 请检查配置。', receipt.draft));
+  assert.equal(view.result.current.input, receipt.draft);
+});
+
+test('a queued edit wins over rewrite even before React commits the changed draft', async () => {
+  const view = renderComposer({ id: 'session-a' });
+  await act(async () => view.result.current.setInput('old text'));
+  await act(async () => {
+    view.result.current.setInput('new user edit');
+    view.result.current.replaceVoiceDraft('old text', 'model replacement');
+  });
+  assert.equal(view.result.current.input, 'new user edit');
+});
+
+test('a rewrite callback from another session cannot update an identical-looking draft', async () => {
+  writeDraftText('session-b', 'same text');
+  const view = renderComposer({ id: 'session-a' });
+  await act(async () => view.result.current.setInput('same text'));
+  const replaceOldDraft = view.result.current.replaceVoiceDraft;
+  await act(async () => view.rerender({ session: { id: 'session-b' } }));
+  await act(async () => replaceOldDraft('same text', 'wrong session replacement'));
+  assert.equal(view.result.current.input, 'same text');
+  assert.equal(readDraftText('session-b'), 'same text');
+});

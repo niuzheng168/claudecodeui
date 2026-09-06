@@ -5,7 +5,7 @@ import { cn } from '@/shared/utils';
 import type { ComposerMenuAnchor } from '@/shared/types';
 
 /**
- * Used by chat's model, permission, voice and tools popovers for one bounded,
+ * Used by chat's model, permission, voice/rewrite and tools popovers for one bounded,
  * portalled surface. Form controls use a non-modal dialog instead of menu roles.
  */
 export function ComposerMenuSurface({
@@ -42,7 +42,7 @@ export function ComposerMenuSurface({
   );
 }
 
-/** Chat's model, permission, voice and tools popovers use this section heading. */
+/** Chat's model, permission, voice/rewrite and tools popovers use this section heading. */
 export function ComposerMenuHeading({ children }: { children: ReactNode }) {
   return (
     <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{children}</p>
@@ -54,7 +54,7 @@ export function ComposerMenuSeparator() {
   return <div className="my-1 h-px bg-border" aria-hidden />;
 }
 
-/** Chat's model, permission and tools popovers use this keyboard-accessible action/selection row. */
+/** Chat's model, permission, rewrite and tools popovers use this keyboard-accessible action/selection row. */
 export function ComposerMenuItem({
   label,
   description,

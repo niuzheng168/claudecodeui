@@ -21,6 +21,10 @@ export default defineConfig({
     // token. The tests that care stub it per case and assert both modes.
     env: {
       VITE_IS_PLATFORM: 'false',
+      // Local Codey builds enable these flags in .env. General upstream tests
+      // exercise standalone defaults; Codey-specific cases opt in with stubEnv.
+      VITE_CODEY_MANAGED: 'false',
+      VITE_CODEY_PORTAL_SSO: 'false',
     },
     setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],

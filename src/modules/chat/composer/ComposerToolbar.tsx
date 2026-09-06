@@ -9,6 +9,8 @@ import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 type Props = {
   onAttachFiles: () => void;
   voiceControl?: ReactNode;
+  rewriteControl?: ReactNode;
+  rewriteNotice?: ReactNode;
   modelControl: ReactNode;
   permissionControl: ReactNode;
   submitControl: ReactNode;
@@ -28,7 +30,7 @@ type Props = {
 
 /** ChatComposer uses this two-level toolbar to keep primary actions visible and secondary settings out of the typing row. */
 export function ComposerToolbar({
-  onAttachFiles, voiceControl, modelControl, permissionControl, submitControl,
+  onAttachFiles, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
   tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
   canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError,
 }: Props) {
@@ -40,6 +42,7 @@ export function ComposerToolbar({
           {voiceError}
         </p>
       )}
+      {rewriteNotice}
       <div className="composer-primary flex min-w-0 items-center gap-1.5" data-slot="composer-primary">
         <PromptInputTools className="shrink-0 gap-0.5">
           <PromptInputButton tooltip={{ content: t('input.attachFiles') }} aria-label={t('input.attachFiles')}
@@ -47,6 +50,7 @@ export function ComposerToolbar({
             <PaperclipIcon />
           </PromptInputButton>
           {voiceControl}
+          {rewriteControl}
           <ComposerToolsMenu commandsCount={commandsCount} onShowCommands={onShowCommands}
             hasInput={hasInput} onClearInput={onClearInput} canSchedule={canSchedule} onSchedule={onSchedule} />
         </PromptInputTools>

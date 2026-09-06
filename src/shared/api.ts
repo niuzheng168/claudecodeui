@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { CodeyVoicePreferences } from '@/shared/types';
+import type { CodeyVoicePreferences, VoiceRewriteMessage } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -515,6 +515,13 @@ export const api = {
 
   voice: {
     codeyConfig: () => get('/api/voice/codey/config', { credentials: 'same-origin', cache: 'no-store' }),
+    codeyRewrite: (
+      body: { transcript: string; history: VoiceRewriteMessage[]; language: string },
+      signal: AbortSignal,
+    ) => authenticatedFetch('/api/voice/codey/rewrite', {
+      method: 'POST', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }),
     codeyTranscribe: (audio: Blob, preferences: CodeyVoicePreferences, signal: AbortSignal) =>
       authenticatedFetch(`/api/voice/codey/transcribe${query(preferences)}`, {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
