@@ -3,8 +3,9 @@ import {
   getStoredAuthToken,
   storeAuthToken,
 } from '@/shared/authToken';
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+import type { CodeyVoicePreferences } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -30,7 +31,7 @@ export const authenticatedFetch = (
     defaultHeaders['Authorization'] = `Bearer ${token}`;
   }
 
-  return fetch(url, {
+  return fetch(withDeploymentBasePath(url), {
     ...options,
     headers: {
       ...defaultHeaders,
@@ -114,7 +115,9 @@ export const sessionMessagesUrl = (
   sessionId: string,
   { limit = null, offset = 0 }: { limit?: number | null; offset?: number } = {},
 ): string => {
-  const base = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
+  const base = withDeploymentBasePath(
+    `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
   return limit === null || limit === undefined
     ? base
     : `${base}${query({ limit, offset: offset ?? 0 })}`;
@@ -133,13 +136,15 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 export const api = {
   // Auth endpoints (no token required)
   auth: {
-    status: () => fetch('/api/auth/status'),
-    login: (username: string, password: string) => fetch('/api/auth/login', {
+    portalSession: () => fetch('/portal-auth/session', { cache: 'no-store', credentials: 'same-origin' }),
+    portalLogout: () => fetch('/portal-auth/logout', { method: 'POST', credentials: 'same-origin' }),
+    status: () => fetch(withDeploymentBasePath('/api/auth/status')),
+    login: (username: string, password: string) => fetch(withDeploymentBasePath('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
-    register: (username: string, password: string) => fetch('/api/auth/register', {
+    register: (username: string, password: string) => fetch(withDeploymentBasePath('/api/auth/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -180,13 +185,17 @@ export const api = {
   // EventSource cannot send an Authorization header, so the token rides along as
   // a query parameter on the streaming endpoints below.
   cloneProjectProgressUrl: (params: Record<string, QueryValue>) =>
-    `/api/projects/clone-progress${query({ ...params, token: getStoredAuthToken() })}`,
+    withDeploymentBasePath(
+      `/api/projects/clone-progress${query({ ...params, token: getStoredAuthToken() })}`,
+    ),
   searchConversationsUrl: (searchQuery: string, limit = 50) =>
-    `/api/providers/search/sessions${query({
-      q: searchQuery,
-      limit,
-      token: getStoredAuthToken(),
-    })}`,
+    withDeploymentBasePath(
+      `/api/providers/search/sessions${query({
+        q: searchQuery,
+        limit,
+        token: getStoredAuthToken(),
+      })}`,
+    ),
 
   // Session endpoints. Provider/project metadata are resolved by the backend
   // from the session id.
@@ -505,12 +514,19 @@ export const api = {
   },
 
   voice: {
+    codeyConfig: () => get('/api/voice/codey/config', { credentials: 'same-origin', cache: 'no-store' }),
+    codeyTranscribe: (audio: Blob, preferences: CodeyVoicePreferences, signal: AbortSignal) =>
+      authenticatedFetch(`/api/voice/codey/transcribe${query(preferences)}`, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'audio/wav' }, body: audio, signal,
+      }),
     health: () => get('/api/voice/health'),
-    transcribe: (formData: FormData, headers: Record<string, string> = {}) =>
+    transcribe: (formData: FormData, headers: Record<string, string> = {}, signal?: AbortSignal) =>
       authenticatedFetch('/api/voice/transcribe', {
         method: 'POST',
         headers,
         body: formData,
+        signal,
       }),
     tts: (text: string, options: ApiRequestOptions = {}) => post('/api/voice/tts', { text }, options),
   },
@@ -544,7 +560,7 @@ export function voiceConfigSignature(): string {
  * Transcribes recorded audio, posting directly to the user's configured OpenAI-compatible
  * endpoint when one is set and otherwise going through the CloudCLI voice proxy.
  */
-export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
+export function transcribeVoice(blob: Blob, filename: string, signal?: AbortSignal): Promise<Response> {
   const config = readVoiceConfig();
   const body = new FormData();
 
@@ -555,11 +571,12 @@ export function transcribeVoice(blob: Blob, filename: string): Promise<Response>
       method: 'POST',
       headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
       body,
+      signal,
     });
   }
 
   body.append('audio', blob, filename);
-  return api.voice.transcribe(body, voiceConfigHeaders());
+  return api.voice.transcribe(body, voiceConfigHeaders(), signal);
 }
 
 /**

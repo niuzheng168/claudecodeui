@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, isCodeyPortalSso } from '@/shared/utils';
 import { useAuth } from '@/modules/auth/context/AuthContext';
 import { Onboarding } from '@/modules/onboarding';
 import AuthLoadingScreen from '@/modules/auth/AuthLoadingScreen';
@@ -32,6 +32,7 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   if (!user) {
+    if (isCodeyPortalSso()) return <AuthLoadingScreen />;
     return <LoginForm />;
   }
 

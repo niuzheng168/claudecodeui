@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { DarkModeToggle } from '@/shared/ui';
 import { LanguageSelector } from '@/modules/i18n';
 import { SETTING_ROW_CLASS } from '@/shared/constants';
+import { isCodeyPortalSso } from '@/shared/utils';
 import type { PreferenceToggleKey, QuickSettingsPreferences } from '@/shared/types';
 import QuickSettingsSection from '@/modules/quick-settings-panel/QuickSettingsSection';
 import QuickSettingsToggleRow from '@/modules/quick-settings-panel/QuickSettingsToggleRow';
@@ -62,7 +63,8 @@ export default function QuickSettingsContent({
   onPreferenceChange,
 }: QuickSettingsContentProps) {
   const { t } = useTranslation('settings');
-  const inputSettingToggles = preferences.voiceEnabled
+  const managedVoice = isCodeyPortalSso();
+  const inputSettingToggles = managedVoice || preferences.voiceEnabled
     ? INPUT_SETTING_TOGGLES
     : INPUT_SETTING_TOGGLES.filter(({ key }) => key !== 'voiceEnabled');
 
@@ -70,7 +72,7 @@ export default function QuickSettingsContent({
     items.map(({ key, labelKey, icon }) => (
       <QuickSettingsToggleRow
         key={key}
-        label={t(labelKey)}
+        label={t(managedVoice && key === 'voiceEnabled' ? 'voiceSettings.enableInput' : labelKey)}
         icon={icon}
         checked={preferences[key]}
         onCheckedChange={(value) => onPreferenceChange(key, value)}

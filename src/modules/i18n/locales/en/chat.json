@@ -97,9 +97,36 @@
     "technicalDetails": "Technical details"
   },
   "voice": {
+    "options": "Voice options",
+    "optionsHint": "Choose a service and language. Only the microphone button starts recording.",
+    "optionsLimit": "Up to {{seconds}} seconds per recording",
+    "optionsLocked": "Options are locked for this recording",
     "input": "Voice input",
     "stopRecording": "Stop recording",
     "transcribing": "Transcribing…",
+    "requesting": "Waiting for microphone permission…",
+    "recording": "Recording…",
+    "cancel": "Cancel voice input",
+    "failed": "Transcription failed. Please retry.",
+    "errors": {
+      "VOICE_BROWSER_UNSUPPORTED": "Use a browser with recording support and open this page over HTTPS.",
+      "VOICE_MIC_DENIED": "Allow this site to use your microphone in the browser.",
+      "VOICE_MIC_MISSING": "No microphone was found.",
+      "VOICE_RECORDING_FAILED": "Recording failed. Check your microphone and retry.",
+      "VOICE_DURATION_INVALID": "Record between 0.25 seconds and 2 minutes.",
+      "VOICE_AUDIO_TOO_LARGE": "Recording is too large. Try a shorter clip.",
+      "VOICE_AUDIO_INVALID": "Unable to read this recording. Please record again.",
+      "VOICE_NO_SPEECH": "No speech was detected. Please try again.",
+      "VOICE_BUSY": "Voice requests are busy. Please wait and retry.",
+      "VOICE_NOT_CONFIGURED": "This voice service is not configured. Select another service or contact the administrator.",
+      "VOICE_PROVIDER_REJECTED": "The voice provider rejected the request. Ask the administrator to check its region, configuration and credentials.",
+      "VOICE_TIMEOUT": "Transcription timed out. Try a shorter recording or retry later.",
+      "VOICE_UNAVAILABLE": "The voice service is temporarily unavailable.",
+      "VOICE_TRANSCRIPTION_FAILED": "Transcription failed. Please retry.",
+      "VOICE_LOGIN_REQUIRED": "Your session expired. Sign in to Codey again.",
+      "VOICE_NODE_DENIED": "Access to this Workspace has been revoked.",
+      "VOICE_UPLOAD_TIMEOUT": "Audio upload timed out. Check your connection."
+    },
     "speak": "Read aloud",
     "stopSpeaking": "Stop",
     "loading": "Loading…"
@@ -132,6 +159,12 @@
     }
   },
   "composer": {
+    "moreTools": "More tools",
+    "backToTools": "Back to tools",
+    "writeFirst": "Write a message first",
+    "tokenUsage": "Show token usage",
+    "tokensUsed": "{{tokens}} tokens used",
+    "tokenCount": "{{tokens}} tokens",
     "reasoning": "Reasoning",
     "model": "Model",
     "effortDefault": "Default",
@@ -268,6 +301,7 @@
     }
   },
   "schedule": {
+    "futureTime": "Choose a future time.",
     "trigger": "Schedule this message",
     "heading": "Send later",
     "customLabel": "Or pick a time",

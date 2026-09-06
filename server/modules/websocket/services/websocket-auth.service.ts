@@ -1,8 +1,13 @@
 import type { VerifyClientCallbackSync } from 'ws';
 
-import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
+import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 
 type WebSocketAuthDependencies = {
+  authenticatePortalRequest?: (request: AuthenticatedWebSocketRequest) => {
+    id?: string | number;
+    userId?: string | number;
+    username?: string;
+  } | null;
   isPlatform: boolean;
   authenticateWebSocket: (token: string | null) => {
     id?: string | number;
@@ -20,6 +25,12 @@ export function verifyWebSocketClient(
   dependencies: WebSocketAuthDependencies
 ): boolean {
   const request = info.req as AuthenticatedWebSocketRequest;
+  if (dependencies.authenticatePortalRequest) {
+    const user = dependencies.authenticatePortalRequest(request);
+    if (!user) return false;
+    request.user = user;
+    return true;
+  }
   const upgradeUrl = new URL(request.url ?? '/', 'http://localhost');
   const loggedUrl = new URL(upgradeUrl);
   if (loggedUrl.searchParams.has('token')) {

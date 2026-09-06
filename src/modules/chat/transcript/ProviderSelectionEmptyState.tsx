@@ -28,6 +28,7 @@ import {
 } from "@/shared/ui";
 import ModelLibraryPanel from "@/modules/chat/modals/ModelLibraryPanel";
 import { writeSelectedProvider } from '@/shared/selectedProvider';
+import { getEnabledProviders, isCodeyManagedDeployment } from '@/shared/utils';
 
 const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "claude", name: "Anthropic" },
@@ -35,6 +36,9 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
 ];
+
+const enabledProviderIds = new Set(getEnabledProviders());
+const enabledProviderMeta = PROVIDER_META.filter(({ id }) => enabledProviderIds.has(id));
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -113,9 +117,10 @@ export default function ProviderSelectionEmptyState({
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [modelLibraryOpen, setModelLibraryOpen] = useState(false);
+  const codeyManaged = isCodeyManagedDeployment();
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
+    return enabledProviderMeta.map((p) => ({
       id: p.id,
       name: p.name,
       models: providerModelCatalog[p.id]?.OPTIONS ?? [],
@@ -218,16 +223,18 @@ export default function ProviderSelectionEmptyState({
                     })}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={openModelLibrary}
-                  className="h-8 shrink-0 rounded-lg px-2.5 text-xs"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {t("providerSelection.addModel", { defaultValue: "Add model" })}
-                </Button>
+                {!codeyManaged && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={openModelLibrary}
+                    className="h-8 shrink-0 rounded-lg px-2.5 text-xs"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t("providerSelection.addModel", { defaultValue: "Add model" })}
+                  </Button>
+                )}
               </div>
               <Command filter={modelSearchFilter}>
                 <CommandInput
@@ -296,30 +303,32 @@ export default function ProviderSelectionEmptyState({
             </DialogContent>
           </Dialog>
 
-          <Dialog
-            open={modelLibraryOpen}
-            onOpenChange={(open) => {
-              if (open) {
-                setModelLibraryOpen(true);
-              } else {
-                closeModelLibrary();
-              }
-            }}
-          >
-            <DialogContent className="flex h-[min(90dvh,46rem)] w-[calc(100vw-1rem)] max-w-4xl flex-col overflow-hidden rounded-3xl p-4 sm:p-5">
-              <DialogTitle>
-                {t("providerSelection.manageModels", {
-                  defaultValue: "Manage models",
-                })}
-              </DialogTitle>
-              <ModelLibraryPanel
-                initialProvider={provider}
-                providerModelCatalog={providerModelCatalog}
-                actions={providerModelActions}
-                onDone={closeModelLibrary}
-              />
-            </DialogContent>
-          </Dialog>
+          {!codeyManaged && (
+            <Dialog
+              open={modelLibraryOpen}
+              onOpenChange={(open) => {
+                if (open) {
+                  setModelLibraryOpen(true);
+                } else {
+                  closeModelLibrary();
+                }
+              }}
+            >
+              <DialogContent className="flex h-[min(90dvh,46rem)] w-[calc(100vw-1rem)] max-w-4xl flex-col overflow-hidden rounded-3xl p-4 sm:p-5">
+                <DialogTitle>
+                  {t("providerSelection.manageModels", {
+                    defaultValue: "Manage models",
+                  })}
+                </DialogTitle>
+                <ModelLibraryPanel
+                  initialProvider={provider}
+                  providerModelCatalog={providerModelCatalog}
+                  actions={providerModelActions}
+                  onDone={closeModelLibrary}
+                />
+              </DialogContent>
+            </Dialog>
+          )}
 
           <p className="mt-4 text-center text-sm text-muted-foreground/70">
             {

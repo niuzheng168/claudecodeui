@@ -104,12 +104,14 @@ const createTestService = (options: {
   sessions?: ReturnType<typeof createSessionStore>;
   activeModel?: (provider: LLMProvider, sessionId?: string) => string;
   onCatalogRead?: (provider: LLMProvider) => void;
+  codeyManaged?: boolean;
 } = {}) => {
   const catalog = options.catalog ?? createCatalogStore();
   const sessions = options.sessions ?? createSessionStore();
   const service = createProviderModelsService({
     catalog,
     sessions,
+    isCodeyManaged: () => Boolean(options.codeyManaged),
     resolveProvider: (provider) => ({
       models: {
         getSupportedModels: async () => {
@@ -279,6 +281,23 @@ test('resolveSessionModel prefers the recorded session model', async () => {
   assert.equal(resolved.source, 'session');
 });
 
+test('Codey-managed Codex sessions replace a stale recorded model with the managed default', async () => {
+  const sessions = createSessionStore(
+    { 'session-1': 'gpt-5.6-sol' },
+    { 'session-1': 'max' },
+  );
+  const { service } = createTestService({ sessions, codeyManaged: true });
+
+  const resolved = await service.resolveSessionModel('codex', {
+    sessionId: 'session-1',
+    requestedModel: 'gpt-5.6-sol',
+  });
+
+  assert.equal(resolved.model, 'codex-default');
+  assert.equal(resolved.effort, 'max');
+  assert.equal(sessions.sessions.get('session-1')?.model, 'codex-default');
+});
+
 test('resolveSessionModel uses provider session state for unrecorded external sessions', async () => {
   const { service } = createTestService({
     sessions: createSessionStore({ 'session-1': null }),
@@ -334,6 +353,20 @@ test('resolveResumeModel prefers the recorded session model over the requested o
 
   const model = await service.resolveResumeModel('cursor', 'session-456', 'composer-2-fast');
   assert.equal(model, 'composer-2');
+});
+
+test('Codey-managed Codex resume always uses and records the managed default', async () => {
+  const sessions = createSessionStore({ 'session-456': 'gpt-5.6-sol' });
+  const { service } = createTestService({ sessions, codeyManaged: true });
+
+  const model = await service.resolveResumeModel(
+    'codex',
+    'session-456',
+    'gpt-5.6-terra',
+  );
+
+  assert.equal(model, 'codex-default');
+  assert.equal(sessions.sessions.get('session-456')?.model, 'codex-default');
 });
 
 test('resolveResumeModel never consults provider-global state', async () => {

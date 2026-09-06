@@ -1,4 +1,4 @@
-import { IS_PLATFORM } from '@/shared/utils';
+import { IS_PLATFORM, isCodeyPortalSso, withDeploymentBasePath } from '@/shared/utils';
 import { getStoredAuthToken } from '@/shared/authToken';
 
 type ShellInitMessage = {
@@ -38,9 +38,10 @@ type ShellIncomingMessage =
 
 export function getShellWebSocketUrl(): string | null {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socketPath = withDeploymentBasePath('/shell');
 
-  if (IS_PLATFORM) {
-    return `${protocol}//${window.location.host}/shell`;
+  if (IS_PLATFORM || isCodeyPortalSso()) {
+    return `${protocol}//${window.location.host}${socketPath}`;
   }
 
   const token = getStoredAuthToken();
@@ -49,7 +50,7 @@ export function getShellWebSocketUrl(): string | null {
     return null;
   }
 
-  return `${protocol}//${window.location.host}/shell?token=${encodeURIComponent(token)}`;
+  return `${protocol}//${window.location.host}${socketPath}?token=${encodeURIComponent(token)}`;
 }
 
 export function parseShellMessage(payload: string): ShellIncomingMessage | null {

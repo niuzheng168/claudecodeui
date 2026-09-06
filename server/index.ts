@@ -5,6 +5,7 @@ import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
+import https from 'node:https';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
@@ -25,6 +26,8 @@ import {
     authenticateWebSocket,
     authRoutes,
     validateApiKey,
+    portalSsoMiddleware,
+    authenticatePortalWebSocket,
 } from './modules/auth/index.js';
 import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
@@ -77,12 +80,23 @@ const RUNNING_VERSION = (() => {
 const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
+    isCodeyManaged: process.env.CODEY_MANAGED === 'true',
     isPlatform: IS_PLATFORM,
 });
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 const app = express();
-const server = http.createServer(app);
+const portalTls = process.env.CODEY_PORTAL_SSO === 'true';
+if (portalTls && (!process.env.CODEY_PORTAL_TLS_CERT || !process.env.CODEY_PORTAL_TLS_KEY)) {
+    throw new Error('Codey SSO requires a TLS certificate and private key');
+}
+const server = portalTls
+    ? https.createServer({
+        cert: fs.readFileSync(process.env.CODEY_PORTAL_TLS_CERT!),
+        key: fs.readFileSync(process.env.CODEY_PORTAL_TLS_KEY!),
+        minVersion: 'TLSv1.2',
+    }, app)
+    : http.createServer(app);
 const queryClaude = providerRuntimeService.getRunner('claude');
 const queryCursor = providerRuntimeService.getRunner('cursor');
 const queryCodex = providerRuntimeService.getRunner('codex');
@@ -103,6 +117,7 @@ createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
+        authenticatePortalRequest: authenticatePortalWebSocket,
     },
     chat: {
         runtime: providerRuntimeService,
@@ -120,6 +135,8 @@ createWebSocketServer(server, {
     getPluginPort,
 });
 
+// Must precede body parsers, CORS, local auth/API-key routes, and static assets.
+app.use(portalSsoMiddleware);
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
 app.use(express.json({
     limit: '50mb',

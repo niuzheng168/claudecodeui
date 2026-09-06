@@ -147,3 +147,19 @@ tasks/
 cloudcli-sidebar-app-source.tar.gz
 cloudcli-sidebar.html
 electron/*.tar.gz
+
+# Codey: never publish deployment credentials or runtime exports.
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.backup
+*.bak
+artifacts/
+__pycache__/
+.pytest_cache/

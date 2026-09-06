@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 
 import { APP_VERSION } from '@/shared/constants';
 import type { InstallMode, ReleaseInfo } from '@/shared/types';
+import { isCodeyManagedDeployment, withDeploymentBasePath } from '@/shared/utils';
 
 /**
  * Compare two semantic version strings
@@ -24,6 +25,7 @@ const compareVersions = (v1: string, v2: string) => {
 
 
 export const useVersionCheck = (owner: string, repo: string) => {
+  const isManagedByCodey = isCodeyManagedDeployment();
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
@@ -34,7 +36,7 @@ export const useVersionCheck = (owner: string, repo: string) => {
   useEffect(() => {
     const fetchHealth = async () => {
       try {
-        const response = await fetch('/health');
+        const response = await fetch(withDeploymentBasePath('/health'));
         const data = await response.json();
         if (data.installMode === 'npm' || data.installMode === 'git') {
           setInstallMode(data.installMode);
@@ -56,6 +58,10 @@ export const useVersionCheck = (owner: string, repo: string) => {
   }, []);
 
   useEffect(() => {
+    if (isManagedByCodey) {
+      return;
+    }
+
     const checkVersion = async () => {
       try {
         const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
@@ -93,7 +99,7 @@ export const useVersionCheck = (owner: string, repo: string) => {
     checkVersion();
     const interval = setInterval(checkVersion, 5 * 60 * 1000); // Check every 5 minutes
     return () => clearInterval(interval);
-  }, [owner, repo]);
+  }, [isManagedByCodey, owner, repo]);
 
   return { updateAvailable, latestVersion, currentVersion: APP_VERSION, releaseInfo, installMode, runningVersion, restartRequired };
 };

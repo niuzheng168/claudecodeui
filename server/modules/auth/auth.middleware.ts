@@ -1,15 +1,17 @@
 // @ts-nocheck -- JWT request augmentation is narrowed by Auth route contracts.
 import jwt from 'jsonwebtoken';
 
-import { IS_PLATFORM } from '@/shared/utils.js';
+import { userDb, appConfigDb } from '@/modules/database/index.js';
+import { IS_PLATFORM } from '@/shared/index.js';
 
-import { userDb, appConfigDb } from '../database/index.js';
+import { portalSso } from './portal-sso.module.js';
 
 // Use env var if set, otherwise auto-generate a unique secret per installation
-const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
+const JWT_SECRET = portalSso.enabled ? '' : process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
 
 // Optional API key middleware
-const validateApiKey = (req, res, next) => {
+export const validateApiKey = (req, res, next) => {
+  if (portalSso.enabled) return next(); // The mandatory global SSO guard has already authenticated this request.
   // Skip API key validation if not configured
   if (!process.env.API_KEY) {
     return next();
@@ -21,9 +23,14 @@ const validateApiKey = (req, res, next) => {
   }
   next();
 };
-
 // JWT authentication middleware
-const authenticateToken = async (req, res, next) => {
+export const authenticateToken = async (req, res, next) => {
+  if (portalSso.enabled) {
+    const user = portalSso.authenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Codey portal authentication required' });
+    req.user = user;
+    return next();
+  }
   // Platform mode:  use single database user
   if (IS_PLATFORM) {
     try {
@@ -103,7 +110,8 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token
-const generateToken = (user) => {
+export const generateToken = (user) => {
+  if (portalSso.enabled) throw new Error('Local JWT issuance is disabled in Codey SSO mode');
   return jwt.sign(
     {
       userId: user.id,
@@ -115,7 +123,8 @@ const generateToken = (user) => {
 };
 
 // WebSocket authentication function
-const authenticateWebSocket = (token) => {
+export const authenticateWebSocket = (token) => {
+  if (portalSso.enabled) return null;
   // Platform mode: bypass token validation, return first user
   if (IS_PLATFORM) {
     try {
@@ -152,12 +161,4 @@ const authenticateWebSocket = (token) => {
     }
     return null;
   }
-};
-
-export {
-  validateApiKey,
-  authenticateToken,
-  generateToken,
-  authenticateWebSocket,
-  JWT_SECRET
 };

@@ -12,6 +12,7 @@ function createDependencies(
     appRoot: '/app/cloudcli',
     homeDirectory: '/home/cloudcli',
     installMode: 'git',
+    isCodeyManaged: false,
     isPlatform: false,
     environment: { TEST_ENVIRONMENT: 'true' },
     runShellCommand: async () => ({ exitCode: 0, output: 'updated', errorOutput: '' }),
@@ -43,6 +44,23 @@ test('git installations update from the application root', async () => {
     output: 'git update complete',
     message: 'Update completed. Please restart the server to apply changes.',
   });
+});
+
+test('Codey-managed installations refuse in-place upstream updates', async () => {
+  let commandRan = false;
+  const service = createSystemUpdateService(createDependencies({
+    isCodeyManaged: true,
+    runShellCommand: async () => {
+      commandRan = true;
+      return { exitCode: 0, output: 'unexpected', errorOutput: '' };
+    },
+  }));
+
+  assert.deepEqual(await service.updateSystem(), {
+    success: false,
+    error: 'This CloudCLI installation is managed by Codey. Deploy updates through Codey.',
+  });
+  assert.equal(commandRan, false);
 });
 
 test('global npm installations update from the user home directory', async () => {

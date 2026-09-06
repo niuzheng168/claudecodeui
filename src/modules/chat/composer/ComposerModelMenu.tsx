@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
@@ -41,18 +41,12 @@ function ComposerModelMenu({
   modelsLoading,
 }: ComposerModelMenuProps) {
   const { t } = useTranslation('chat');
+  // Keep the model/effort choices out of the compact primary toolbar until opened.
   const [isOpen, setIsOpen] = useState(false);
+  // The full catalog is an optional second level; the selected model remains visible below reasoning.
   const [isModelSectionOpen, setIsModelSectionOpen] = useState(false);
-  const close = useCallback(() => setIsOpen(false), []);
+  const close = useCallback(() => { setIsOpen(false); setIsModelSectionOpen(false); }, []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close);
-
-  // The model list starts collapsed every time the menu opens, the way Codex
-  // shows reasoning first and keeps the longer model list one click away.
-  useEffect(() => {
-    if (!isOpen) {
-      setIsModelSectionOpen(false);
-    }
-  }, [isOpen]);
 
   const defaultEffortLabel = t('composer.effortDefault', { defaultValue: 'Default' });
   const resolvedEffortOptions = useMemo<EffortOption[]>(
@@ -74,6 +68,8 @@ function ComposerModelMenu({
   }
 
   const triggerLabel = hasModelSection ? modelLabel : effortLabel;
+  // Only shorten the presentation; selection values and the full context label stay in the menu/title.
+  const compactLabel = triggerLabel.replace(/\s*\([^)]*\bcontext\b[^)]*\)\s*$/i, '').trim() || triggerLabel;
   const ariaLabel = t('composer.modelMenu', {
     defaultValue: 'Select model and reasoning effort',
   });
@@ -85,18 +81,17 @@ function ComposerModelMenu({
         type="button"
         onClick={() => {
           updateAnchor();
+          setIsModelSectionOpen(false);
           setIsOpen((current) => !current);
         }}
-        className="flex h-8 max-w-20 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted sm:max-w-56"
+        className="flex h-8 min-w-0 max-w-44 shrink items-center justify-center gap-1 rounded-lg bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        aria-label={ariaLabel}
-        title={ariaLabel}
+        aria-label={`${ariaLabel}: ${triggerLabel}${hasEffortSection ? ` · ${effortLabel}` : ''}`}
+        title={`${triggerLabel}${hasEffortSection ? ` · ${effortLabel}` : ''}`}
       >
-        <span className="truncate">{triggerLabel}</span>
-        {hasModelSection && hasEffortSection && effort !== DEFAULT_EFFORT_VALUE && (
-          <span className="hidden shrink-0 capitalize text-muted-foreground sm:inline">· {effortLabel}</span>
-        )}
+        <span className="min-w-0 truncate">{compactLabel}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
       </button>
 
       {isOpen && anchor && createPortal(
@@ -114,7 +109,7 @@ function ComposerModelMenu({
                   isSelected={option.value === effort}
                   onSelect={() => {
                     onSelectEffort(option.value);
-                    setIsOpen(false);
+                    close();
                   }}
                   className="capitalize"
                 />
@@ -155,7 +150,7 @@ function ComposerModelMenu({
                       isSelected={option.value === model}
                       onSelect={() => {
                         onSelectModel(option.value);
-                        setIsOpen(false);
+                        close();
                       }}
                     />
                   ))}

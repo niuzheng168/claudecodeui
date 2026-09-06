@@ -8,6 +8,7 @@ type SystemUpdateDependencies = {
   appRoot: string;
   homeDirectory: string;
   installMode: 'git' | 'npm';
+  isCodeyManaged: boolean;
   isPlatform: boolean;
   environment: NodeJS.ProcessEnv;
   runShellCommand(
@@ -29,6 +30,13 @@ export function createSystemUpdateService(dependencies: SystemUpdateDependencies
   return {
     /** Selects and executes the correct update workflow for this installation. */
     async updateSystem() {
+      if (dependencies.isCodeyManaged) {
+        return {
+          success: false as const,
+          error: 'This CloudCLI installation is managed by Codey. Deploy updates through Codey.',
+        };
+      }
+
       const updateCommand = dependencies.isPlatform
         ? 'npm run update:platform'
         : dependencies.installMode === 'git'

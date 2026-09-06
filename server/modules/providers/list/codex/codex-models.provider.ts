@@ -96,12 +96,41 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
   DEFAULT: 'gpt-5.6-sol',
 };
 
+/** Codex catalog exposed by Codey-managed nodes, matching their provisioned runtime. */
+export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
+  OPTIONS: [
+    {
+      value: 'gpt-6-astra',
+      label: 'GPT-6 Astra (872K context)',
+      description: 'Codey Codex model configured with an 872,000-token context window.',
+      effort: {
+        default: 'max',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+  ],
+  DEFAULT: 'gpt-6-astra',
+};
+
+/** Used by the Codex adapter and its tests to select the deployment-specific catalog. */
+export function resolveCodexPredefinedModels(
+  codeyManaged = process.env.CODEY_MANAGED === 'true',
+): ProviderModelsDefinition {
+  return codeyManaged ? CODEY_MANAGED_CODEX_MODELS : CODEX_PREDEFINED_MODELS;
+}
+
 const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
 
 /** Provider registry model adapter for Codex predefined models and active config. */
 export class CodexProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    return CODEX_PREDEFINED_MODELS;
+    return resolveCodexPredefinedModels();
   }
 
   async getCurrentActiveModel(): Promise<ProviderCurrentActiveModel> {

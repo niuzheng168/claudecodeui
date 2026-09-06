@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { api } from '@/shared/api';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { readVoiceConfig, VOICE_CONFIG_SYNC_EVENT } from '@/shared/voiceConfig';
+import { isCodeyPortalSso } from '@/shared/utils';
 
 // Voice UI is gated on the `voiceEnabled` UI preference (toggled in Quick Settings /
 // the Settings modal) and a configured voice backend.
@@ -24,10 +25,12 @@ function checkVoiceHealth(): Promise<boolean> {
 }
 
 export function useVoiceAvailable(): boolean {
+  const managed = isCodeyPortalSso();
   // Read through the shared preferences owner. This used to re-parse the
   // preferences blob and register its own storage + sync listeners, once per
   // assistant message row.
   const { voiceEnabled: enabled } = useUiPreferences();
+  // Standalone STT/TTS availability; managed Codey input has a separate broker and no TTS endpoint.
   const [available, setAvailable] = useState(false);
 
   useEffect(() => {
@@ -35,7 +38,7 @@ export function useVoiceAvailable(): boolean {
     let requestId = 0;
 
     const check = async () => {
-      if (!enabled) {
+      if (!enabled || managed) {
         setAvailable(false);
         return;
       }
@@ -58,7 +61,7 @@ export function useVoiceAvailable(): boolean {
       active = false;
       window.removeEventListener(VOICE_CONFIG_SYNC_EVENT, check);
     };
-  }, [enabled]);
+  }, [enabled, managed]);
 
-  return enabled && available;
+  return !managed && enabled && available;
 }

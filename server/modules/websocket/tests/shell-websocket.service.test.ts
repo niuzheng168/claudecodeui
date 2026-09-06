@@ -120,6 +120,36 @@ test('shell output detects and normalizes a wrapped authentication URL', () => {
   pty.emitExit();
 });
 
+test('opening Codex login again replaces the stale authentication process', () => {
+  const ptys = [createFakePty(), createFakePty()];
+  let spawnCount = 0;
+  const dependencies = {
+    resolveProviderSessionId: () => null,
+    spawnPty: () => ptys[spawnCount++] as never,
+  };
+  const initMessage = JSON.stringify({
+    type: 'init',
+    projectPath: process.cwd(),
+    sessionId: null,
+    hasSession: false,
+    provider: 'plain-shell',
+    isPlainShell: true,
+    initialCommand: 'codex login --device-auth',
+  });
+
+  const firstSocket = createFakeSocket();
+  handleShellConnection(firstSocket as never, dependencies);
+  firstSocket.emit('message', initMessage);
+
+  const replacementSocket = createFakeSocket();
+  handleShellConnection(replacementSocket as never, dependencies);
+  replacementSocket.emit('message', initMessage);
+
+  assert.equal(spawnCount, 2);
+  assert.equal(ptys[0].killed, true);
+  ptys[1].emitExit();
+});
+
 test('bypassPermissions launches claude with --dangerously-skip-permissions', () => {
   const spawnedCommands: string[] = [];
   const dependencies = {

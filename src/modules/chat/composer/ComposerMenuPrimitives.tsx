@@ -5,32 +5,35 @@ import { cn } from '@/shared/utils';
 import type { ComposerMenuAnchor } from '@/shared/types';
 
 /**
- * Shared shell for the composer popovers (model/effort and permissions) so both
- * menus share one surface, one heading style and one row style.
- *
- * Used by chat's ComposerModelMenu and ComposerPermissionMenu.
+ * Used by chat's model, permission, voice and tools popovers for one bounded,
+ * portalled surface. Form controls use a non-modal dialog instead of menu roles.
  */
 export function ComposerMenuSurface({
   anchor,
   menuRef,
   ariaLabel,
   children,
+  role = 'menu',
 }: {
   anchor: ComposerMenuAnchor;
   menuRef: Ref<HTMLDivElement>;
   ariaLabel: string;
   children: ReactNode;
+  role?: 'menu' | 'dialog';
 }) {
   return (
     <div
       ref={menuRef}
-      role="menu"
+      role={role}
+      aria-modal={role === 'dialog' ? false : undefined}
       aria-label={ariaLabel}
-      className="fixed z-[100] min-w-48 overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl"
+      className="fixed z-[100] overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl"
       style={{
         right: anchor.right,
         bottom: anchor.bottom,
+        top: anchor.top,
         maxHeight: anchor.maxHeight,
+        width: anchor.maxWidth,
         maxWidth: anchor.maxWidth,
       }}
     >
@@ -39,19 +42,19 @@ export function ComposerMenuSurface({
   );
 }
 
-/** Used by chat's ComposerModelMenu and ComposerPermissionMenu to label a section of the popover. */
+/** Chat's model, permission, voice and tools popovers use this section heading. */
 export function ComposerMenuHeading({ children }: { children: ReactNode }) {
   return (
     <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{children}</p>
   );
 }
 
-/** Used by chat's ComposerModelMenu to divide its model and effort sections. */
+/** Chat's model and tools popovers use this divider between related settings. */
 export function ComposerMenuSeparator() {
   return <div className="my-1 h-px bg-border" aria-hidden />;
 }
 
-/** Used by chat's ComposerModelMenu and ComposerPermissionMenu to render one selectable row with its checked state. */
+/** Chat's model, permission and tools popovers use this keyboard-accessible action/selection row. */
 export function ComposerMenuItem({
   label,
   description,
@@ -61,25 +64,28 @@ export function ComposerMenuItem({
   role = 'menuitemradio',
   trailing,
   className,
+  disabled = false,
 }: {
   label: ReactNode;
   description?: ReactNode;
   icon?: ReactNode;
   isSelected: boolean;
   onSelect: () => void;
-  role?: 'menuitemradio' | 'menuitem';
+  role?: 'menuitemradio' | 'menuitem' | 'button';
   trailing?: ReactNode;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role={role}
       aria-checked={role === 'menuitemradio' ? isSelected : undefined}
+      disabled={disabled}
       onClick={onSelect}
       className={cn(
         'flex w-full items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
-        'hover:bg-accent focus-visible:bg-accent focus-visible:outline-none',
+        'hover:bg-accent focus-visible:bg-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent',
         isSelected ? 'text-foreground' : 'text-foreground/90',
         className,
       )}

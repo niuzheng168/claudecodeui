@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { LLMProvider, Project, ProjectSession } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -10,6 +10,112 @@ import type { Project, ProjectSession } from '@/shared/types';
  * Read it to hide or gate features that only exist in one of the two deployments.
  */
 export const IS_PLATFORM = import.meta.env?.VITE_IS_PLATFORM === 'true';
+
+/**
+ * Reports whether this build is deployed and updated by Codey rather than by
+ * CloudCLI's built-in updater.
+ */
+export function isCodeyManagedDeployment(): boolean {
+  return import.meta.env?.VITE_CODEY_MANAGED === 'true';
+}
+
+/** Auth, API and WebSocket modules use cookie-backed Codey SSO, never a local JWT. */
+export function isCodeyPortalSso(): boolean {
+  return import.meta.env?.VITE_CODEY_PORTAL_SSO === 'true';
+}
+
+/** Auth failures in either an iframe or a standalone Workspace return to Codey login. */
+export function returnToCodeyLogin(): void {
+  if (typeof window === 'undefined') return;
+  try { (window.top ?? window).location.replace('/portal-auth/login'); }
+  catch { window.location.replace('/portal-auth/login'); }
+}
+
+/** Every provider exposed by the ordinary self-hosted CloudCLI build. */
+const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+
+/**
+ * Returns the providers users may select in this deployment. Codey nodes expose
+ * only Codex because their runtime and credentials are centrally configured.
+ */
+export function getEnabledProviders(
+  codeyManaged = isCodeyManagedDeployment(),
+): LLMProvider[] {
+  return codeyManaged ? ['codex'] : [...cloudCliProviders];
+}
+
+/**
+ * Returns the provider a new workspace should start with. This also provides a
+ * safe fallback when a stored preference is unavailable in the current build.
+ */
+export function getDefaultProvider(
+  codeyManaged = isCodeyManagedDeployment(),
+): LLMProvider {
+  return codeyManaged ? 'codex' : 'claude';
+}
+
+/**
+ * Keeps a provider only when the current deployment exposes it; otherwise it
+ * resolves to that deployment's default provider.
+ */
+export function resolveEnabledProvider(
+  candidate: unknown,
+  codeyManaged = isCodeyManagedDeployment(),
+): LLMProvider {
+  const enabledProviders = getEnabledProviders(codeyManaged);
+  return enabledProviders.includes(candidate as LLMProvider)
+    ? candidate as LLMProvider
+    : getDefaultProvider(codeyManaged);
+}
+
+// ---------------------------
+
+//----------------- DEPLOYMENT PATHS ------------
+
+/**
+ * Returns the public path prefix that hosts this CloudCLI instance. Codey sets
+ * it to `/cloudcli/<node>/`; ordinary self-hosted installs keep `/`.
+ */
+export function getDeploymentBasePath(): string {
+  const runtimeBase =
+    typeof window !== 'undefined'
+      ? (window as Window & { __CLOUDCLI_BASE_PATH__?: string }).__CLOUDCLI_BASE_PATH__
+      : '';
+  const configuredBase = String(runtimeBase || import.meta.env?.BASE_URL || '/').trim();
+  const normalized = `/${configuredBase.replace(/^\/+|\/+$/g, '')}`;
+  return normalized === '/' ? '/' : `${normalized}/`;
+}
+
+/**
+ * Prefixes an application-owned root-relative URL with the active deployment
+ * path. Absolute/external URLs are returned unchanged, and an already-prefixed
+ * URL is not prefixed twice.
+ */
+export function withDeploymentBasePath(value: string): string {
+  if (!value || /^[a-z][a-z\d+.-]*:/i.test(value) || value.startsWith('//')) {
+    return value;
+  }
+
+  const base = getDeploymentBasePath();
+  const path = `/${value.replace(/^\/+/, '')}`;
+  if (base === '/') {
+    return path;
+  }
+
+  const baseWithoutTrailingSlash = base.replace(/\/$/, '');
+  return path === baseWithoutTrailingSlash || path.startsWith(`${baseWithoutTrailingSlash}/`)
+    ? path
+    : `${baseWithoutTrailingSlash}${path}`;
+}
+
+/**
+ * Namespaces browser persistence by deployment path so two Codey node
+ * workspaces hosted on the same origin cannot overwrite each other's login.
+ */
+export function deploymentStorageKey(key: string): string {
+  const base = getDeploymentBasePath();
+  return base === '/' ? key : `${key}:${base.replace(/^\/|\/$/g, '')}`;
+}
 
 // ---------------------------
 

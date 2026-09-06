@@ -1,3 +1,3 @@
 [submodule "plugins/starter"]
 	path = plugins/starter
-	url = https://github.com/cloudcli-ai/cloudcli-plugin-starter.git
+	url = https://github.com/niuzheng168/codey-cloudcli-plugin-starter.git

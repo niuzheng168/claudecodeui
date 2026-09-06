@@ -5,6 +5,8 @@ import SettingsSection from '@/modules/settings/SettingsSection';
 import SettingsToggle from '@/modules/settings/SettingsToggle';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
 import { useVoiceConfig } from '@/modules/settings/hooks/useVoiceConfig';
+import { CodeyVoiceSettings } from '@/modules/settings/tabs/CodeyVoiceSettings';
+import { isCodeyPortalSso } from '@/shared/utils';
 
 const inputClass =
   'w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring';
@@ -18,8 +20,12 @@ function Field({ label, ...props }: { label: string } & InputHTMLAttributes<HTML
   );
 }
 
-/** Rendered by Settings for the "voice" tab, covering speech-to-text provider credentials. */
+/** Settings selects the server-managed Codey UI or the existing standalone voice configuration. */
 export default function VoiceSettingsTab() {
+  return isCodeyPortalSso() ? <CodeyVoiceSettings /> : <StandaloneVoiceSettings />;
+}
+
+function StandaloneVoiceSettings() {
   const { t } = useTranslation('settings');
   const preferences = useUiPreferences();
   const setPreference = useSetUiPreference();

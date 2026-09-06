@@ -97,9 +97,36 @@
     "technicalDetails": "技术细节"
   },
   "voice": {
+    "options": "语音选项",
+    "optionsHint": "选择服务和语言；只有点击麦克风才会开始录音。",
+    "optionsLimit": "每次最多 {{seconds}} 秒",
+    "optionsLocked": "本次录音的服务和语言已锁定",
     "input": "语音输入",
     "stopRecording": "停止录音",
     "transcribing": "转写中…",
+    "requesting": "等待麦克风权限…",
+    "recording": "录音中…",
+    "cancel": "取消语音输入",
+    "failed": "语音转写失败，请重试。",
+    "errors": {
+      "VOICE_BROWSER_UNSUPPORTED": "请使用支持录音的浏览器，并通过 HTTPS 打开页面。",
+      "VOICE_MIC_DENIED": "麦克风权限未允许，请在浏览器中允许此网站使用麦克风。",
+      "VOICE_MIC_MISSING": "没有找到麦克风。",
+      "VOICE_RECORDING_FAILED": "录音失败，请检查麦克风后重试。",
+      "VOICE_DURATION_INVALID": "录音需为 0.25 秒至 2 分钟。",
+      "VOICE_AUDIO_TOO_LARGE": "录音过大，请缩短后重试。",
+      "VOICE_AUDIO_INVALID": "无法读取录音，请重新录制。",
+      "VOICE_NO_SPEECH": "没有识别到语音，请再说一次。",
+      "VOICE_BUSY": "语音服务忙，请稍后重试。",
+      "VOICE_NOT_CONFIGURED": "所选语音服务尚未配置，请选择另一服务或联系管理员。",
+      "VOICE_PROVIDER_REJECTED": "语音服务拒绝请求，请管理员检查区域、服务配置和凭据。",
+      "VOICE_TIMEOUT": "转写超时，请稍后重试或缩短录音。",
+      "VOICE_UNAVAILABLE": "语音服务暂不可用。",
+      "VOICE_TRANSCRIPTION_FAILED": "语音转写失败，请重试。",
+      "VOICE_LOGIN_REQUIRED": "登录已失效，请重新登录 Codey。",
+      "VOICE_NODE_DENIED": "当前工作区的访问权限已失效。",
+      "VOICE_UPLOAD_TIMEOUT": "录音上传超时，请检查网络。"
+    },
     "speak": "朗读",
     "stopSpeaking": "停止",
     "loading": "加载中…"
@@ -238,6 +265,18 @@
     "forkFromHere": "从此处派生"
   },
   "composer": {
+    "moreTools": "更多工具",
+    "backToTools": "返回工具",
+    "writeFirst": "请先输入消息",
+    "tokenUsage": "查看 Token 用量",
+    "tokensUsed": "已使用 {{tokens}} tokens",
+    "tokenCount": "{{tokens}} tokens",
+    "reasoning": "推理强度",
+    "model": "模型",
+    "effortDefault": "默认",
+    "loadingModels": "加载模型…",
+    "modelMenu": "模型与推理强度",
+    "permissionHeading": "如何批准 {{provider}} 的操作？",
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",
@@ -262,6 +301,7 @@
     }
   },
   "schedule": {
+    "futureTime": "请选择未来的时间。",
     "trigger": "定时发送这条消息",
     "heading": "稍后发送",
     "customLabel": "或选择时间",
