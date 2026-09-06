@@ -5,8 +5,10 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
+import { synchronizeCodexDaemonSessions } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
+import { resolveCodexHomeDirectory } from '@/shared/utils.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -21,7 +23,7 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   },
   {
     provider: 'codex',
-    rootPath: path.join(os.homedir(), '.codex', 'sessions'),
+    rootPath: path.join(resolveCodexHomeDirectory(), 'sessions'),
   },
   {
     provider: 'opencode',
@@ -45,6 +47,7 @@ const PROJECTS_UPDATE_DEBOUNCE_MS = 500;
 const PROJECTS_UPDATE_MAX_WAIT_MS = 2_000;
 
 const watchers: FSWatcher[] = [];
+let codexIndexPoll: ReturnType<typeof setInterval> | null = null;
 
 type PendingWatcherUpdate = {
   providers: Set<LLMProvider>;
@@ -204,6 +207,17 @@ export async function initializeSessionsWatcher(): Promise<void> {
     failures: initialSync.failures,
   });
 
+  // Paginated desktop threads need not create/change a JSONL at all. Keep
+  // their native index visible without resuming threads or acquiring writers.
+  if (!codexIndexPoll) {
+    codexIndexPoll = setInterval(() => {
+      void synchronizeCodexDaemonSessions()
+        .then(({ changed }) => broadcastSessionUpsertedBatch(changed))
+        .catch((error: unknown) => console.warn('[Codex] Desktop index refresh failed:', error instanceof Error ? error.message : String(error)));
+    }, 6_000);
+    codexIndexPoll.unref();
+  }
+
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
@@ -247,6 +261,8 @@ export async function initializeSessionsWatcher(): Promise<void> {
  */
 export async function closeSessionsWatcher(): Promise<void> {
   clearPendingWatcherFlushTimer();
+  if (codexIndexPoll) clearInterval(codexIndexPoll);
+  codexIndexPoll = null;
 
   await Promise.all(
     watchers.map(async (watcher) => {

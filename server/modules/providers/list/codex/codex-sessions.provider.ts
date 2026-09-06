@@ -5,6 +5,9 @@ import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
+import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import { prepareTranscriptMessages } from '@/shared/message-unification.js';
@@ -2006,7 +2009,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.message?.role) {
+    if (raw.message?.role || ['thinking', 'tool_use', 'tool_result', 'status_note'].includes(raw.type)) {
       return this.normalizeHistoryEntry(raw, sessionId);
     }
 
@@ -2209,8 +2212,8 @@ export class CodexSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Loads Codex JSONL history and keeps token usage metadata when the
-   * transcript reported it.
+   * Keeps the rich legacy JSONL reader, but reads native paginated histories
+   * from their daemon instead of treating a partial/missing export as complete.
    */
   async fetchHistory(
     sessionId: string,
@@ -2220,8 +2223,50 @@ export class CodexSessionsProvider implements IProviderSessions {
 
     let result: CodexHistoryResult;
     try {
-      result = await getCodexSessionMessages(sessionId);
+      const session = sessionsDb.getSessionById(sessionId);
+      const providerSessionId = options.providerSessionId ?? session?.provider_session_id ?? sessionId;
+      const mode = await readCodexHistoryMode(providerSessionId);
+      const requiresDaemon = Boolean(mode && mode !== 'legacy');
+      if (!requiresDaemon && session?.jsonl_path) {
+        result = await getCodexSessionMessages(sessionId);
+      } else {
+        const client = await CodexDaemonClient.connect();
+        if (!client) {
+          if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
+          throw new AppError('This session is stored by Codex app. Connect its local daemon to read the history.', {
+            code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
+          });
+        }
+        try {
+          const response = await client.request('thread/read', { threadId: providerSessionId, includeTurns: true });
+          const thread = readObjectRecord(response.thread);
+          if (!thread || !Array.isArray(thread.turns)) {
+            throw new AppError('Codex daemon did not return complete thread history.', {
+              code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
+            });
+          }
+          const messages: AnyRecord[] = [];
+          for (const turn of thread.turns) {
+            const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
+            for (const item of Array.isArray(turn.items) ? turn.items : []) {
+              // The existing edit/fork adapter relies on a legacy rollout.
+              // Do not advertise edit anchors for native-only histories.
+              messages.push(...projectCodexDaemonItem(item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp));
+            }
+          }
+          result = { messages };
+        } catch (error) {
+          if (error instanceof AppError) throw error;
+          throw new AppError(
+            `Cannot read the native Codex history: ${error instanceof Error ? error.message : String(error)}`,
+            { code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502 },
+          );
+        } finally {
+          client.close();
+        }
+      }
     } catch (error) {
+      if (error instanceof AppError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[CodexProvider] Failed to load session ${sessionId}:`, message);
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
@@ -2229,7 +2274,9 @@ export class CodexSessionsProvider implements IProviderSessions {
 
     const normalized: NormalizedMessage[] = [];
     for (const raw of result.messages) {
-      normalized.push(...this.normalizeHistoryEntry(raw, sessionId));
+      normalized.push(...(raw.type === 'item'
+        ? this.normalizeMessage(raw, sessionId)
+        : this.normalizeHistoryEntry(raw, sessionId)));
     }
 
     const toolResultMap = new Map<string, NormalizedMessage>();
