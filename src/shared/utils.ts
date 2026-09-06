@@ -109,6 +109,17 @@ export function withDeploymentBasePath(value: string): string {
 }
 
 /**
+ * Shared UI icons use the build's static resource base, not the active node's
+ * API/router prefix. In ordinary CloudCLI builds the two prefixes remain equal.
+ */
+export function withFrontendAssetBasePath(value: string): string {
+  if (!value || /^[a-z][a-z\d+.-]*:/i.test(value) || value.startsWith('//')) return value;
+  const base = String(import.meta.env?.BASE_URL || '/').replace(/\/+$/, '');
+  const assetPath = `/${value.replace(/^\/+/, '')}`;
+  return base && (assetPath === base || assetPath.startsWith(`${base}/`)) ? assetPath : `${base}${assetPath}`;
+}
+
+/**
  * Namespaces browser persistence by deployment path so two Codey node
  * workspaces hosted on the same origin cannot overwrite each other's login.
  */

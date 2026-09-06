@@ -626,10 +626,26 @@ export type CodeyVoiceConfig = {
   languages: CodeyVoiceLanguage[];
   maxDurationSeconds: number;
   defaultProvider: CodeyVoiceProvider;
+  /** Optional so a new frontend can safely run against a portal without rewrite support. */
+  rewrite?: { configured: boolean; maxInputCharacters?: number; maxHistoryMessages?: number; maxHistoryBytes?: number };
 };
 
 /** Non-secret, per-account browser preferences shared by voice settings and the composer. */
-export type CodeyVoicePreferences = { provider: CodeyVoiceProvider; language: CodeyVoiceLanguage };
+export type CodeyVoicePreferences = {
+  provider: CodeyVoiceProvider;
+  language: CodeyVoiceLanguage;
+  /** Chat/settings share this per-account browser preference; no automatic model call is enabled. */
+  rewriteUseHistory?: boolean;
+};
+
+/** Chat's context selector and the broker API send only bounded, visible dialogue text. */
+export type VoiceRewriteMessage = { role: 'user' | 'assistant'; content: string };
+
+/** The chat recorder's insertion receipt identifies exactly which new voice text may be rewritten. */
+export type VoiceDraftInsertion = { prefix: string; transcript: string; draft: string };
+
+/** The broker and chat rewrite hook exchange a candidate, never a command or automatic-send intent. */
+export type VoiceRewriteResult = { text: string; ambiguities: string[] };
 
 /** Immutable snapshot of the app-level text-to-speech player for one utterance — its play state plus any error message — read by components so read-aloud state survives re-renders and chat switches. */
 export type VoiceSnapshot = { state: VoicePlayState; error: string | null };

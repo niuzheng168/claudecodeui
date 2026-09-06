@@ -2,8 +2,10 @@
 // Cache only manifest (needed for PWA install). HTML and JS are never pre-cached
 // so a rebuild + refresh always picks up the latest assets.
 const scopedUrl = path => new URL(path.replace(/^\/+/, ''), self.registration.scope).href;
-const scopeCacheKey = new URL(self.registration.scope).pathname.replace(/[^a-z0-9]+/gi, '-');
-const CACHE_NAME = `claude-ui-v2${scopeCacheKey}`;
+// Lossless encoding matters: node-a and node_a are distinct valid node IDs.
+const scopeCacheKey = encodeURIComponent(new URL(self.registration.scope).pathname);
+const CACHE_PREFIX = `claude-ui-scope-${scopeCacheKey}-`;
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 const urlsToCache = [
   scopedUrl('manifest.json')
 ];
@@ -19,21 +21,23 @@ self.addEventListener('install', event => {
 
 // Fetch event — network-first for everything except hashed assets
 self.addEventListener('fetch', event => {
-  const url = event.request.url;
+  const requestUrl = new URL(event.request.url);
+  const url = requestUrl.pathname;
 
   // Never intercept API requests or WebSocket upgrades
-  if (url.includes('/api/') || url.includes('/ws')) {
+  if (event.request.method !== 'GET' || requestUrl.origin !== self.location.origin ||
+      url.includes('/api/') || url.includes('/ws') || url.startsWith('/portal-auth/')) {
     return;
   }
 
   // Navigation requests (HTML) — always go to network, no caching
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match(scopedUrl('manifest.json')).then(() =>
+      fetch(event.request).catch(() =>
         new Response('<h1>Offline</h1><p>Please check your connection.</p>', {
           headers: { 'Content-Type': 'text/html' }
         })
-      ))
+      )
     );
     return;
   }
@@ -41,31 +45,31 @@ self.addEventListener('fetch', event => {
   // Hashed assets (JS/CSS in /assets/) — cache-first since filenames change per build
   if (url.includes('/assets/')) {
     event.respondWith(
-      caches.match(event.request).then(cached => {
-        if (cached) return cached;
-        return fetch(event.request).then(response => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-          return response;
-        });
-      })
+      caches.open(CACHE_NAME).then(async cache => {
+        const cached = await cache.match(event.request);
+        if (cached?.ok) return cached;
+        const response = await fetch(event.request);
+        if (response.ok) await cache.put(event.request, response.clone()).catch(() => {});
+        return response;
+      }).catch(() => fetch(event.request))
     );
     return;
   }
 
   // Everything else — network-first
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request).catch(() => caches.open(CACHE_NAME).then(cache => cache.match(event.request)))
   );
 });
 
-// Activate event — purge old caches
+// Only remove this workspace's older caches. Legacy lossy names cannot be
+// attributed safely, so leave them (and every other node's caches) untouched.
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(cacheNames =>
       Promise.all(
         cacheNames
-          .filter(name => name !== CACHE_NAME)
+          .filter(name => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
           .map(name => caches.delete(name))
       )
     )
@@ -104,12 +108,12 @@ self.addEventListener('notificationclick', event => {
 
   const sessionId = event.notification.data?.sessionId;
   const provider = event.notification.data?.provider || null;
-  const urlPath = scopedUrl(sessionId ? `session/${sessionId}` : '');
+  const urlPath = scopedUrl(sessionId ? `session/${encodeURIComponent(sessionId)}` : '');
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async clientList => {
       for (const client of clientList) {
-        if (client.url.includes(self.location.origin)) {
+        if (client.url.startsWith(self.registration.scope)) {
           await client.focus();
           client.postMessage({
             type: 'notification:navigate',

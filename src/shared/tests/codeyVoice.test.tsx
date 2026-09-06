@@ -53,7 +53,7 @@ test('service preferences stay separate for each account and synchronize between
   await waitFor(() => expect(second.result.current.config?.userId).toBe('owner-a'));
   act(() => first.result.current.update({ language: 'zh-CN' }));
   expect(second.result.current.preferences.language).toBe('zh-CN');
-  expect(JSON.parse(localStorage.getItem('codey-voice:owner-a') || '{}')).toEqual({ provider: 'azure-speech', language: 'zh-CN' });
+  expect(JSON.parse(localStorage.getItem('codey-voice:owner-a') || '{}')).toEqual({ provider: 'azure-speech', language: 'zh-CN', rewriteUseHistory: true });
   first.unmount();
   second.unmount();
   vi.mocked(api.voice.codeyConfig).mockImplementation(async () => new Response(JSON.stringify({ ...config, userId: 'owner-b' })));
@@ -73,4 +73,40 @@ test('provider/language selectors expose availability, contain no key field and 
   expect(onChange).toHaveBeenCalledWith({ language: 'zh-CN' });
   rerender(<CodeyVoiceSelectors config={config} preferences={{ provider: 'azure-speech', language: 'auto' }} onChange={onChange} disabled />);
   expect((screen.getByRole('combobox', { name: 'voiceSettings.provider' }) as HTMLSelectElement).disabled).toBe(true);
+});
+
+test('rewrite sends only explicit JSON data to the same-origin broker and never uses a browser key', async () => {
+  localStorage.setItem('voiceConfig', JSON.stringify({ baseUrl: 'https://evil.test', apiKey: 'not-for-rewrite' }));
+  const call = vi.fn().mockResolvedValue(new Response('{}'));
+  vi.stubGlobal('fetch', call);
+  const signal = new AbortController().signal;
+  const body = { transcript: '只检查，不要重启。', language: 'auto', history: [] };
+  await api.voice.codeyRewrite(body, signal);
+  const [url, options] = call.mock.calls[0];
+  expect(url).toBe('/cloudcli/node-a/api/voice/codey/rewrite');
+  expect(options.credentials).toBe('same-origin');
+  expect(options.method).toBe('POST');
+  expect(options.mode).toBe('same-origin');
+  expect(options.redirect).toBe('error');
+  expect(options.signal).toBe(signal);
+  expect(JSON.parse(options.body)).toEqual(body);
+  expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
+  expect(JSON.stringify(options)).not.toContain('not-for-rewrite');
+});
+
+test('the history preference is explicit, synchronized and locked during capture', async () => {
+  vi.spyOn(api.voice, 'codeyConfig').mockImplementation(async () => new Response(JSON.stringify({ ...config, rewrite: { configured: true } })));
+  const first = renderHook(() => useCodeyVoice(true));
+  const second = renderHook(() => useCodeyVoice(true));
+  await waitFor(() => expect(second.result.current.config).not.toBeNull());
+  act(() => first.result.current.update({ rewriteUseHistory: false }));
+  expect(second.result.current.preferences.rewriteUseHistory).toBe(false);
+  const change = vi.fn();
+  const component = render(<CodeyVoiceSelectors config={{ ...config, rewrite: { configured: true } }}
+    preferences={first.result.current.preferences} onChange={change} />);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'voiceSettings.rewriteHistory' }));
+  expect(change).toHaveBeenCalledWith({ rewriteUseHistory: true });
+  component.rerender(<CodeyVoiceSelectors config={{ ...config, rewrite: { configured: true } }}
+    preferences={first.result.current.preferences} onChange={change} disabled />);
+  expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(true);
 });

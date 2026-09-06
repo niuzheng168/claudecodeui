@@ -1,5 +1,6 @@
 import { api } from '@/shared/api';
 import type { QueuedSendOptions } from '@/shared/types';
+import { deploymentStorageKey } from '@/shared/utils';
 
 /**
  * Unsent composer text and queued messages, stored in `auth.db` rather than in
@@ -37,7 +38,8 @@ type DraftRecord = {
 /** Fired after any draft changes, from a local write or from a hydrate. */
 export const CHAT_DRAFTS_CHANGED_EVENT = 'chat-drafts:changed';
 
-const MIRROR_STORAGE_KEY = 'chat-drafts';
+// Each node owns its mirror, even when all iframes load the same shared JS bundle.
+const mirrorStorageKey = deploymentStorageKey('chat-drafts');
 
 /**
  * Longer than the preference debounce: this fires on every keystroke, and a
@@ -64,7 +66,7 @@ const isEmptyDraft = (draft: DraftRecord): boolean => (
 
 function readMirror(): Map<string, DraftRecord> {
   try {
-    const raw = localStorage.getItem(MIRROR_STORAGE_KEY);
+    const raw = localStorage.getItem(mirrorStorageKey);
     if (!raw) {
       return new Map();
     }
@@ -94,7 +96,7 @@ function readMirror(): Map<string, DraftRecord> {
 
 function writeMirror(): void {
   try {
-    localStorage.setItem(MIRROR_STORAGE_KEY, JSON.stringify(Object.fromEntries(drafts)));
+    localStorage.setItem(mirrorStorageKey, JSON.stringify(Object.fromEntries(drafts)));
   } catch {
     // A full localStorage costs the first-paint restore, not the draft: the
     // server copy is authoritative and arrives on hydrate.
@@ -292,7 +294,7 @@ export function resetChatDrafts(): void {
     serverWriteTimer = null;
   }
   try {
-    localStorage.removeItem(MIRROR_STORAGE_KEY);
+    localStorage.removeItem(mirrorStorageKey);
   } catch {
     // The in-memory copy is already cleared, which is what readers use.
   }

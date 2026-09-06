@@ -1,5 +1,6 @@
 import { api } from '@/shared/api';
 import { CODE_EDITOR_STORAGE_KEYS } from '@/shared/constants';
+import { deploymentStorageKey, getDeploymentBasePath } from '@/shared/utils';
 
 /**
  * The one reader and writer for the settings that used to live in browser
@@ -35,8 +36,8 @@ export type UserPreferenceKey = keyof UserPreferences;
 /** Fired after any preference changes, from a local write or from a hydrate. */
 export const USER_PREFERENCES_CHANGED_EVENT = 'user-preferences:changed';
 
-/** The single localStorage blob mirroring the server's copy. */
-const MIRROR_STORAGE_KEY = 'user-preferences';
+/** The current deployment's mirror, never another node's settings on the same origin. */
+const mirrorStorageKey = deploymentStorageKey('user-preferences');
 
 /**
  * Long enough to collapse a burst of edits (dragging the font-size select,
@@ -86,7 +87,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 
 function readMirror(): PreferenceRecord {
   try {
-    const raw = localStorage.getItem(MIRROR_STORAGE_KEY);
+    const raw = localStorage.getItem(mirrorStorageKey);
     if (!raw) {
       return {};
     }
@@ -100,7 +101,7 @@ function readMirror(): PreferenceRecord {
 
 function writeMirror(): void {
   try {
-    localStorage.setItem(MIRROR_STORAGE_KEY, JSON.stringify(preferences));
+    localStorage.setItem(mirrorStorageKey, JSON.stringify(preferences));
   } catch {
     // A full or unavailable localStorage costs the first-paint optimization,
     // not the setting itself — the server copy is authoritative.
@@ -297,7 +298,9 @@ export async function hydrateUserPreferences(): Promise<void> {
 
   const migrated: PreferenceRecord = {};
   for (const key of PREFERENCE_KEYS) {
-    if (serverPreferences[key] !== undefined) {
+    // Old unscoped keys do not identify a node. Leave them untouched and use
+    // the node's authoritative server copy instead of guessing ownership.
+    if (serverPreferences[key] !== undefined || getDeploymentBasePath() !== '/') {
       continue;
     }
 
@@ -347,7 +350,7 @@ export function resetUserPreferences(): void {
     serverWriteTimer = null;
   }
   try {
-    localStorage.removeItem(MIRROR_STORAGE_KEY);
+    localStorage.removeItem(mirrorStorageKey);
   } catch {
     // Nothing to do: the in-memory copy is already cleared.
   }

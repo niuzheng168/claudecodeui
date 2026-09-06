@@ -13,6 +13,7 @@ import type { CodeyVoiceConfig, CodeyVoicePreferences, VoiceInputState } from '@
 type Props = {
   state: VoiceInputState;
   disabled: boolean;
+  optionsLocked?: boolean;
   onToggle: () => void;
   onCancel: () => void;
   managed?: {
@@ -25,7 +26,7 @@ type Props = {
 };
 
 /** ChatComposer supplies recording state; this split control exposes options without opening the microphone. */
-export function ComposerVoiceControl({ state, disabled, onToggle, onCancel, managed }: Props) {
+export function ComposerVoiceControl({ state, disabled, optionsLocked = false, onToggle, onCancel, managed }: Props) {
   const { t } = useTranslation(['chat', 'settings']);
   // Opening voice options is independent of the microphone's capture lifecycle.
   const [isOpen, setIsOpen] = useState(false);
@@ -37,7 +38,7 @@ export function ComposerVoiceControl({ state, disabled, onToggle, onCancel, mana
     : managed?.preferences.language === 'zh-CN' ? '中文' : 'English';
   const summary = managed && provider ? `${provider.label} · ${language}` : undefined;
   const label = t('voice.options');
-  const busy = state !== 'idle';
+  const busy = state !== 'idle' || optionsLocked;
 
   return (
     <div className="inline-flex shrink-0 items-center rounded-lg" role="group" aria-label={t('voice.input')}>

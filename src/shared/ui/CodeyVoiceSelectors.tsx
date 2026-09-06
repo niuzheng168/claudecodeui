@@ -38,6 +38,13 @@ export function CodeyVoiceSelectors({ config, preferences, onChange, disabled = 
           ))}
         </select>
       </label>
+      {config.rewrite && (
+        <label className={`flex items-start gap-2 text-xs text-muted-foreground ${layout === 'columns' ? 'sm:col-span-2' : ''}`}>
+          <input type="checkbox" className="mt-0.5" checked={preferences.rewriteUseHistory !== false}
+            disabled={disabled} onChange={(event) => onChange({ rewriteUseHistory: event.target.checked })} />
+          <span>{t('voiceSettings.rewriteHistory')}</span>
+        </label>
+      )}
     </div>
   );
 }

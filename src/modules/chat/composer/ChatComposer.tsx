@@ -13,11 +13,12 @@ import type {
 import { Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
+import { useVoiceRewrite } from '@/modules/chat/hooks/useVoiceRewrite';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { isCodeyPortalSso } from '@/shared/utils';
-import type { QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -30,6 +31,7 @@ import ActivityIndicator from '@/modules/chat/composer/ActivityIndicator';
 import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
 import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
+import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -100,7 +102,9 @@ type ChatComposerProps = {
   renderInputWithMentions: (text: string) => ReactNode;
   textareaRef: RefObject<HTMLTextAreaElement>;
   input: string;
-  onVoiceTranscript?: (text: string, send?: boolean) => void;
+  onVoiceTranscript?: (text: string, send?: boolean) => VoiceDraftInsertion | void;
+  onReplaceVoiceDraft?: (expected: string, replacement: string) => void;
+  voiceHistory?: ChatMessage[];
   voiceContextKey?: string;
   voiceRecordingAllowed?: boolean;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -176,6 +180,8 @@ export default function ChatComposer({
   textareaRef,
   input,
   onVoiceTranscript,
+  onReplaceVoiceDraft,
+  voiceHistory,
   voiceContextKey,
   voiceRecordingAllowed = true,
   onInputChange,
@@ -234,6 +240,26 @@ export default function ChatComposer({
   const voiceAvailable = managedVoice
     ? Boolean(codeyVoice.config?.providers.find((item) => item.id === codeyVoice.preferences.provider)?.configured)
     : standaloneVoiceAvailable;
+  const rewriteConfigured = codeyVoice.config?.rewrite?.configured === true;
+  const replaceVoiceDraft = useCallback((expected: string, replacement: string) => {
+    onReplaceVoiceDraft?.(expected, replacement);
+  }, [onReplaceVoiceDraft]);
+  const rewrite = useVoiceRewrite({
+    contextKey: voiceContextKey || '',
+    draft: input,
+    enabled: managedVoice && voiceEnabled && voiceRecordingAllowed && Boolean(onReplaceVoiceDraft),
+    configured: rewriteConfigured,
+    useHistory: codeyVoice.preferences.rewriteUseHistory !== false,
+    language: codeyVoice.preferences.language,
+    replaceDraft: replaceVoiceDraft,
+  });
+  const { remember: rememberVoice, clear: clearVoice } = rewrite;
+  // useVoiceInput captures this callback at recording start, freezing the
+  // current session's reference dialogue rather than reading another tab later.
+  const receiveVoiceTranscript = useCallback((text: string, send?: boolean) => {
+    const insertion = onVoiceTranscript?.(text, rewriteConfigured ? false : send);
+    if (managedVoice && insertion) rememberVoice(insertion, voiceHistory || []);
+  }, [onVoiceTranscript, rewriteConfigured, managedVoice, rememberVoice, voiceHistory]);
   // Brief, localized recording errors belong to the active composer, never another session's draft.
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const voiceErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -245,9 +271,8 @@ export default function ChatComposer({
   useEffect(() => () => {
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
   }, []);
-  const noopTranscript = useCallback(() => {}, []);
   const { state: voiceState, toggle: voiceToggle, stop: voiceStop, cancel: voiceCancel, activePreferences: recordingPreferences } = useVoiceInput(
-    onVoiceTranscript ?? noopTranscript,
+    receiveVoiceTranscript,
     handleVoiceError,
     {
       contextKey: voiceContextKey,
@@ -260,6 +285,10 @@ export default function ChatComposer({
   );
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
+  const toggleVoice = useCallback(() => {
+    if (voiceState === 'idle') clearVoice();
+    voiceToggle();
+  }, [voiceState, clearVoice, voiceToggle]);
 
   // Detect if the AskUserQuestion interactive panel is active
   const hasQuestionPanel = pendingPermissionRequests.some(
@@ -285,7 +314,7 @@ export default function ChatComposer({
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading
       ? t('input.stop')
-      : t('input.send');
+      : isRecording && rewriteConfigured ? t('voice.rewrite.stopPreview') : t('input.send');
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
@@ -451,8 +480,9 @@ export default function ChatComposer({
         <ComposerToolbar
           onAttachFiles={openAttachmentPicker}
           voiceControl={onVoiceTranscript && voiceVisible ? (
-            <ComposerVoiceControl state={voiceState} onToggle={voiceToggle} onCancel={voiceCancel}
-              disabled={!voiceAvailable || !voiceRecordingAllowed}
+            <ComposerVoiceControl state={voiceState} onToggle={toggleVoice} onCancel={voiceCancel}
+              disabled={!voiceAvailable || !voiceRecordingAllowed || rewrite.busy}
+              optionsLocked={rewrite.busy}
               managed={managedVoice ? {
                 config: codeyVoice.config,
                 preferences: recordingPreferences || codeyVoice.preferences,
@@ -460,6 +490,35 @@ export default function ChatComposer({
                 onRefresh: codeyVoice.refresh,
                 loadFailed: Boolean(codeyVoice.error),
               } : undefined} />
+          ) : null}
+          rewriteControl={managedVoice && voiceVisible ? (
+            <VoiceRewriteControl busy={rewrite.busy} canRewrite={rewrite.canRewrite && voiceState === 'idle'}
+              canUndo={rewrite.canUndo && voiceState === 'idle'} configured={rewriteConfigured}
+              canRestore={rewrite.canRestore && voiceState === 'idle'} hasPreviousRewrite={rewrite.hasPreviousRewrite}
+              onRewrite={rewrite.rewrite} onCancel={rewrite.cancel} onUndo={rewrite.undo} onRestore={rewrite.restore} />
+          ) : null}
+          rewriteNotice={managedVoice && voiceVisible && (rewrite.busy || rewrite.notice || rewrite.candidate) ? (
+            <div role="status" className="mb-2 space-y-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              <p>{rewrite.busy ? t('voice.rewrite.busy') : t(`voice.rewrite.${rewrite.notice}`, {
+                defaultValue: t('voice.rewrite.failed'),
+              })}</p>
+              {rewrite.originalText && (
+                <details>
+                  <summary className="cursor-pointer">{t('voice.rewrite.original')}</summary>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-foreground">{rewrite.originalText}</p>
+                </details>
+              )}
+              {rewrite.candidate && (
+                <>
+                  <textarea readOnly aria-label={t('voice.rewrite.suggestion')} value={rewrite.candidate.text}
+                    className="w-full resize-y rounded border border-border bg-background p-2 text-foreground" rows={3} />
+                  {rewrite.canApply ? (
+                    <button type="button" className="rounded border border-border px-2 py-1 text-foreground"
+                      onClick={rewrite.applyCandidate}>{t('voice.rewrite.apply')}</button>
+                  ) : <p>{t('voice.rewrite.copySuggestion')}</p>}
+                </>
+              )}
+            </div>
           ) : null}
           modelControl={<ComposerModelMenu
               effort={effort}
@@ -488,7 +547,7 @@ export default function ChatComposer({
                     : isRecording
                       ? (e: MouseEvent<HTMLButtonElement>) => {
                           e.preventDefault();
-                          voiceStop({ send: true });
+                          voiceStop({ send: !rewriteConfigured });
                         }
                       : undefined
               }

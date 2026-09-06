@@ -51,6 +51,7 @@
     "cancelChanges": "Cancel Changes"
   },
   "voiceSettings": {
+    "rewriteHistory": "When you click Rewrite, also send up to 3 recent turns of this chat as reference (no tool output).",
     "inputTitle": "Voice input",
     "managedDescription": "Dictate using Azure Speech or MAI Transcribe. Click the microphone to start and again to stop; the transcript fills the composer by default.",
     "enableInput": "Enable voice input",

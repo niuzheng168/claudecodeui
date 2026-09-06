@@ -39,6 +39,7 @@ function readPreferences(config: CodeyVoiceConfig): CodeyVoicePreferences {
   return {
     provider: selectedProvider?.id || config.defaultProvider,
     language: selectedLanguage || 'auto',
+    rewriteUseHistory: stored?.rewriteUseHistory !== false,
   };
 }
 

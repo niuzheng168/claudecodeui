@@ -55,6 +55,12 @@
     ],
     "boundaries/elements": [
       {
+        // Register the shared module's public barrel without allowing arbitrary shared files.
+        "type": "backend-shared-barrel",
+        "pattern": "server/shared/index.{js,ts}",
+        "mode": "file"
+      },
+      {
         "type": "backend-shared-type-contract",
         "pattern": ["server/shared/types.{js,ts}", "server/shared/interfaces.{js,ts}"],
         "mode": "file"
