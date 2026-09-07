@@ -1,4 +1,23 @@
 {
+  "completion": {
+    "title": "自动补全",
+    "on": "已开启",
+    "off": "已关闭",
+    "enable": "开启自动补全建议",
+    "history": "参考最近几轮对话",
+    "consent": "开启后，输入停顿时会把未发送的草稿和可选的最近对话发送到已配置的 Foundry 模型。建议不会自动发送，需先采纳再发送。输入机密内容时请关闭。",
+    "notConfigured": "补全暂不可用，请管理员检查配置。",
+    "hint": "Tab 补全 · Esc 忽略",
+    "accept": "补全",
+    "dismiss": "忽略补全建议",
+    "ready": "有补全建议，可按 Tab 或点击补全按钮采纳。",
+    "applied": "已补全",
+    "undo": "撤销补全",
+    "undone": "已撤销补全",
+    "requesting": "正在生成建议…",
+    "cooldown": "补全请求正在冷却，可继续输入。",
+    "unavailable": "补全暂时不可用，可继续输入。"
+  },
   "codeBlock": {
     "copy": "复制",
     "copied": "已复制",
@@ -176,12 +195,12 @@
     "send": "发送",
     "stop": "停止",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
-      "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
+      "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
+      "enter": "Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
       "queue": "Enter 排队发送下一条消息",
       "updateQueued": "Enter 更新排队消息"
     },
-    "clickToChangeMode": "点击更改权限模式（或在输入框中按 Tab）",
+    "clickToChangeMode": "点击更改权限模式（或在输入框中按 Ctrl+Alt+M）",
     "showAllCommands": "显示所有命令",
     "clearInput": "清空输入",
     "scrollToBottom": "滚动到底部",

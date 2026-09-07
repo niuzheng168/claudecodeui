@@ -105,10 +105,10 @@
     "send": "Envoyer",
     "stop": "Arrêter",
     "hintText": {
-      "ctrlEnter": "Ctrl+Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Tab pour changer de mode • / pour les commandes slash",
-      "enter": "Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Tab pour changer de mode • / pour les commandes slash"
+      "ctrlEnter": "Ctrl+Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Ctrl+Alt+M pour changer de mode • / pour les commandes slash",
+      "enter": "Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Ctrl+Alt+M pour changer de mode • / pour les commandes slash"
     },
-    "clickToChangeMode": "Cliquez pour changer le mode de permission (ou appuyez sur Tab dans la saisie)",
+    "clickToChangeMode": "Cliquez pour changer le mode de permission (ou appuyez sur Ctrl+Alt+M dans la saisie)",
     "showAllCommands": "Afficher toutes les commandes",
     "clearInput": "Effacer la saisie",
     "scrollToBottom": "Défiler vers le bas"

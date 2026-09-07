@@ -104,10 +104,10 @@
     "send": "Gönder",
     "stop": "Durdur",
     "hintText": {
-      "ctrlEnter": "Göndermek için Ctrl+Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Tab • Slash komutları için /",
-      "enter": "Göndermek için Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Tab • Slash komutları için /"
+      "ctrlEnter": "Göndermek için Ctrl+Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Ctrl+Alt+M • Slash komutları için /",
+      "enter": "Göndermek için Enter • Yeni satır için Shift+Enter • Mod değiştirmek için Ctrl+Alt+M • Slash komutları için /"
     },
-    "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Tab tuşuna bas)",
+    "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Ctrl+Alt+M tuşuna bas)",
     "showAllCommands": "Tüm komutları göster",
     "clearInput": "Girdiyi temizle",
     "scrollToBottom": "En alta git"

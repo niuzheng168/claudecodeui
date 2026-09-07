@@ -213,6 +213,7 @@ function ChatInterface({
     deleteQueuedDraft,
     handleVoiceTranscript,
     replaceVoiceDraft,
+    replaceComposerDraft,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -548,6 +549,12 @@ function ChatInterface({
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
           onReplaceVoiceDraft={replaceVoiceDraft}
+          onReplaceComposerDraft={replaceComposerDraft}
+          completionHistory={chatMessages}
+          completionContextKey={JSON.stringify([
+            selectedProject.projectId, selectedProject.fullPath, provider,
+            currentSessionId || selectedSession?.id || 'new', isActive, editingAnchorId,
+          ])}
           voiceHistory={chatMessages}
           voiceContextKey={JSON.stringify([selectedProject.name, selectedProject.fullPath, currentSessionId || selectedSession?.id || 'new', isActive])}
           voiceRecordingAllowed={isActive}

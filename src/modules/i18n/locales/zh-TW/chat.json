@@ -1,4 +1,23 @@
 {
+  "completion": {
+    "title": "自動補全",
+    "on": "已開啟",
+    "off": "已關閉",
+    "enable": "開啟自動補全建議",
+    "history": "參考最近幾輪對話",
+    "consent": "開啟後，輸入停頓時會將未傳送的草稿和選擇性的最近對話傳送到設定的 Foundry 模型。建議不會自動傳送，需先採納再傳送。輸入機密內容時請關閉。",
+    "notConfigured": "補全暫不可用，請管理員檢查設定。",
+    "hint": "Tab 補全 · Esc 忽略",
+    "accept": "補全",
+    "dismiss": "忽略補全建議",
+    "ready": "有補全建議，可按 Tab 或點擊補全按鈕採納。",
+    "applied": "已補全",
+    "undo": "復原補全",
+    "undone": "已復原補全",
+    "requesting": "正在產生建議…",
+    "cooldown": "補全請求正在冷卻，可繼續輸入。",
+    "unavailable": "補全暫時不可用，可繼續輸入。"
+  },
   "codeBlock": {
     "copy": "複製",
     "copied": "已複製",
@@ -104,10 +123,10 @@
     "send": "傳送",
     "stop": "停止",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
-      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令"
+      "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Ctrl+Alt+M 切換模式 • / 斜線指令",
+      "enter": "Enter 傳送 • Shift+Enter 換行 • Ctrl+Alt+M 切換模式 • / 斜線指令"
     },
-    "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
+    "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Ctrl+Alt+M）",
     "showAllCommands": "顯示所有指令",
     "clearInput": "清空輸入",
     "scrollToBottom": "捲動到底部"

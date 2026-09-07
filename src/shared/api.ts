@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { CodeyVoicePreferences, VoiceRewriteMessage } from '@/shared/types';
+import type { CodeyVoicePreferences, ComposerCompletionRequest, VoiceRewriteMessage } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -511,6 +511,16 @@ export const api = {
     stopSession: (sessionId: string) => post(`/api/browser-use/sessions/${sessionId}/stop`),
     deleteSession: (sessionId: string) => del(`/api/browser-use/sessions/${sessionId}`),
     installRuntime: () => post('/api/browser-use/runtime/install'),
+  },
+
+  composer: {
+    config: (signal?: AbortSignal) => get('/api/composer/codey/config', {
+      credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', signal,
+    }),
+    complete: (body: ComposerCompletionRequest, signal: AbortSignal) =>
+      post('/api/composer/codey/complete', body, {
+        credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', signal,
+      }),
   },
 
   voice: {
