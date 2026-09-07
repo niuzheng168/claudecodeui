@@ -113,12 +113,12 @@
     "send": "Enviar",
     "stop": "Detener",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter para enviar • Shift+Enter para nueva línea • Tab para cambiar de modo • / para comandos",
-      "enter": "Enter para enviar • Shift+Enter para nueva línea • Tab para cambiar de modo • / para comandos",
+      "ctrlEnter": "Ctrl+Enter para enviar • Shift+Enter para nueva línea • Ctrl+Alt+M para cambiar de modo • / para comandos",
+      "enter": "Enter para enviar • Shift+Enter para nueva línea • Ctrl+Alt+M para cambiar de modo • / para comandos",
       "queue": "Enter para poner en cola tu siguiente mensaje",
       "updateQueued": "Enter para actualizar el mensaje en cola"
     },
-    "clickToChangeMode": "Haz clic para cambiar el modo de permisos (o pulsa Tab en el campo de texto)",
+    "clickToChangeMode": "Haz clic para cambiar el modo de permisos (o pulsa Ctrl+Alt+M en el campo de texto)",
     "showAllCommands": "Mostrar todos los comandos",
     "clearInput": "Limpiar entrada",
     "scrollToBottom": "Ir al final",

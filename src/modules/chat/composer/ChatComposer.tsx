@@ -14,10 +14,11 @@ import { Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceRewrite } from '@/modules/chat/hooks/useVoiceRewrite';
+import { useInlineCompletion } from '@/modules/chat/hooks/useInlineCompletion';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
-import { isCodeyPortalSso } from '@/shared/utils';
+import { isCodeyPortalSso, isComposerModeShortcut } from '@/shared/utils';
 import type { ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
@@ -37,6 +38,8 @@ import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
+import { ComposerCompletionOverlay } from '@/modules/chat/composer/ComposerCompletionOverlay';
+import { ComposerCompletionBar } from '@/modules/chat/composer/ComposerCompletionBar';
 
 type MentionableFile = {
   name: string;
@@ -104,6 +107,9 @@ type ChatComposerProps = {
   input: string;
   onVoiceTranscript?: (text: string, send?: boolean) => VoiceDraftInsertion | void;
   onReplaceVoiceDraft?: (expected: string, replacement: string) => void;
+  onReplaceComposerDraft?: (expected: string, replacement: string) => void;
+  completionContextKey?: string;
+  completionHistory?: ChatMessage[];
   voiceHistory?: ChatMessage[];
   voiceContextKey?: string;
   voiceRecordingAllowed?: boolean;
@@ -181,6 +187,9 @@ export default function ChatComposer({
   input,
   onVoiceTranscript,
   onReplaceVoiceDraft,
+  onReplaceComposerDraft,
+  completionContextKey,
+  completionHistory,
   voiceHistory,
   voiceContextKey,
   voiceRecordingAllowed = true,
@@ -298,6 +307,20 @@ export default function ChatComposer({
   // Hide the thinking/status bar while any permission request is pending
   const hasPendingPermissions = pendingPermissionRequests.length > 0;
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
+  // Only a fully measured ghost may replace the explicit, full-text suggestion bar.
+  const [ghostVisible, setGhostVisible] = useState(false);
+  const replaceCompletionDraft = useCallback((expected: string, next: string) => {
+    (onReplaceComposerDraft ?? onReplaceVoiceDraft)?.(expected, next);
+  }, [onReplaceComposerDraft, onReplaceVoiceDraft]);
+  const completion = useInlineCompletion({
+    managed: managedVoice,
+    active: voiceRecordingAllowed !== false && Boolean(onReplaceComposerDraft ?? onReplaceVoiceDraft),
+    blocked: voiceState !== 'idle' || rewrite.busy || isEditingSentMessage || showFileDropdown ||
+      isCommandMenuOpen || hasPendingPermissions,
+    contextKey: JSON.stringify([completionContextKey ?? voiceContextKey ?? '', model, permissionMode]),
+    draft: input, history: completionHistory ?? voiceHistory ?? [], textareaRef,
+    replaceDraft: replaceCompletionDraft,
+  });
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
@@ -465,17 +488,49 @@ export default function ChatComposer({
               ref={textareaRef}
               dir="auto"
               value={input}
-              onChange={onInputChange}
+              onChange={(event) => {
+                onInputChange(event);
+                if ((event.nativeEvent as InputEvent).isComposing) {
+                  completion.onCompositionStart();
+                  return;
+                }
+                completion.receiveUserInput(event.currentTarget.value);
+              }}
               onClick={onTextareaClick}
-              onKeyDown={onTextareaKeyDown}
-              onPaste={onTextareaPaste}
+              onKeyDown={(event) => {
+                if (completion.isComposing() || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                if (event.key === 'Enter' || isComposerModeShortcut(event)) completion.invalidate();
+                onTextareaKeyDown(event);
+                completion.onKeyDown(event);
+              }}
+              onPaste={(event) => { completion.invalidate(); onTextareaPaste(event); }}
+              onSelect={completion.onSelectionChange}
+              onCompositionStart={completion.onCompositionStart}
+              onCompositionEnd={(event) => completion.onCompositionEnd(event.currentTarget.value)}
               onScroll={(event) => onTextareaScrollSync(event.target as HTMLTextAreaElement)}
               onFocus={() => onInputFocusChange?.(true)}
-              onBlur={() => onInputFocusChange?.(false)}
+              onBlur={(event) => {
+                onInputFocusChange?.(false);
+                if (!(event.relatedTarget instanceof Element) || !event.relatedTarget.closest('[data-completion-controls]')) {
+                  completion.invalidate();
+                }
+              }}
               onInput={onTextareaInput}
               placeholder={placeholder}
             />
+            {completion.candidate && (
+              <ComposerCompletionOverlay prefix={input} suffix={completion.candidate.suffix}
+                textareaRef={textareaRef} onVisibilityChange={setGhostVisible} />
+            )}
         </PromptInputBody>
+
+        {managedVoice && (
+          <ComposerCompletionBar candidate={completion.candidate} ghostVisible={ghostVisible}
+            configured={completion.configured} ready={completion.ready} preferences={completion.preferences}
+            phase={completion.phase} notice={completion.notice} canUndo={completion.canUndo}
+            onPreferenceChange={completion.setPreference} onAccept={() => completion.accept(true)}
+            onDismiss={completion.dismiss} onUndo={completion.undo} />
+        )}
 
         <ComposerToolbar
           onAttachFiles={openAttachmentPicker}

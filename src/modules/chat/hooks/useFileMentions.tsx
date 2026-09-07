@@ -220,6 +220,8 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
 
   const handleFileMentionsKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (event.nativeEvent.isComposing || (event.key === 'Tab' &&
+          (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey))) return false;
       if (!showFileDropdown || filteredFiles.length === 0) {
         return false;
       }

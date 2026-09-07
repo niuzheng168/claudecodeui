@@ -1,4 +1,23 @@
 {
+  "completion": {
+    "title": "Inline completion",
+    "on": "On",
+    "off": "Off",
+    "enable": "Enable automatic suggestions",
+    "history": "Use recent conversation context",
+    "consent": "When enabled, pauses in typing send your unsent draft and optional recent dialogue to the configured Foundry model. Suggestions are not sent as messages until you accept and send them. Turn this off for sensitive text.",
+    "notConfigured": "Completion is unavailable. Ask the administrator to check its configuration.",
+    "hint": "Tab to complete · Esc to dismiss",
+    "accept": "Complete",
+    "dismiss": "Dismiss suggestion",
+    "ready": "A completion is available. Press Tab or use the Complete button.",
+    "applied": "Completion inserted",
+    "undo": "Undo completion",
+    "undone": "Completion undone",
+    "requesting": "Suggesting…",
+    "cooldown": "Completion is cooling down. You can keep typing.",
+    "unavailable": "Completion is temporarily unavailable. You can keep typing."
+  },
   "codeBlock": {
     "copy": "Copy",
     "copied": "Copied",
@@ -176,12 +195,12 @@
     "send": "Send",
     "stop": "Stop",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
-      "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
+      "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Ctrl+Alt+M to change modes • / for slash commands",
+      "enter": "Enter to send • Shift+Enter for new line • Ctrl+Alt+M to change modes • / for slash commands",
       "queue": "Enter to queue your next message",
       "updateQueued": "Enter to update queued message"
     },
-    "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
+    "clickToChangeMode": "Click to change permission mode (or press Ctrl+Alt+M in input)",
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",

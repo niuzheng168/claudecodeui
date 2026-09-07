@@ -1,7 +1,74 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { LLMProvider, Project, ProjectSession } from '@/shared/types';
+import type { ChatMessage, ComposerHistoryMessage, LLMProvider, Project, ProjectSession } from '@/shared/types';
+
+//----------------- COMPOSER INPUT HELPERS ------------
+
+/** Chat's canonical keyboard handler and input shell recognize the same explicit mode chord, excluding AltGr. */
+export function isComposerModeShortcut(event: {
+  key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean;
+  getModifierState?: (key: 'AltGraph') => boolean;
+}): boolean {
+  return event.key.toLowerCase() === 'm' && event.ctrlKey && event.altKey &&
+    !event.metaKey && !event.shiftKey && !event.getModifierState?.('AltGraph');
+}
+
+function boundedComposerReference(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  let size = 0;
+  let result = '';
+  for (const character of text) {
+    const bytes = encoder.encode(character).length;
+    if (size + bytes > maxBytes) break;
+    size += bytes;
+    result += character;
+  }
+  return result.trim();
+}
+
+function composerReferenceText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(?:```|$)/g, '[code omitted]')
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[credential omitted]')
+    .replace(/\b(?:Bearer\s+\S+|(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]{12,})/gi, '[credential omitted]')
+    .replace(/\b(?:api[_-]?key|password|token|secret)\s*[:=]\s*["']?[^\s"',;]+/gi, '[credential omitted]')
+    .trim();
+}
+
+/**
+ * Voice rewrite and completion share visible-prose filtering, with independently supplied byte/message budgets.
+ * Uses at most three user turns, excludes partial/internal records, and preserves Unicode while bounding UTF-8.
+ */
+export function selectComposerHistory(messages: ChatMessage[], limits = { messages: 6, bytes: 3000, messageBytes: 1000 }): ComposerHistoryMessage[] {
+  const selected: ComposerHistoryMessage[] = [];
+  let userTurns = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (!['user', 'assistant'].includes(message.type) || message.isStreaming || message.isThinking ||
+        message.isToolUse || message.isLocalCommand || message.isLocalCommandStdout ||
+        message.isCompactSummary || message.isSubagentContainer || message.isTaskNotification ||
+        typeof message.content !== 'string' || !message.content.trim()) continue;
+    if (message.type === 'user' && ++userTurns > 3) break;
+    const content = composerReferenceText(message.content);
+    if (!content) continue;
+    const role = message.type as 'user' | 'assistant';
+    const first = selected[0];
+    if (role === 'assistant' && first?.role === role) first.content = `${content}\n${first.content}`;
+    else selected.unshift({ role, content });
+  }
+  let remaining = limits.bytes;
+  const result: ComposerHistoryMessage[] = [];
+  for (const message of selected.slice(-limits.messages).reverse()) {
+    const content = boundedComposerReference(message.content, Math.min(limits.messageBytes, remaining));
+    if (!content) break;
+    remaining -= new TextEncoder().encode(content).length;
+    result.unshift({ role: message.role, content });
+  }
+  return result;
+}
+
+// ---------------------------
 
 //----------------- DEPLOYMENT MODE ------------
 

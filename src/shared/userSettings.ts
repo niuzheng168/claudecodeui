@@ -28,6 +28,7 @@ export type UserPreferences = {
   opencodePermissions: unknown;
   codeEditorSettings: unknown;
   uiPreferences: unknown;
+  composerPreferences: unknown;
   selectedProvider: string;
 };
 
@@ -67,6 +68,8 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   // read by readLegacyCodeEditorSettings instead.
   codeEditorSettings: '',
   uiPreferences: 'uiPreferences',
+  // New explicit consent has no legacy, unscoped value to migrate.
+  composerPreferences: '',
   selectedProvider: 'selected-provider',
 };
 
@@ -80,6 +83,8 @@ let preferences: PreferenceRecord = {};
 let pendingServerWrites: PreferenceRecord = {};
 let serverWriteTimer: ReturnType<typeof setTimeout> | null = null;
 let hasHydrated = false;
+// Invalidates a pending preference load when signing out or starting a newer load.
+let hydrationEpoch = 0;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -204,6 +209,7 @@ export function subscribeToUserPreferences(listener: () => void): () => void {
  * `claudePermissions` are pulled out of it separately.
  */
 function readLegacyPreference(key: UserPreferenceKey): unknown {
+  if (!LEGACY_STORAGE_KEYS[key]) return undefined;
   let raw: string | null = null;
   try {
     raw = localStorage.getItem(LEGACY_STORAGE_KEYS[key]);
@@ -279,10 +285,12 @@ function readLegacyCodeEditorSettings(): unknown {
  * settings an existing install already had survive the move.
  */
 export async function hydrateUserPreferences(): Promise<void> {
+  const epoch = ++hydrationEpoch;
   let serverPreferences: PreferenceRecord = {};
 
   try {
     const response = await api.user.preferences();
+    if (!response.ok || epoch !== hydrationEpoch) return;
     if (response.ok) {
       const payload = (await response.json()) as { preferences?: unknown };
       if (isRecord(payload.preferences)) {
@@ -295,6 +303,7 @@ export async function hydrateUserPreferences(): Promise<void> {
     console.error('Failed to load user preferences:', error);
     return;
   }
+  if (epoch !== hydrationEpoch) return;
 
   const migrated: PreferenceRecord = {};
   for (const key of PREFERENCE_KEYS) {
@@ -337,11 +346,17 @@ export function hasHydratedUserPreferences(): boolean {
   return hasHydrated;
 }
 
+/** Completion binds consent/configuration to this load epoch so an old login's state cannot authorize automatic requests. */
+export function userPreferencesEpoch(): number {
+  return hydrationEpoch;
+}
+
 /**
  * Drops the in-memory and mirrored copies on sign-out, so the next user on
  * this device does not start out looking at the previous user's settings.
  */
 export function resetUserPreferences(): void {
+  hydrationEpoch++;
   preferences = {};
   pendingServerWrites = {};
   hasHydrated = false;

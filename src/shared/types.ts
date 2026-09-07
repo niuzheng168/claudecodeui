@@ -638,14 +638,71 @@ export type CodeyVoicePreferences = {
   rewriteUseHistory?: boolean;
 };
 
-/** Chat's context selector and the broker API send only bounded, visible dialogue text. */
-export type VoiceRewriteMessage = { role: 'user' | 'assistant'; content: string };
+/** Chat's text assistants send bounded visible prose, never tool, reasoning or system payloads. */
+export type ComposerHistoryMessage = { role: 'user' | 'assistant'; content: string };
+
+/** The existing voice rewrite API retains its public type while sharing the dialogue-only shape. */
+export type VoiceRewriteMessage = ComposerHistoryMessage;
 
 /** The chat recorder's insertion receipt identifies exactly which new voice text may be rewritten. */
 export type VoiceDraftInsertion = { prefix: string; transcript: string; draft: string };
 
 /** The broker and chat rewrite hook exchange a candidate, never a command or automatic-send intent. */
 export type VoiceRewriteResult = { text: string; ambiguities: string[] };
+
+// ---------------------------
+//----------------- COMPOSER COMPLETION ------------
+
+/** Chat and the preferences store require explicit consent before sending unsent drafts to Foundry. */
+export type ComposerPreferences = { completionEnabled: boolean; useHistory: boolean };
+
+/** Chat's completion hook and API exchange a stateless, snapshot-bound request, not a chat turn. */
+export type ComposerCompletionRequest = {
+  requestId: string;
+  draftRevision: number;
+  contextRevision: string;
+  prefix: string;
+  history: ComposerHistoryMessage[];
+  language: 'auto' | 'zh-CN' | 'en-US';
+};
+
+/** Server metadata is echoed to the completion hook; only suffix is model-generated. */
+export type ComposerCompletionResult = {
+  requestId: string;
+  draftRevision: number;
+  contextRevision: string;
+  suffix: string;
+  promptVersion: string;
+  durationMs?: number;
+};
+
+/** The completion API exposes policy bounds and the authenticated identity, never endpoint/key/deployment details. */
+export type ComposerCompletionConfig = {
+  configured: boolean;
+  userId: string;
+  promptVersion: string;
+  limits: {
+    prefixBytes: number;
+    historyMessages: number;
+    historyBytes: number;
+    historyMessageBytes: number;
+    suffixCharacters: number;
+    debounceMs: number;
+    minIntervalMs: number;
+  };
+};
+
+/** The composer and its overlays display a proposal without changing the textarea/draft value. */
+export type ComposerCompletionCandidate = {
+  prefix: string;
+  suffix: string;
+  scope: string;
+  context: string;
+  expiresAt: number;
+};
+
+// ---------------------------
+//----------------- VOICE PLAYBACK ------------
 
 /** Immutable snapshot of the app-level text-to-speech player for one utterance — its play state plus any error message — read by components so read-aloud state survives re-renders and chat switches. */
 export type VoiceSnapshot = { state: VoicePlayState; error: string | null };

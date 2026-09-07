@@ -16,6 +16,7 @@ import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
+import { isComposerModeShortcut } from '@/shared/utils';
 import {
   clearQueuedMessage,
   hydrateChatDrafts,
@@ -929,7 +930,7 @@ export function useChatComposerState({
 
   // React's functional update is the final compare-and-set: a pending local
   // edit or a hydrated draft wins even if a network callback saw older props.
-  const replaceVoiceDraft = useCallback((expected: string, replacement: string) => {
+  const replaceComposerDraft = useCallback((expected: string, replacement: string) => {
     const scope = draftScope;
     if (draftScopeRef.current !== scope) return;
     setInputState((previous) => previous.scope === scope && previous.value === expected &&
@@ -1051,17 +1052,19 @@ export function useChatComposerState({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+      if (isComposerModeShortcut(event)) {
+        event.preventDefault();
+        if (!event.repeat) cyclePermissionMode();
+        return;
+      }
+      // Modified Tab belongs to browser/focus navigation, not menus or permissions.
+      if (event.key === 'Tab' && (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)) return;
       if (handleCommandMenuKeyDown(event)) {
         return;
       }
 
       if (handleFileMentionsKeyDown(event)) {
-        return;
-      }
-
-      if (event.key === 'Tab' && !showFileDropdown && !showCommandMenu) {
-        event.preventDefault();
-        cyclePermissionMode();
         return;
       }
 
@@ -1085,8 +1088,6 @@ export function useChatComposerState({
       handleFileMentionsKeyDown,
       handleSubmit,
       sendByCtrlEnter,
-      showCommandMenu,
-      showFileDropdown,
     ],
   );
 
@@ -1235,7 +1236,8 @@ export function useChatComposerState({
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
-    replaceVoiceDraft,
+    replaceVoiceDraft: replaceComposerDraft,
+    replaceComposerDraft,
     handleInputChange,
     handleKeyDown,
     handlePaste,

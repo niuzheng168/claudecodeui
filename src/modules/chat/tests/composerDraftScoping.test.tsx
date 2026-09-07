@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { act, renderHook } from '@testing-library/react';
+import type { KeyboardEvent } from 'react';
 import { beforeEach, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
@@ -38,19 +39,21 @@ vi.mock('@/shared/api', () => {
         savePreferences: () => okJson({ success: true, preferences: {} }),
       },
       commands: { list: () => okJson({ success: true, commands: [] }) },
+      providers: { skills: () => okJson({ data: { skills: [] } }) },
+      getFiles: () => okJson([]),
       files: { search: () => okJson({ success: true, files: [] }) },
     },
   };
 });
 
-const renderComposer = (selectedSession: ProjectSession | null) => renderHook(
+const renderComposer = (selectedSession: ProjectSession | null, cycleMode = () => undefined) => renderHook(
   ({ session }: { session: ProjectSession | null }) => useChatComposerState({
     selectedProject: PROJECT,
     selectedSession: session,
     currentSessionId: session?.id ?? null,
     provider: 'claude',
     permissionMode: 'default',
-    cyclePermissionMode: () => undefined,
+    cyclePermissionMode: cycleMode,
     resolvePermissionModeForProvider: () => 'default' as PermissionMode,
     currentProviderModel: 'test-model',
     currentProviderEffort: 'medium',
@@ -65,6 +68,46 @@ const renderComposer = (selectedSession: ProjectSession | null) => renderHook(
   }),
   { initialProps: { session: selectedSession } },
 );
+
+function keyEvent(key: string, overrides = {}): KeyboardEvent<HTMLTextAreaElement> {
+  return {
+    key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, repeat: false,
+    nativeEvent: { isComposing: false, keyCode: 0 }, getModifierState: () => false,
+    preventDefault: vi.fn(), ...overrides,
+  } as unknown as KeyboardEvent<HTMLTextAreaElement>;
+}
+
+test('Ctrl+Alt+M alone cycles permissions once; Tab and browser navigation chords are not mode switches', () => {
+  const cycle = vi.fn();
+  const view = renderComposer({ id: 'shortcut-test' }, cycle);
+  const chord = keyEvent('m', { ctrlKey: true, altKey: true });
+  act(() => view.result.current.handleKeyDown(chord));
+  assert.equal(cycle.mock.calls.length, 1);
+  assert.equal(vi.mocked(chord.preventDefault).mock.calls.length, 1);
+  act(() => view.result.current.handleKeyDown(keyEvent('m', { ctrlKey: true, altKey: true, repeat: true })));
+  assert.equal(cycle.mock.calls.length, 1);
+  for (const modifiers of [{}, { shiftKey: true }, { ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) {
+    const event = keyEvent('Tab', modifiers);
+    act(() => view.result.current.handleKeyDown(event));
+    assert.equal(vi.mocked(event.preventDefault).mock.calls.length, 0);
+  }
+  assert.equal(cycle.mock.calls.length, 1);
+});
+
+test('IME composition and AltGr cannot accidentally switch modes or submit', () => {
+  const cycle = vi.fn();
+  const view = renderComposer({ id: 'ime-shortcut-test' }, cycle);
+  for (const event of [
+    keyEvent('m', { ctrlKey: true, altKey: true, getModifierState: () => true }),
+    keyEvent('m', { ctrlKey: true, altKey: true, nativeEvent: { isComposing: true } }),
+    keyEvent('Enter', { nativeEvent: { isComposing: true } }),
+    keyEvent('Tab', { nativeEvent: { keyCode: 229 } }),
+  ]) {
+    act(() => view.result.current.handleKeyDown(event));
+    assert.equal(vi.mocked(event.preventDefault).mock.calls.length, 0);
+  }
+  assert.equal(cycle.mock.calls.length, 0);
+});
 
 beforeEach(() => {
   localStorage.clear();
