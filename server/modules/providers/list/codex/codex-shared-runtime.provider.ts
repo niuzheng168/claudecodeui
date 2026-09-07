@@ -146,6 +146,19 @@ export class CodexSharedRuntime implements IProviderRuntime {
       && allowedEfforts.includes(options.effort) ? options.effort : undefined;
     if (run.aborted) return;
 
+    const permissionMode = options.permissionMode;
+    const fullAccessSelected = permissionMode === 'bypassPermissions';
+    const approvalPolicy = fullAccessSelected || permissionMode === 'acceptEdits' ? 'never' : 'untrusted';
+    // The composer sends its selection with every message, including resumes.
+    // An omitted mode still inherits the thread's permissions; it must not
+    // silently enable full access or reset a desktop user's custom policy.
+    const turnPermissions = permissionMode === 'default' || permissionMode === 'acceptEdits' || fullAccessSelected
+      ? {
+        approvalPolicy,
+        sandboxPolicy: { type: fullAccessSelected ? 'dangerFullAccess' : 'workspaceWrite' },
+      }
+      : {};
+
     if (!run.threadId) {
       // Creating with exec would make source=exec, hidden from the App's
       // default thread/list. Let the shared daemon choose its own source;
@@ -155,9 +168,8 @@ export class CodexSharedRuntime implements IProviderRuntime {
         ...(model ? { model } : {}),
         // ThreadStartParams uses CLI-style enum strings, unlike the
         // camelCase tagged SandboxPolicy returned by the daemon.
-        sandbox: options.permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write',
-        approvalPolicy: options.permissionMode === 'bypassPermissions' || options.permissionMode === 'acceptEdits'
-          ? 'never' : 'untrusted',
+        sandbox: fullAccessSelected ? 'danger-full-access' : 'workspace-write',
+        approvalPolicy,
       });
       if (typeof created.thread?.id !== 'string' || !created.thread.id) {
         throw new Error('Codex did not acknowledge the new thread id. No prompt was submitted; check Codex app before retrying.');
@@ -171,8 +183,9 @@ export class CodexSharedRuntime implements IProviderRuntime {
         provider: 'codex', kind: 'session_created', sessionId: createdThreadId, newSessionId: createdThreadId,
       }));
     } else {
-      // No sandbox/approval overrides on resume: keep the desktop session's
-      // permission settings. The user's model/effort selection applies below.
+      // Attach without changing permissions: the thread may still have an
+      // active desktop turn. Apply Codey's selection only at turn/start,
+      // after the busy check, alongside the user's model/effort selection.
       const resumed = await client.request('thread/resume', { threadId: run.threadId, excludeTurns: true });
       if (resumed.thread?.id !== run.threadId) {
         throw new Error('Codex did not attach the requested thread. No prompt was submitted.');
@@ -269,6 +282,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
       if (run.aborted) return;
       const response = await client.request('turn/start', {
         threadId: run.threadId, input,
+        ...turnPermissions,
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
       });

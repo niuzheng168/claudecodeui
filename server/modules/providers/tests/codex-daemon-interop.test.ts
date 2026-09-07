@@ -270,6 +270,7 @@ test('resume uses the existing daemon and buffers early turn events without star
     assert.equal(starts[0].params.threadId, THREAD_ID);
     assert.equal(starts[0].params.input[0].text, 'Continue here');
     assert.ok(!('approvalPolicy' in starts[0].params));
+    assert.ok(!('sandboxPolicy' in starts[0].params));
     assert.ok(messages.some((message) => message.id === 'reply-new' && message.content === 'Hello from shared owner'));
     assert.ok(!messages.some((message) => message.content === 'DO NOT SHOW'));
     assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
@@ -308,7 +309,7 @@ test('new web sessions are created by the shared daemon and mapped before their 
   });
 });
 
-test('new daemon sessions honor Codey permission choices without changing existing threads', { concurrency: false }, async () => {
+test('new daemon sessions honor Codey permission choices on creation and the first turn', { concurrency: false }, async () => {
   await withFixture(async ({ requests, fallback }) => {
     const { writer, context } = executionContext();
     context.resolveProviderSessionId = () => null;
@@ -321,8 +322,79 @@ test('new daemon sessions honor Codey permission choices without changing existi
       { sandbox: 'workspace-write', approvalPolicy: 'never' },
       { sandbox: 'danger-full-access', approvalPolicy: 'never' },
     ]);
-    assert.ok(requests.filter((request) => request.method === 'turn/start')
-      .every((request) => !('approvalPolicy' in request.params) && !('sandboxPolicy' in request.params)));
+    assert.deepEqual(requests.filter((request) => request.method === 'turn/start').map((request) => ({
+      approvalPolicy: request.params.approvalPolicy, sandboxPolicy: request.params.sandboxPolicy,
+    })), [
+      { approvalPolicy: 'never', sandboxPolicy: { type: 'workspaceWrite' } },
+      { approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } },
+    ]);
+  });
+});
+
+test('existing daemon sessions apply selected permissions at turn start, not while attaching', { concurrency: false }, async () => {
+  await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+    const { writer, context } = executionContext();
+    const runtime = new CodexSharedRuntime(fallback);
+    for (const permissionMode of ['bypassPermissions', 'acceptEdits', 'default']) {
+      await runtime.run('Apply my selected permissions', { sessionId: APP_ID, permissionMode }, writer, context);
+    }
+    assert.deepEqual(fallbackCalls, []);
+    assert.ok(!requests.some((request) => request.method === 'thread/start' || request.method === 'thread/fork'));
+    const resumes = requests.filter((request) => request.method === 'thread/resume');
+    assert.equal(resumes.length, 3);
+    for (const resumed of resumes) {
+      assert.deepEqual(resumed.params, { threadId: THREAD_ID, excludeTurns: true });
+    }
+    assert.deepEqual(requests.filter((request) => request.method === 'turn/start').map((request) => ({
+      threadId: request.params.threadId,
+      approvalPolicy: request.params.approvalPolicy, sandboxPolicy: request.params.sandboxPolicy,
+    })), [
+      { threadId: THREAD_ID, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } },
+      { threadId: THREAD_ID, approvalPolicy: 'never', sandboxPolicy: { type: 'workspaceWrite' } },
+      { threadId: THREAD_ID, approvalPolicy: 'untrusted', sandboxPolicy: { type: 'workspaceWrite' } },
+    ]);
+  });
+});
+
+test('full access is sent again when continuing the same Codey-created thread', { concurrency: false }, async () => {
+  await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+    const { messages, writer, context } = executionContext();
+    sessionsDb.createAppSession(APP_ID, 'codex', '/workspace/demo', 'Full access session');
+    context.resolveProviderSessionId = () => sessionsDb.getSessionById(APP_ID)?.provider_session_id ?? null;
+    writer.setSessionId = (id) => sessionsDb.assignProviderSessionId(APP_ID, id);
+    const runtime = new CodexSharedRuntime(fallback);
+    const options = { sessionId: APP_ID, permissionMode: 'bypassPermissions', projectPath: '/workspace/demo' };
+    await runtime.run('First prompt', options, writer, context);
+    await runtime.run('Continue with full access', options, writer, context);
+    assert.deepEqual(fallbackCalls, []);
+    assert.equal(requests.filter((request) => request.method === 'thread/start').length, 1);
+    assert.equal(requests.filter((request) => request.method === 'thread/resume').length, 1);
+    const turns = requests.filter((request) => request.method === 'turn/start');
+    assert.equal(turns.length, 2);
+    for (const turn of turns) {
+      assert.equal(turn.params.threadId, THREAD_ID);
+      assert.equal(turn.params.approvalPolicy, 'never');
+      assert.deepEqual(turn.params.sandboxPolicy, { type: 'dangerFullAccess' });
+    }
+    assert.equal(messages.filter((message) => message.kind === 'complete' && message.success).length, 2);
+  });
+});
+
+test('a rejected permission change is reported without retrying the turn or falling back to exec', { concurrency: false }, async () => {
+  await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+    const { messages, writer, context } = executionContext();
+    await new CodexSharedRuntime(fallback).run('Use full access', {
+      sessionId: APP_ID, permissionMode: 'bypassPermissions',
+    }, writer, context);
+    assert.deepEqual(fallbackCalls, []);
+    assert.equal(requests.filter((request) => request.method === 'turn/start').length, 1);
+    assert.ok(!requests.some((request) => request.method === 'thread/start' || request.method === 'thread/fork'));
+    assert.match(messages.find((message) => message.kind === 'error')?.content, /Full access is not allowed/);
+    assert.equal(messages.at(-1)?.success, false);
+  }, (request, socket) => {
+    if (request.method !== 'turn/start') return false;
+    socket.send(JSON.stringify({ id: request.id, error: { code: -32600, message: 'Full access is not allowed by this daemon.' } }));
+    return true;
   });
 });
 
@@ -354,10 +426,15 @@ test('new sessions still support legacy CLI-only installations without a daemon'
 test('a busy desktop turn is not interrupted or appended to by Codey', { concurrency: false }, async () => {
   await withFixture(async ({ requests, fallback, fallbackCalls }) => {
     const { messages, writer, context } = executionContext();
-    await new CodexSharedRuntime(fallback).run('Wait for me', { sessionId: APP_ID }, writer, context);
+    await new CodexSharedRuntime(fallback).run('Wait for me', {
+      sessionId: APP_ID, permissionMode: 'bypassPermissions',
+    }, writer, context);
     assert.equal(messages.at(-1)?.success, false);
     assert.match(messages.find((message) => message.kind === 'error')?.content, /currently running in Codex app/);
     assert.ok(!requests.some((request) => request.method === 'turn/start' || request.method === 'turn/interrupt'));
+    assert.deepEqual(requests.find((request) => request.method === 'thread/resume')?.params, {
+      threadId: THREAD_ID, excludeTurns: true,
+    });
     assert.deepEqual(fallbackCalls, []);
   }, (request, socket) => {
     if (request.method !== 'thread/resume') return false;
@@ -483,7 +560,9 @@ test('abort interrupts only the turn Codey started through the daemon', { concur
 test('desktop approval requests are surfaced without automatically approving or declining them', { concurrency: false }, async () => {
   await withFixture(async ({ requests, fallback }) => {
     const { messages, writer, context } = executionContext();
-    await new CodexSharedRuntime(fallback).run('Requires desktop approval', { sessionId: APP_ID }, writer, context);
+    await new CodexSharedRuntime(fallback).run('Requires desktop approval', {
+      sessionId: APP_ID, permissionMode: 'bypassPermissions',
+    }, writer, context);
     assert.ok(messages.some((message) => message.kind === 'task_notification' && /Answer it in Codex app/.test(message.summary)));
     assert.ok(!requests.some((request) => request.id === 'desktop-approval'));
   }, (request, socket) => {
