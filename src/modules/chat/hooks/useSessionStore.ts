@@ -702,10 +702,6 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
-   * Append a realtime (WebSocket) message to the correct session slot.
-   * This works regardless of which session is actively viewed.
-   */
-  /**
    * Drops the message carrying `anchorId` and everything after it.
    *
    * Sent when an already-sent message is edited: the replacement streams in
@@ -748,13 +744,31 @@ export function useSessionStore() {
     notify(sessionId);
   }, [notify]);
 
+  /**
+   * Upsert realtime snapshots in the correct session, including background
+   * sessions. A stable message id identifies one row across progress updates.
+   */
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
     const normalizedMessage =
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    const existingIndex = slot.realtimeMessages.findIndex(
+      (message) => message.id === normalizedMessage.id,
+    );
+    let updated = [...slot.realtimeMessages];
+    if (existingIndex >= 0) {
+      // Codex sends cumulative text/tool snapshots, not new rows per tick.
+      // Preserve the first timestamp so an update cannot move the row past
+      // later messages when realtime is chronologically merged with history.
+      updated[existingIndex] = {
+        ...normalizedMessage,
+        timestamp: updated[existingIndex].timestamp,
+      };
+    } else {
+      updated.push(normalizedMessage);
+    }
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
