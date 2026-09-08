@@ -514,7 +514,7 @@ test('an existing legacy lock file is not treated as proof of an active writer',
   }, undefined, false);
 });
 
-test('a partial paginated JSONL export is never presented as complete history when the daemon is absent', { concurrency: false }, async () => {
+test('non-Windows partial paginated JSONL is never presented as complete history when the daemon is absent', { concurrency: false }, async () => {
   await withFixture(async ({ home }) => {
     const db = new Database(path.join(home, 'state_5.sqlite'));
     db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, history_mode TEXT);');
@@ -523,7 +523,7 @@ test('a partial paginated JSONL export is never presented as complete history wh
     const partial = path.join(home, 'partial.jsonl');
     await writeFile(partial, JSON.stringify({ type: 'session_meta', payload: { id: THREAD_ID, cwd: '/workspace/demo' } }) + '\n');
     sessionsDb.createSession(THREAD_ID, 'codex', '/workspace/demo', 'Native session', undefined, undefined, partial);
-    await assert.rejects(new CodexSessionsProvider().fetchHistory(THREAD_ID), /Connect its local daemon/);
+    await assert.rejects(new CodexSessionsProvider('linux').fetchHistory(THREAD_ID), /Connect its local daemon/);
   }, undefined, false);
 });
 

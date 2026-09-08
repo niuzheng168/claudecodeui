@@ -1793,6 +1793,9 @@ async function attachCodexSubagentTranscripts(
 }
 
 export class CodexSessionsProvider implements IProviderSessions {
+  // Selects only the history transport; never changes who owns/runs a turn.
+  constructor(private readonly historyPlatform: NodeJS.Platform = process.platform) {}
+
   /**
    * Resolves the last turn to keep when the turn `anchorId` names is replaced.
    *
@@ -2213,7 +2216,8 @@ export class CodexSessionsProvider implements IProviderSessions {
 
   /**
    * Keeps the rich legacy JSONL reader, but reads native paginated histories
-   * from their daemon instead of treating a partial/missing export as complete.
+   * from their daemon (or a read-only desktop CLI on Windows) instead of
+   * treating a partial/missing export as complete.
    */
   async fetchHistory(
     sessionId: string,
@@ -2231,15 +2235,16 @@ export class CodexSessionsProvider implements IProviderSessions {
         result = await getCodexSessionMessages(sessionId);
       } else {
         const client = await CodexDaemonClient.connect();
-        if (!client) {
+        if (!client && !(requiresDaemon && this.historyPlatform === 'win32')) {
           if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
           throw new AppError('This session is stored by Codex app. Connect its local daemon to read the history.', {
             code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
           });
         }
         try {
-          const response = await client.request('thread/read', { threadId: providerSessionId, includeTurns: true });
-          const thread = readObjectRecord(response.thread);
+          const thread = client
+            ? readObjectRecord((await client.request('thread/read', { threadId: providerSessionId, includeTurns: true })).thread)
+            : await codexAppServer.readThreadSnapshot(providerSessionId);
           if (!thread || !Array.isArray(thread.turns)) {
             throw new AppError('Codex daemon did not return complete thread history.', {
               code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
@@ -2262,7 +2267,7 @@ export class CodexSessionsProvider implements IProviderSessions {
             { code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502 },
           );
         } finally {
-          client.close();
+          client?.close();
         }
       }
     } catch (error) {
