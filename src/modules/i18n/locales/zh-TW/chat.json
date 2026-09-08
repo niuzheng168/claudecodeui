@@ -272,6 +272,8 @@
     "forkFromHere": "從此處分支"
   },
   "composer": {
+    "collapseInput": "收起輸入框",
+    "expandInput": "展開輸入框",
     "editing": {
       "title": "正在取代先前的訊息",
       "filesNotReverted": "已修改的檔案不會還原",

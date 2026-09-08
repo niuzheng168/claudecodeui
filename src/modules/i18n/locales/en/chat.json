@@ -214,6 +214,8 @@
     }
   },
   "composer": {
+    "collapseInput": "Collapse input",
+    "expandInput": "Expand input",
     "moreTools": "More tools",
     "backToTools": "Back to tools",
     "writeFirst": "Write a message first",
