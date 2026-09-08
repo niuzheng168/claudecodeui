@@ -204,6 +204,23 @@
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
     "scrollToBottom": "Scroll to bottom",
+    "steer": {
+      "send": "Steer now",
+      "sending": "Sending correction…",
+      "hint": "Steer the current turn, or use Send to queue the next message.",
+      "description": "Add instructions to the running turn without stopping it. Its model and permissions stay unchanged.",
+      "failed": "Correction not confirmed; draft kept",
+      "pending": "A correction is already being submitted.",
+      "disconnected": "Not connected. Reconnect before sending a correction.",
+      "unconfirmed": "Delivery could not be confirmed. Check the transcript before retrying to avoid sending twice. Nothing was automatically retried or queued.",
+      "errors": {
+        "STEER_STALE_RUN": "The running turn changed while composing or uploading. Your draft was not sent; review the current turn before retrying.",
+        "NO_ACTIVE_RUN": "This turn has ended. Your draft was not sent; send it as a new message if needed.",
+        "STEER_UNAVAILABLE": "This run cannot be steered now. Keep the draft or queue it for the next turn.",
+        "STEER_UNSUPPORTED": "This runtime does not support steering. Queue the message instead.",
+        "STEER_FORBIDDEN": "You cannot steer a run owned by another user."
+      }
+    },
     "queue": {
       "sendNext": "Queue next message",
       "update": "Update queued message",

@@ -57,6 +57,10 @@ type ChatComposerProps = {
   activity: SessionActivity | null;
   isLoading: boolean;
   onAbortSession: () => void;
+  /** Present only when the active runtime advertises same-turn steering. */
+  onSteer?: () => void;
+  isSteering?: boolean;
+  steerError?: string | null;
   permissionMode: PermissionMode;
   availablePermissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
@@ -139,6 +143,9 @@ export default function ChatComposer({
   activity,
   isLoading,
   onAbortSession,
+  onSteer,
+  isSteering = false,
+  steerError = null,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -328,7 +335,7 @@ export default function ChatComposer({
   const completion = useInlineCompletion({
     managed: managedVoice,
     active: voiceRecordingAllowed !== false && Boolean(onReplaceComposerDraft ?? onReplaceVoiceDraft),
-    blocked: voiceState !== 'idle' || rewrite.busy || isEditingSentMessage || showFileDropdown ||
+    blocked: voiceState !== 'idle' || rewrite.busy || isSteering || isEditingSentMessage || showFileDropdown ||
       isCommandMenuOpen || hasPendingPermissions || isComposerCollapsed,
     contextKey: JSON.stringify([completionContextKey ?? voiceContextKey ?? '', model, permissionMode]),
     draft: input, history: completionHistory ?? voiceHistory ?? [], textareaRef,
@@ -573,6 +580,29 @@ export default function ChatComposer({
             )}
         </PromptInputBody>
 
+        {isLoading && onSteer && !isEditingSentMessage && (
+          <div className="flex items-center justify-between gap-3 px-2 pt-2" data-slot="composer-steering">
+            <span className="min-w-0 text-xs text-muted-foreground">
+              {t('input.steer.hint')}
+            </span>
+            <button
+              type="button"
+              onClick={onSteer}
+              disabled={isSteering || (!input.trim() && attachedFiles.length === 0) || voiceState !== 'idle' || rewrite.busy}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('input.steer.description')}
+            >
+              {isSteering && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
+              {t(isSteering ? 'input.steer.sending' : 'input.steer.send')}
+            </button>
+          </div>
+        )}
+        {steerError && (
+          <p role="alert" className="break-words px-2 pt-2 text-xs text-destructive">
+            {t('input.steer.failed')}: {steerError}
+          </p>
+        )}
+
         {managedVoice && (
           <ComposerCompletionBar candidate={completion.candidate} ghostVisible={ghostVisible}
             configured={completion.configured} ready={completion.ready} preferences={completion.preferences}
@@ -656,7 +686,9 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isLoading
+                isSteering && canQueueDraft
+                  ? true
+                  : isLoading
                   ? false
                   : isRecording
                     ? false

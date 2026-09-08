@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { sessionsDb } from '@/modules/database/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
@@ -24,6 +26,8 @@ type ChatRunStatus = 'running' | 'completed';
  *   can replay exactly the events it missed via `chat.subscribe`.
  */
 type ChatRun = {
+  /** Opaque admission token: a late correction must not steer a newer run. */
+  id: string;
   appSessionId: string;
   provider: LLMProvider;
   providerSessionId: string | null;
@@ -95,6 +99,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
   const outbound: NormalizedMessage = {
     ...message,
     sessionId: run.appSessionId,
+    runId: run.id,
     seq: run.lastSeq,
   };
 
@@ -183,6 +188,7 @@ export const chatRunRegistry = {
     }
 
     const run: ChatRun = {
+      id: randomUUID(),
       appSessionId: input.appSessionId,
       provider: input.provider,
       providerSessionId: input.providerSessionId,

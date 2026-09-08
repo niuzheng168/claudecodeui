@@ -113,6 +113,11 @@ export function useChatRealtimeHandlers({
           onWebSocketReconnect?.();
           return;
 
+        // Settled by useChatSteering; neither accepted nor refused corrections
+        // start/end a run or become an assistant/error transcript row.
+        case 'chat_steer_result':
+          return;
+
         case 'history_truncated': {
           // An already-sent message was replaced. Every client watching this
           // session drops the superseded turns before the replacement streams

@@ -1,6 +1,7 @@
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import { AppError } from '@/shared/utils.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
@@ -89,6 +90,20 @@ export function createProviderRuntimeService(
 
     async abort(providerName: LLMProvider, sessionId: string): Promise<boolean> {
       return Boolean(await dependencies.resolveProvider(providerName).runtime.abort(sessionId));
+    },
+
+    canSteer(providerName: LLMProvider, sessionId: string): boolean {
+      return dependencies.resolveProvider(providerName).runtime.canSteer?.(sessionId) === true;
+    },
+
+    async steer(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void> {
+      const runtime = dependencies.resolveProvider(providerName).runtime;
+      if (!runtime.steer) {
+        throw new AppError('This runtime does not support steering. Queue the message instead.', {
+          code: 'STEER_UNSUPPORTED', statusCode: 409,
+        });
+      }
+      await runtime.steer(sessionId, command, options);
     },
 
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {

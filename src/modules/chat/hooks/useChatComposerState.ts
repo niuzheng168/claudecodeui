@@ -14,7 +14,7 @@ import { useDropzone } from 'react-dropzone';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import { isComposerModeShortcut } from '@/shared/utils';
 import {
@@ -49,6 +49,7 @@ type UseChatComposerStateArgs = {
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
+  steerMessage?: SteerChatMessage;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -153,6 +154,7 @@ const getNotificationSessionSummary = (
   return normalizedFallback.length > 80 ? `${normalizedFallback.slice(0, 77)}...` : normalizedFallback;
 };
 
+/** Used by ChatInterface to own scoped drafts, attachments, queued sends and acknowledged same-turn corrections. */
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -167,6 +169,7 @@ export function useChatComposerState({
   canAbortSession,
   tokenBudget,
   sendMessage,
+  steerMessage,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -255,6 +258,11 @@ export function useChatComposerState({
   // while `queuedDraft` still holds the old session's draft; the persistence
   // effect must not write across that gap.
   const queuedDraftSessionRef = useRef<string | null>(sessionKey);
+
+  // Keep upload/ack progress and errors scoped to the originating draft.
+  const [steeringState, setSteeringState] = useState<{ scope: string; pending: boolean; error: string | null } | null>(null);
+  // Synchronous lock prevents two clicks/Enter from sending or queueing the same draft before React commits.
+  const steeringInFlightRef = useRef<string | null>(null);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -604,6 +612,8 @@ export function useChatComposerState({
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      if (steeringInFlightRef.current === sessionKey && sessionKey) return;
+      setSteeringState((current) => current?.scope === sessionKey ? null : current);
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -869,11 +879,53 @@ export function useChatComposerState({
       selectedProject,
       sendMessage,
       sessionKey,
+      setInput,
       addMessage,
       setIsUserScrolledUp,
       slashCommands,
     ],
   );
+
+  const handleSteer = useCallback(async () => {
+    const scope = sessionKey;
+    const content = inputValueRef.current;
+    const files = attachedFiles;
+    if (!scope || !isLoading || provider !== 'codex' || !steerMessage || editingAnchorId
+      || steeringInFlightRef.current || (!content.trim() && files.length === 0)) return;
+
+    steeringInFlightRef.current = scope;
+    setSteeringState({ scope, pending: true, error: null });
+    try {
+      const attachments = await uploadAttachmentFiles(files);
+      await steerMessage(scope, content, attachments);
+      // Clear only the accepted snapshot. Typing, cross-device edits and a
+      // session switch during upload/ack must not erase another draft.
+      if (readDraftText(scope) === content) writeDraftText(scope, '');
+      if (sessionKeyRef.current === scope) {
+        if (inputValueRef.current === content) {
+          setInput('');
+          inputValueRef.current = '';
+          resetCommandMenuState();
+          setIsTextareaExpanded(false);
+        }
+        setAttachedFiles((current) => current === files ? [] : current);
+        setIsUserScrolledUp(false);
+        scrollToBottom();
+      }
+      // No optimistic echo, new-run activity or queue mutation: the accepted
+      // prompt arrives through the existing run's sequenced websocket stream.
+      setSteeringState({ scope, pending: false, error: null });
+    } catch (error) {
+      setSteeringState({
+        scope, pending: false, error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      steeringInFlightRef.current = null;
+    }
+  }, [
+    attachedFiles, editingAnchorId, isLoading, provider, resetCommandMenuState,
+    scrollToBottom, sessionKey, setInput, setIsUserScrolledUp, steerMessage,
+  ]);
 
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
@@ -1232,6 +1284,9 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
+    handleSteer,
+    isSteering: steeringState?.scope === sessionKey && steeringState.pending,
+    steerError: steeringState?.scope === sessionKey ? steeringState.error : null,
     queuedDraft,
     editQueuedDraft,
     deleteQueuedDraft,

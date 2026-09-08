@@ -19,7 +19,7 @@ import type {
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { AppError, createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -73,6 +73,8 @@ export type ProviderRuntimeGateway = {
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  canSteer?(provider: LLMProvider, sessionId: string): boolean;
+  steer?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
 };
@@ -155,6 +157,86 @@ async function handleChatSend(
   }
 
   await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
+}
+
+/**
+ * Adds a correction to the existing run. Its acknowledgement is deliberately
+ * separate from protocol_error: a refused steer must not stop the live UI or
+ * discard the composer's draft, and must never fall back to chat.send/abort.
+ */
+async function handleChatSteer(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+): Promise<void> {
+  const sessionId = readRequiredSessionId(data);
+  const requestId = typeof data.requestId === 'string' ? data.requestId.trim() : '';
+  const result = { kind: 'chat_steer_result', sessionId, requestId };
+  try {
+    if (!sessionId || !requestId || requestId.length > 128) {
+      throw new AppError('chat.steer requires a sessionId and requestId.', {
+        code: 'INVALID_STEER_REQUEST', statusCode: 400,
+      });
+    }
+    const session = sessionsDb.getSessionById(sessionId);
+    const run = chatRunRegistry.getRun(sessionId);
+    if (!session || !run || run.status !== 'running') {
+      throw new AppError('The turn has already ended. Your draft was not sent; send it as a new message if needed.', {
+        code: 'NO_ACTIVE_RUN', statusCode: 409,
+      });
+    }
+    if (String(run.writer.userId ?? '') !== String(userId ?? '')) {
+      throw new AppError('You cannot steer a run owned by another user.', {
+        code: 'STEER_FORBIDDEN', statusCode: 403,
+      });
+    }
+    if (data.expectedRunId !== run.id) {
+      throw new AppError('The running turn changed while you were composing or uploading. Your draft was not sent; review the current turn before retrying.', {
+        code: 'STEER_STALE_RUN', statusCode: 409,
+      });
+    }
+    if (!dependencies.runtime.steer || !dependencies.runtime.canSteer?.(run.provider, sessionId)) {
+      throw new AppError('This run does not support steering now. Keep the draft or queue it for the next turn.', {
+        code: 'STEER_UNAVAILABLE', statusCode: 409,
+      });
+    }
+    const command = typeof data.content === 'string' ? data.content : '';
+    const options = data.options && typeof data.options === 'object' ? data.options : {};
+    const attachments = filterAttachmentsToUploadStore(options.attachments).filter(
+      (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
+    );
+    if (!command.trim() && attachments.length === 0) {
+      throw new AppError('A steering message must contain text or an uploaded attachment.', {
+        code: 'STEER_EMPTY', statusCode: 400,
+      });
+    }
+    const images = attachments.filter(isImageAttachmentDescriptor);
+    const files = attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor));
+    // Subscribe the requester, but keep the same run, writer, event sequence,
+    // model and permissions. Only validated attachment inputs reach the runtime.
+    chatRunRegistry.attachConnection(sessionId, ws);
+    await dependencies.runtime.steer(run.provider, sessionId, command, { images, files });
+    // The daemon owns persistence. This accepted echo goes to every watching
+    // Codey tab and is replayable without a duplicate optimistic client row.
+    try {
+      run.writer.send(createNormalizedMessage({
+        id: `steer_${requestId}`, provider: run.provider, sessionId,
+        kind: 'text', role: 'user', content: command, images, files,
+      }));
+    } catch (error) {
+      // Acceptance already happened. A broken observer must not turn this
+      // into a refusal that invites resubmitting the same instruction.
+      console.warn('[Chat] Accepted steering input could not be echoed:', error instanceof Error ? error.message : String(error));
+    }
+    sendJson(ws, { ...result, accepted: true });
+  } catch (error) {
+    sendJson(ws, {
+      ...result, accepted: false,
+      code: error instanceof AppError ? error.code : 'STEER_FAILED',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 type ResolvedSendTarget = {
@@ -486,6 +568,8 @@ function handleChatSubscribe(
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
+      canSteer: isProcessing && Boolean(run && dependencies.runtime.canSteer?.(run.provider, sessionId)),
+      runId: isProcessing ? run?.id : undefined,
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
       timestamp: new Date().toISOString(),
@@ -526,13 +610,14 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  *
  * Inbound protocol (client to server):
  * - `chat.send`                { sessionId, content, options? }
+ * - `chat.steer`               { sessionId, requestId, expectedRunId, content, options?: { attachments } }
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
- * (`chat_subscribed`, `session_upserted`, `loading_progress`,
+ * (`chat_subscribed`, `chat_steer_result`, `session_upserted`, `loading_progress`,
  * `protocol_error`).
  */
 /**
@@ -621,6 +706,9 @@ export function handleChatConnection(
       const messageType = typeof data.type === 'string' ? data.type : '';
 
       switch (messageType) {
+        case 'chat.steer':
+          await handleChatSteer(ws, userId, data, dependencies);
+          return;
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);
           return;

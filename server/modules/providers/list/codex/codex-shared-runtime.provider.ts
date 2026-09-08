@@ -15,6 +15,8 @@ type SharedRun = {
   threadId: string | null;
   turnId: string | null;
   aborted: boolean;
+  finished: boolean;
+  workingDirectory: string;
 };
 
 function describeResumeError(error: unknown): string {
@@ -60,7 +62,10 @@ export class CodexSharedRuntime implements IProviderRuntime {
       return;
     }
 
-    const run: SharedRun = { client: null, threadId, turnId: null, aborted: false };
+    const run: SharedRun = {
+      client: null, threadId, turnId: null, aborted: false, finished: false,
+      workingDirectory: options.cwd || options.projectPath || process.cwd(),
+    };
     this.runs.set(sessionId, run);
     try {
       run.client = await CodexDaemonClient.connect();
@@ -105,6 +110,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
         });
       }
     } finally {
+      run.finished = true;
       run.client?.close();
       this.runs.delete(sessionId);
     }
@@ -125,6 +131,37 @@ export class CodexSharedRuntime implements IProviderRuntime {
     return true;
   }
 
+  canSteer(sessionId: string): boolean {
+    const run = this.runs.get(sessionId);
+    return Boolean(run?.client && run.threadId && run.turnId && !run.aborted && !run.finished);
+  }
+
+  async steer(sessionId: string, command: string, options: AnyRecord): Promise<void> {
+    // Capture the owned turn before any async work. A completion/new run must
+    // never redirect this prompt into another turn or another desktop client.
+    const run = this.runs.get(sessionId);
+    if (!run?.client || !run.threadId || !run.turnId || run.aborted || run.finished) {
+      throw new AppError('This turn cannot be steered now. Keep the draft or queue it for the next turn.', {
+        code: 'STEER_UNAVAILABLE', statusCode: 409,
+      });
+    }
+    const expectedTurnId = run.turnId;
+    const input = buildCodexInputItems(
+      appendFilesInputTag(command, options.files), options.images, run.workingDirectory,
+    ).map((item) => item.type === 'local_image' ? { type: 'localImage', path: item.path } : item);
+
+    // Model, effort, permissions, cwd and thread selection belong to turn/start,
+    // not an in-flight correction. Never retry a rejected/ambiguous steer.
+    const result = await run.client.request('turn/steer', {
+      threadId: run.threadId, expectedTurnId, input,
+    });
+    if (result.turnId !== expectedTurnId) {
+      throw new AppError('Codex did not acknowledge the expected turn. Check the transcript before retrying; the instruction was not resubmitted.', {
+        code: 'STEER_UNCONFIRMED', statusCode: 409,
+      });
+    }
+  }
+
   private async runThroughDaemon(
     run: SharedRun,
     command: string,
@@ -135,7 +172,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
     const client = run.client!;
     const sessionId = String(options.sessionId);
     const model = await context.resolveResumeModel(sessionId, options.model);
-    const workingDirectory = options.cwd || options.projectPath || process.cwd();
+    const workingDirectory = run.workingDirectory;
     const input = buildCodexInputItems(
       appendFilesInputTag(command, options.files), options.images, workingDirectory,
     ).map((item) => item.type === 'local_image' ? { type: 'localImage', path: item.path } : item);
@@ -262,6 +299,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
           })),
         }, run.threadId)) send(writer, message);
       } else if (method === 'turn/completed') {
+        run.finished = true;
         flush();
         resolveTurn(readObjectRecord(params.turn) ?? {});
       }
@@ -292,6 +330,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
       run.turnId = response.turn.id;
       for (const [method, params] of earlyEvents) handleEvent(method, params);
       earlyEvents.length = 0;
+      if (this.canSteer(sessionId)) {
+        send(writer, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'status', canSteer: true, canInterrupt: true,
+        }));
+      }
       if (run.aborted) {
         await client.request('turn/interrupt', { threadId: run.threadId, turnId: run.turnId });
       }

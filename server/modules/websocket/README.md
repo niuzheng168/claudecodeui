@@ -33,7 +33,7 @@ Benefits:
 |---|---|
 | `services/websocket-server.service.ts` | Creates `WebSocketServer`, binds `verifyClient`, routes connection by pathname |
 | `services/websocket-auth.service.ts` | Authenticates upgrade requests and attaches `request.user` |
-| `services/chat-websocket.service.ts` | Handles the `/ws` chat protocol (`chat.send` / `chat.abort` / `chat.subscribe` / `chat.permission-response`) |
+| `services/chat-websocket.service.ts` | Handles the `/ws` chat protocol (`chat.send` / `chat.steer` / `chat.abort` / `chat.subscribe` / `chat.permission-response`) |
 | `services/chat-run-registry.service.ts` | Tracks live provider runs per app session id: seq numbering, event replay buffer, provider-id mapping, completion state |
 | `services/chat-session-writer.service.ts` | Gateway writer handed to provider runtimes: remaps provider session ids to app ids, swallows `session_created`, assigns `seq` |
 | `services/shell-websocket.service.ts` | Handles `/shell` PTY lifecycle, reconnect buffering, auth URL detection |
@@ -42,6 +42,38 @@ Benefits:
 | `services/websocket-state.service.ts` | Holds shared chat client set and open-state constant |
 
 ## High-Level Architecture
+
+### Same-turn corrections
+
+Native Codex daemon runs advertise `canSteer: true` and an opaque `runId` on a
+`status` frame. `chat.subscribe` returns the same capability and token for
+reconnecting clients. Legacy exec runs and other providers retain queueing.
+
+The client snapshots the token before uploading attachments, then sends:
+
+```json
+{
+  "type": "chat.steer",
+  "sessionId": "app-session-id",
+  "requestId": "unique-client-request-id",
+  "expectedRunId": "opaque-run-id",
+  "content": "Focus on correctness, not styling.",
+  "options": { "attachments": [] }
+}
+```
+
+`chat_steer_result` echoes `sessionId`/`requestId` with `accepted: true`, or
+`accepted: false` plus `code`/`error`. A refused correction is **not** a
+`protocol_error` or a completed model run. The client keeps its draft until
+acceptance and does not automatically retry, queue, or start another turn after
+a refusal, timeout or disconnect.
+
+The gateway checks the active run's user and token, validates upload-store
+attachments, and calls the owning runtime's `turn/steer` with `expectedTurnId`.
+It does not forward model, effort, cwd or permission changes, and never calls
+`turn/start` or `turn/interrupt` as a fallback. Accepted prompts are echoed
+through the existing sequenced writer to all subscribers; native Codex owns
+transcript persistence.
 
 ```mermaid
 flowchart LR

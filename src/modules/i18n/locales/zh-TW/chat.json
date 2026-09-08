@@ -129,7 +129,24 @@
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Ctrl+Alt+M）",
     "showAllCommands": "顯示所有指令",
     "clearInput": "清空輸入",
-    "scrollToBottom": "捲動到底部"
+    "scrollToBottom": "捲動到底部",
+    "steer": {
+      "send": "立即調整方向",
+      "sending": "正在傳送補充指令…",
+      "hint": "立即補充目前回合，或點擊傳送排隊到下一回合。",
+      "description": "不停止目前執行，直接追加指令；目前模型和權限保持不變。",
+      "failed": "補充指令未確認，草稿已保留",
+      "pending": "已有一條補充指令正在提交。",
+      "disconnected": "連線已中斷，請恢復連線後再傳送補充指令。",
+      "unconfirmed": "無法確認是否送達。請先查看工作階段再重試，以免重複傳送；系統沒有自動重試或排隊。",
+      "errors": {
+        "STEER_STALE_RUN": "編輯或上傳期間，執行中的回合已變更。草稿尚未傳送，請確認目前工作後再試。",
+        "NO_ACTIVE_RUN": "目前回合已結束，草稿尚未傳送；如需繼續，請作為新訊息傳送。",
+        "STEER_UNAVAILABLE": "目前執行暫不支援插話，請保留草稿或排隊到下一回合。",
+        "STEER_UNSUPPORTED": "目前執行方式不支援插話，請改用排隊傳送。",
+        "STEER_FORBIDDEN": "不能調整其他使用者正在執行的工作。"
+      }
+    }
   },
   "thinkingMode": {
     "selector": {

@@ -35,6 +35,10 @@ export interface IProviderRuntime {
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
   abort(sessionId: string): boolean | Promise<boolean>;
+  /** True only while this adapter owns a running turn that accepts extra input. */
+  canSteer?(sessionId: string): boolean;
+  /** Append input to the current turn; never interrupt, restart, or queue it. */
+  steer?(sessionId: string, command: string, options: AnyRecord): Promise<void>;
   permissions?: ProviderRuntimePermissionGateway;
 }
 

@@ -18,6 +18,7 @@ import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessag
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
+import { useChatSteering } from '@/modules/chat/hooks/useChatSteering';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
 import {
   useProcessingSessions,
@@ -180,6 +181,8 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
+  const steering = useChatSteering(selectedSession?.id || currentSessionId || null);
+
   const {
     input,
     setInput,
@@ -208,6 +211,9 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
+    handleSteer,
+    isSteering,
+    steerError,
     queuedDraft,
     editQueuedDraft,
     deleteQueuedDraft,
@@ -246,6 +252,7 @@ function ChatInterface({
     canAbortSession,
     tokenBudget,
     sendMessage,
+    steerMessage: steering.steerMessage,
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -496,6 +503,9 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
+          onSteer={steering.canSteer ? handleSteer : undefined}
+          isSteering={isSteering}
+          steerError={steerError}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={selectPermissionMode}
