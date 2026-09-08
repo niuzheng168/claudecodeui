@@ -320,6 +320,8 @@
     "forkFromHere": "从此处派生"
   },
   "composer": {
+    "collapseInput": "收起输入框",
+    "expandInput": "展开输入框",
     "moreTools": "更多工具",
     "backToTools": "返回工具",
     "writeFirst": "请先输入消息",

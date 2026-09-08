@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -10,13 +10,14 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { Loader2, ArrowUpIcon, ChevronDownIcon, ChevronUpIcon, PencilIcon } from 'lucide-react';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceRewrite } from '@/modules/chat/hooks/useVoiceRewrite';
 import { useInlineCompletion } from '@/modules/chat/hooks/useInlineCompletion';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
 import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
+import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { isCodeyPortalSso, isComposerModeShortcut } from '@/shared/utils';
 import type { ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
@@ -206,6 +207,11 @@ export default function ChatComposer({
   sendByCtrlEnter,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
+  const { isMobile } = useDeviceSettings({ trackPWA: false });
+  // Keep the user's mobile reading preference without hiding the desktop composer or discarding drafts.
+  const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] = useState(false);
+  const isComposerCollapsed = isMobile && isMobileComposerCollapsed;
+  const composerContentId = useId();
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -299,6 +305,13 @@ export default function ChatComposer({
     voiceToggle();
   }, [voiceState, clearVoice, voiceToggle]);
 
+  useEffect(() => {
+    // Editing a transcript message must reveal its draft; active voice work must keep its controls reachable.
+    if (isEditingSentMessage || voiceState !== 'idle' || rewrite.busy) {
+      setIsMobileComposerCollapsed(false);
+    }
+  }, [isEditingSentMessage, voiceState, rewrite.busy]);
+
   // Detect if the AskUserQuestion interactive panel is active
   const hasQuestionPanel = pendingPermissionRequests.some(
     (r) => r.toolName === 'AskUserQuestion'
@@ -316,7 +329,7 @@ export default function ChatComposer({
     managed: managedVoice,
     active: voiceRecordingAllowed !== false && Boolean(onReplaceComposerDraft ?? onReplaceVoiceDraft),
     blocked: voiceState !== 'idle' || rewrite.busy || isEditingSentMessage || showFileDropdown ||
-      isCommandMenuOpen || hasPendingPermissions,
+      isCommandMenuOpen || hasPendingPermissions || isComposerCollapsed,
     contextKey: JSON.stringify([completionContextKey ?? voiceContextKey ?? '', model, permissionMode]),
     draft: input, history: completionHistory ?? voiceHistory ?? [], textareaRef,
     replaceDraft: replaceCompletionDraft,
@@ -386,12 +399,48 @@ export default function ChatComposer({
           attachmentCount={
             queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length
           }
-          onEdit={onEditQueuedDraft}
+          onEdit={() => {
+            setIsMobileComposerCollapsed(false);
+            onEditQueuedDraft();
+          }}
           onDelete={onDeleteQueuedDraft}
         />
       )}
 
       {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
+        {isMobile && (
+          <button
+            type="button"
+            aria-expanded={!isComposerCollapsed}
+            aria-controls={composerContentId}
+            disabled={voiceState !== 'idle' || rewrite.busy}
+            onClick={() => {
+              if (!isComposerCollapsed) {
+                textareaRef.current?.blur();
+                onInputFocusChange?.(false);
+                onCloseCommandMenu();
+                completion.invalidate();
+              }
+              setIsMobileComposerCollapsed(!isComposerCollapsed);
+            }}
+            className={[
+              'flex min-h-11 w-full touch-manipulation items-center justify-center gap-2 border border-border/50 bg-card/80 px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
+              isComposerCollapsed ? 'rounded-xl shadow-sm' : 'rounded-t-xl border-b-0',
+              hasActivityIndicator ? 'rounded-t-none' : '',
+            ].filter(Boolean).join(' ')}
+          >
+            {isComposerCollapsed
+              ? <ChevronUpIcon className="h-4 w-4" aria-hidden />
+              : <ChevronDownIcon className="h-4 w-4" aria-hidden />}
+            {t(isComposerCollapsed ? 'composer.expandInput' : 'composer.collapseInput')}
+          </button>
+        )}
+        {/* Keep fields mounted and measurable so drafts, attachments and textarea sizing survive folding. */}
+        <div
+          id={composerContentId}
+          aria-hidden={isComposerCollapsed || undefined}
+          className={isComposerCollapsed ? 'invisible h-0 overflow-hidden' : undefined}
+        >
         {showFileDropdown && filteredFiles.length > 0 && (
           <div
             ref={fileDropdownRef}
@@ -429,7 +478,7 @@ export default function ChatComposer({
           onSelect={onCommandSelect}
           onClose={onCloseCommandMenu}
           position={commandMenuPosition}
-          isOpen={isCommandMenuOpen}
+          isOpen={isCommandMenuOpen && !isComposerCollapsed}
           frequentCommands={frequentCommands}
         />
 
@@ -438,7 +487,7 @@ export default function ChatComposer({
           status={isLoading ? 'streaming' : 'ready'}
           className={[
             isTextareaExpanded ? 'chat-input-expanded' : '',
-            hasActivityIndicator ? 'rounded-t-none' : '',
+            hasActivityIndicator || isMobile ? 'rounded-t-none' : '',
           ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
@@ -532,7 +581,7 @@ export default function ChatComposer({
             onDismiss={completion.dismiss} onUndo={completion.undo} />
         )}
 
-        <ComposerToolbar
+        {!isComposerCollapsed && <ComposerToolbar
           onAttachFiles={openAttachmentPicker}
           voiceControl={onVoiceTranscript && voiceVisible ? (
             <ComposerVoiceControl state={voiceState} onToggle={toggleVoice} onCancel={voiceCancel}
@@ -637,8 +686,9 @@ export default function ChatComposer({
           hideHint={Boolean(input.trim() && !canQueueDraft)}
           voiceStatus={voiceState === 'idle' ? undefined : t(`voice.${voiceState}`)}
           voiceError={voiceVisible ? voiceError : null}
-        />
+        />}
       </PromptInput>
+        </div>
       </div>}
     </div>
   );
