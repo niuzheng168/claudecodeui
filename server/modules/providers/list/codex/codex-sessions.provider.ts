@@ -2216,7 +2216,7 @@ export class CodexSessionsProvider implements IProviderSessions {
 
   /**
    * Keeps the rich legacy JSONL reader, but reads native paginated histories
-   * from their daemon (or a read-only desktop CLI on Windows) instead of
+   * from their daemon (or a read-only desktop CLI on Windows/macOS) instead of
    * treating a partial/missing export as complete.
    */
   async fetchHistory(
@@ -2235,7 +2235,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         result = await getCodexSessionMessages(sessionId);
       } else {
         const client = await CodexDaemonClient.connect();
-        if (!client && !(requiresDaemon && this.historyPlatform === 'win32')) {
+        if (!client && !(requiresDaemon && (this.historyPlatform === 'win32' || this.historyPlatform === 'darwin'))) {
           if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
           throw new AppError('This session is stored by Codex app. Connect its local daemon to read the history.', {
             code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,

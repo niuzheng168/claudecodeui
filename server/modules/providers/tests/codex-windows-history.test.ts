@@ -12,7 +12,7 @@ import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 import type { AnyRecord } from '@/shared/types.js';
 
-const THREAD_ID = 'native-windows-thread';
+const THREAD_ID = 'native-desktop-thread';
 const SECRET_SENTINEL = 'private-rpc-diagnostic-never-return';
 const fakeServer = `
 const fs = require('node:fs');
@@ -63,6 +63,7 @@ async function withReaderFixture(
   const pidFile = path.join(root, 'reader.pid');
   const values: Record<string, string> = {
     CODEX_HOME: home,
+    CODEY_CODEX_DAEMON_SOCKET: '',
     // Node runs the fixture's extensionless "app-server" entrypoint, not Codex.
     CODEY_CODEX_EXECUTABLE: process.execPath,
     DATABASE_PATH: path.join(root, 'auth.db'),
@@ -155,7 +156,8 @@ test('a hung read is bounded and terminates only its temporary reader', { concur
   }, 'hang');
 });
 
-test('Windows displays native history without trusting its partial export or exposing edit anchors', { concurrency: false }, async () => {
+for (const historyPlatform of ['win32', 'darwin'] as const) {
+test(`${historyPlatform} displays native history without trusting its partial export or exposing edit anchors`, { concurrency: false }, async () => {
   await withReaderFixture(async ({ home, log }) => {
     closeConnection();
     await initializeDatabase();
@@ -172,7 +174,7 @@ test('Windows displays native history without trusting its partial export or exp
     }) + '\n');
     sessionsDb.createSession(THREAD_ID, 'codex', home, 'Native session', undefined, undefined, partial);
     const stateHash = createHash('sha256').update(await readFile(statePath)).digest('hex');
-    const provider = new CodexSessionsProvider('win32');
+    const provider = new CodexSessionsProvider(historyPlatform);
     const history = await provider.fetchHistory(THREAD_ID);
     assert.equal(history.total, 2);
     assert.ok(history.messages.some(message => message.content === 'Original native reply'));
@@ -193,8 +195,9 @@ test('Windows displays native history without trusting its partial export or exp
     await assert.rejects(provider.fetchHistory(THREAD_ID), historyUnavailable);
   });
 });
+}
 
-test('non-Windows native history still requires its owning daemon', { concurrency: false }, async () => {
+test('Linux native history still requires its owning daemon', { concurrency: false }, async () => {
   await withReaderFixture(async ({ home, log }) => {
     closeConnection();
     await initializeDatabase();
