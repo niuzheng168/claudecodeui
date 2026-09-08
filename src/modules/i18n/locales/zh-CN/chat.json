@@ -204,6 +204,23 @@
     "showAllCommands": "显示所有命令",
     "clearInput": "清空输入",
     "scrollToBottom": "滚动到底部",
+    "steer": {
+      "send": "立即调整方向",
+      "sending": "正在发送补充指令…",
+      "hint": "立即补充当前轮次，或点击发送排队到下一轮。",
+      "description": "不停止当前执行，直接追加指令；当前模型和权限保持不变。",
+      "failed": "补充指令未确认，草稿已保留",
+      "pending": "已有一条补充指令正在提交。",
+      "disconnected": "连接已断开，请恢复连接后再发送补充指令。",
+      "unconfirmed": "无法确认是否送达。请先查看会话再重试，以免重复发送；系统没有自动重试或排队。",
+      "errors": {
+        "STEER_STALE_RUN": "编辑或上传期间，运行中的轮次已变更。草稿尚未发送，请确认当前任务后再试。",
+        "NO_ACTIVE_RUN": "当前轮次已结束，草稿尚未发送；如需继续，请作为新消息发送。",
+        "STEER_UNAVAILABLE": "当前执行暂不支持插话，请保留草稿或排队到下一轮。",
+        "STEER_UNSUPPORTED": "当前运行方式不支持插话，请改用排队发送。",
+        "STEER_FORBIDDEN": "不能调整其他用户正在执行的任务。"
+      }
+    },
     "queue": {
       "sendNext": "排队发送下一条消息",
       "update": "更新排队消息",

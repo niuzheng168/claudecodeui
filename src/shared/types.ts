@@ -583,6 +583,9 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
+/** Submits additional input to the same running turn; resolves only after server acceptance and never retries or queues. */
+export type SteerChatMessage = (sessionId: string, content: string, attachments: unknown[]) => Promise<void>;
+
 /** Viewport-relative composer popup bounds; exactly one of top/bottom anchors the surface without overflowing narrow or short windows. */
 export type ComposerMenuAnchor = {
   right: number;

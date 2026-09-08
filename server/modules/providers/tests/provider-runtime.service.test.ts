@@ -136,3 +136,22 @@ test('routes permission decisions through provider-owned runtime capabilities', 
     { requestId: 'request-1', sessionId: 'session-1' },
   ]);
 });
+
+test('steering dispatches only through the provider-owned capability and never run/abort', async () => {
+  const calls: unknown[][] = [];
+  const service = createService([
+    createProvider('codex', createRuntime({
+      canSteer: (sessionId) => sessionId === 'owned-session',
+      steer: async (...args) => { calls.push(args); },
+      run: async () => { assert.fail('steer must not run'); },
+      abort: () => { assert.fail('steer must not abort'); },
+    })),
+    createProvider('claude', createRuntime()),
+  ]);
+  assert.equal(service.canSteer('codex', 'owned-session'), true);
+  assert.equal(service.canSteer('codex', 'other-session'), false);
+  assert.equal(service.canSteer('claude', 'owned-session'), false);
+  await service.steer('codex', 'owned-session', 'new direction', { images: [] });
+  assert.deepEqual(calls, [['owned-session', 'new direction', { images: [] }]]);
+  await assert.rejects(service.steer('claude', 'owned-session', 'new direction', {}), { code: 'STEER_UNSUPPORTED' });
+});

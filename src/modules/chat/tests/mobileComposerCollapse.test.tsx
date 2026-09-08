@@ -23,6 +23,8 @@ vi.mock('react-i18next', () => ({
         'input.send': 'Send',
         'input.attachFiles': 'Attach files',
         'input.stop': 'Stop',
+        'input.steer.send': 'Steer now',
+        'input.steer.sending': 'Sending correction…',
       };
       return labels[key] || options.defaultValue || key;
     },
@@ -139,6 +141,43 @@ function fixture(overrides: Partial<ComponentProps<typeof ChatComposer>> = {}) {
   };
   return { ...render(<ChatComposer {...props} />), props };
 }
+
+test.each([390, 1024])('native steering is a separate non-submitting action at %ipx', (width) => {
+  resizeViewport(width);
+  const onSteer = vi.fn();
+  const f = fixture({ isLoading: true, onSteer });
+  const button = screen.getByRole('button', { name: 'Steer now' });
+  expect(button.getAttribute('type')).toBe('button');
+  fireEvent.click(button);
+  expect(onSteer).toHaveBeenCalledTimes(1);
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect(f.props.onAbortSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
+  expect(f.props.onSubmit).toHaveBeenCalledTimes(1);
+  expect(onSteer).toHaveBeenCalledTimes(1);
+});
+
+test('unsupported sessions retain queueing without a steering button', () => {
+  fixture({ isLoading: true });
+  expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
+});
+
+test('steering submission disables both duplicate submission paths and preserves visible text', () => {
+  const onSteer = vi.fn();
+  const f = fixture({ isLoading: true, isSteering: true, onSteer });
+  fireEvent.click(screen.getByRole('button', { name: 'Sending correction…' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
+  expect(onSteer).not.toHaveBeenCalled();
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
+});
+
+test('a rejected correction stays visible even when the turn has ended', () => {
+  fixture({ isLoading: false, steerError: 'The turn ended; draft kept' });
+  expect(screen.getByRole('alert').textContent).toContain('The turn ended; draft kept');
+  expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
+});
 
 test.each([320, 390, 767])('mobile at %ipx starts expanded with an accessible, non-submitting toggle', (width) => {
   resizeViewport(width);

@@ -203,6 +203,7 @@ export type MessageKind =
  */
 export type GatewayEventKind =
   | 'chat_subscribed'
+  | 'chat_steer_result'
   | 'session_upserted'
   | 'loading_progress'
   | 'protocol_error';
@@ -278,6 +279,8 @@ export type NormalizedMessage = {
    * the live events they missed across websocket reconnects.
    */
   seq?: number;
+  /** Opaque gateway run identity, used to bind in-flight corrections to the run the user saw. */
+  runId?: string;
   role?: 'user' | 'assistant';
   content?: string;
   /**
@@ -310,6 +313,8 @@ export type NormalizedMessage = {
   text?: string;
   tokens?: number;
   canInterrupt?: boolean;
+  /** Whether the owning runtime can accept input in this same running turn. */
+  canSteer?: boolean;
   requestId?: string;
   input?: unknown;
   context?: unknown;
