@@ -5,10 +5,13 @@ import { scan } from 'react-scan'
 import App from '@/App'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
-import { withDeploymentBasePath } from '@/shared/utils'
+import { getPageTitle, withDeploymentBasePath } from '@/shared/utils'
 
 // Initialize i18n
 import '@/modules/i18n'
+
+// Keep node identity visible during authentication/loading, before the sidebar mounts.
+document.title = getPageTitle(null, null)
 
 // React Scan is a render-diagnostics overlay, and an expensive one: measured on
 // this app it roughly halves the dev frame rate, adds ~14 MB of heap and injects

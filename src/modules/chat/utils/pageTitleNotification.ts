@@ -1,3 +1,5 @@
+import { getPageTitle } from '@/shared/utils';
+
 const COMPLETION_TITLE_INDICATOR = '[Done]';
 const TITLE_INDICATOR_CLEAR_DELAY_MS = 2000;
 
@@ -90,7 +92,7 @@ export const showCompletionTitleIndicator = (): void => {
     return;
   }
 
-  const baseTitle = stripIndicator(document.title || 'CloudCLI UI');
+  const baseTitle = stripIndicator(document.title || getPageTitle(null, null));
   document.title = `${getIndicatorPrefix()}${baseTitle}`;
 
   if (pageIsActive()) {
