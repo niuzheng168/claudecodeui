@@ -41,6 +41,7 @@ import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import { ComposerCompletionOverlay } from '@/modules/chat/composer/ComposerCompletionOverlay';
 import { ComposerCompletionBar } from '@/modules/chat/composer/ComposerCompletionBar';
+import { ComposerCompletionControl } from '@/modules/chat/composer/ComposerCompletionControl';
 
 type MentionableFile = {
   name: string;
@@ -57,8 +58,10 @@ type ChatComposerProps = {
   activity: SessionActivity | null;
   isLoading: boolean;
   onAbortSession: () => void;
-  /** Present only when the active runtime advertises same-turn steering. */
+  /** Present for providers with native steering; the current run must also advertise canSteer. */
   onSteer?: () => void;
+  canSteer?: boolean;
+  steerUnavailableReason?: string | null;
   isSteering?: boolean;
   steerError?: string | null;
   permissionMode: PermissionMode;
@@ -144,6 +147,8 @@ export default function ChatComposer({
   isLoading,
   onAbortSession,
   onSteer,
+  canSteer = false,
+  steerUnavailableReason = null,
   isSteering = false,
   steerError = null,
   permissionMode,
@@ -219,6 +224,7 @@ export default function ChatComposer({
   const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] = useState(false);
   const isComposerCollapsed = isMobile && isMobileComposerCollapsed;
   const composerContentId = useId();
+  const steeringHintId = useId();
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -582,15 +588,16 @@ export default function ChatComposer({
 
         {isLoading && onSteer && !isEditingSentMessage && (
           <div className="flex items-center justify-between gap-3 px-2 pt-2" data-slot="composer-steering">
-            <span className="min-w-0 text-xs text-muted-foreground">
-              {t('input.steer.hint')}
+            <span id={steeringHintId} className="min-w-0 text-xs text-muted-foreground">
+              {canSteer ? t('input.steer.hint') : steerUnavailableReason || t('input.steer.unavailable')}
             </span>
             <button
               type="button"
               onClick={onSteer}
-              disabled={isSteering || (!input.trim() && attachedFiles.length === 0) || voiceState !== 'idle' || rewrite.busy}
+              disabled={!canSteer || isSteering || (!input.trim() && attachedFiles.length === 0) || voiceState !== 'idle' || rewrite.busy}
               className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
               title={t('input.steer.description')}
+              aria-describedby={steeringHintId}
             >
               {isSteering && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
               {t(isSteering ? 'input.steer.sending' : 'input.steer.send')}
@@ -605,14 +612,18 @@ export default function ChatComposer({
 
         {managedVoice && (
           <ComposerCompletionBar candidate={completion.candidate} ghostVisible={ghostVisible}
-            configured={completion.configured} ready={completion.ready} preferences={completion.preferences}
+            preferences={completion.preferences}
             phase={completion.phase} notice={completion.notice} canUndo={completion.canUndo}
-            onPreferenceChange={completion.setPreference} onAccept={() => completion.accept(true)}
+            onAccept={() => completion.accept(true)}
             onDismiss={completion.dismiss} onUndo={completion.undo} />
         )}
 
         {!isComposerCollapsed && <ComposerToolbar
           onAttachFiles={openAttachmentPicker}
+          completionControl={managedVoice ? (
+            <ComposerCompletionControl configured={completion.configured} ready={completion.ready}
+              preferences={completion.preferences} onPreferenceChange={completion.setPreference} />
+          ) : null}
           voiceControl={onVoiceTranscript && voiceVisible ? (
             <ComposerVoiceControl state={voiceState} onToggle={toggleVoice} onCancel={voiceCancel}
               disabled={!voiceAvailable || !voiceRecordingAllowed || rewrite.busy}

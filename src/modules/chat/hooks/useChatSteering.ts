@@ -12,6 +12,11 @@ type PendingSteer = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type SessionSteeringCapability = {
+  runId: string | null;
+  unavailableReason: 'unavailable' | 'upgradeRequired' | null;
+};
+
 // Longer than the daemon's acknowledgement deadline; never automatically retry.
 const STEER_TIMEOUT_MS = 15_000;
 
@@ -19,8 +24,10 @@ const STEER_TIMEOUT_MS = 15_000;
 export function useChatSteering(sessionId: string | null) {
   const { sendMessage, subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
-  // Capabilities are per live session, not per model; legacy SDK runs cannot steer.
-  const [steerableSessions, setSteerableSessions] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // Keep the reason as well as the run token so old nodes do not silently hide the action.
+  const [sessionCapabilities, setSessionCapabilities] = useState<ReadonlyMap<string, SessionSteeringCapability>>(() => new Map());
+  // Reconnecting must never briefly reuse a run token from the previous connection.
+  if (!isConnected && sessionCapabilities.size > 0) setSessionCapabilities(new Map());
   // The pending request outlives a session switch, so only its matching ack can settle it.
   const pendingRef = useRef<PendingSteer | null>(null);
   const connectedRef = useRef(isConnected);
@@ -51,7 +58,7 @@ export function useChatSteering(sessionId: string | null) {
     if (event.kind === 'websocket_reconnected') {
       // A disconnected socket may have missed completion/new-run events.
       // Wait for a fresh subscribe ack instead of reusing old capabilities.
-      setSteerableSessions((previous) => previous.size ? new Map() : previous);
+      setSessionCapabilities((previous) => previous.size ? new Map() : previous);
       return;
     }
     const sid = typeof event.sessionId === 'string' ? event.sessionId : null;
@@ -75,13 +82,26 @@ export function useChatSteering(sessionId: string | null) {
       || event.kind === 'complete';
     if (!isCapabilityEvent) return;
     const runId = typeof event.runId === 'string' && event.runId ? event.runId : null;
-    const enabled = runId && event.kind !== 'complete' && event.canSteer === true
-      && (event.kind !== 'chat_subscribed' || event.isProcessing === true);
-    setSteerableSessions((previous) => {
-      if ((enabled && previous.get(sid) === runId) || (!enabled && !previous.has(sid))) return previous;
+    const enabled = Boolean(runId && event.kind !== 'complete' && event.canSteer === true
+      && (event.kind !== 'chat_subscribed' || event.isProcessing === true));
+    const capability: SessionSteeringCapability = {
+      runId: enabled ? runId : null,
+      unavailableReason: enabled ? null
+        : typeof event.canSteer !== 'boolean' || (event.canSteer && !runId) ? 'upgradeRequired' : 'unavailable',
+    };
+    setSessionCapabilities((previous) => {
+      if (event.kind === 'complete' && !previous.has(sid)) return previous;
+      const current = previous.get(sid);
+      if (event.kind !== 'complete' && current?.runId === capability.runId
+        && current.unavailableReason === capability.unavailableReason) return previous;
       const next = new Map(previous);
-      if (enabled) next.set(sid, runId);
-      else next.delete(sid);
+      // Old backends cannot send a capability status on the next turn either.
+      // Keep their upgrade explanation until a fresh subscribe/status or reconnect.
+      if (event.kind === 'complete') {
+        if (current?.unavailableReason !== 'upgradeRequired') next.delete(sid);
+      } else {
+        next.set(sid, capability);
+      }
       return next;
     });
   }), [failPending, subscribe, t]);
@@ -100,7 +120,7 @@ export function useChatSteering(sessionId: string | null) {
     }
     // This closure is captured by the composer BEFORE uploading attachments.
     // A newer capability update must not redirect that submission to a new run.
-    const expectedRunId = steerableSessions.get(targetSessionId);
+    const expectedRunId = sessionCapabilities.get(targetSessionId)?.runId;
     if (!expectedRunId) {
       return Promise.reject(new Error(t('input.steer.errors.STEER_UNAVAILABLE')));
     }
@@ -117,10 +137,14 @@ export function useChatSteering(sessionId: string | null) {
         failPending(error instanceof Error ? error : new Error(String(error)));
       }
     });
-  }, [failPending, sendMessage, steerableSessions, t]);
+  }, [failPending, sendMessage, sessionCapabilities, t]);
 
+  const capability = sessionId ? sessionCapabilities.get(sessionId) : undefined;
+  const canSteer = isConnected && Boolean(capability?.runId);
   return {
-    canSteer: isConnected && Boolean(sessionId && steerableSessions.has(sessionId)),
+    canSteer,
+    unavailableReason: canSteer ? null : t(!isConnected ? 'input.steer.disconnected'
+      : `input.steer.${capability?.unavailableReason ?? 'checking'}`),
     steerMessage,
   };
 }

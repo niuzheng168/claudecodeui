@@ -5,7 +5,7 @@ import { cn } from '@/shared/utils';
 import type { ComposerMenuAnchor } from '@/shared/types';
 
 /**
- * Used by chat's model, permission, voice/rewrite and tools popovers for one bounded,
+ * Used by chat's model, permission, completion, voice/rewrite and tools popovers for one bounded,
  * portalled surface. Form controls use a non-modal dialog instead of menu roles.
  */
 export function ComposerMenuSurface({

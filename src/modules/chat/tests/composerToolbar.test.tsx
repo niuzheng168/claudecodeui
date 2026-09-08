@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@te
 import { afterEach, expect, test, vi } from 'vitest';
 
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
+import { ComposerCompletionControl } from '@/modules/chat/composer/ComposerCompletionControl';
 import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -55,6 +56,8 @@ function fixture({ hasInput = false, state = 'idle', error = null }: { hasInput?
     <PromptInput onSubmit={(event) => { event.preventDefault(); callbacks.submit(); }}>
       <textarea aria-label="Draft" defaultValue={hasInput ? 'A draft' : ''} />
       <ComposerToolbar onAttachFiles={callbacks.attach}
+        completionControl={<ComposerCompletionControl configured ready
+          preferences={{ completionEnabled: true, useHistory: true }} onPreferenceChange={vi.fn()} />}
         voiceControl={<ComposerVoiceControl state={state} disabled={false} onToggle={callbacks.mic} onCancel={callbacks.cancel}
           managed={{ config, preferences: { provider: 'azure-speech', language: 'auto' }, onChange: callbacks.voiceChange,
             onRefresh: callbacks.refresh, loadFailed: false }} />}
@@ -89,6 +92,16 @@ test('the primary row hides secondary settings, uses a short model label and kee
   expect(f.callbacks.attach).toHaveBeenCalledOnce();
   expect(f.callbacks.tokens).toHaveBeenCalledOnce();
   expect(f.callbacks.submit).not.toHaveBeenCalled();
+});
+
+test('completion shares the attachment tool row instead of reserving a settings row', () => {
+  const f = fixture();
+  const completion = screen.getByRole('button', { name: 'completion.title · completion.on' });
+  const attachment = screen.getByRole('button', { name: 'Attach files' });
+  expect(completion.closest('[data-slot="prompt-input-tools"]')).toBe(attachment.closest('[data-slot="prompt-input-tools"]'));
+  expect(f.container.querySelector('[data-slot="composer-primary"]')?.contains(completion)).toBe(true);
+  expect(completion.textContent).toBe('');
+  expect(screen.queryByLabelText('completion.enable')).toBeNull();
 });
 
 test('voice options disclose selectors without starting recording and Escape returns keyboard focus', async () => {

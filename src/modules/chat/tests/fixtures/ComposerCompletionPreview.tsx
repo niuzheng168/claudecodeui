@@ -14,6 +14,7 @@ import type { ChatMessage, PermissionMode, Project } from '@/shared/types';
 
 const query = new URLSearchParams(window.location.search);
 const locale = query.get('locale') === 'en' ? 'en' : 'zh-CN';
+const previewRun = query.get('run');
 const realModel = JSON.parse(document.getElementById('preview-runtime')?.textContent || '{}').realModel === true;
 const i18n = createInstance();
 await i18n.init({
@@ -54,7 +55,10 @@ function ComposerCompletionPreview() {
     cyclePermissionMode: () => setMode((previous) => modes[(modes.indexOf(previous) + 1) % modes.length]),
     resolvePermissionModeForProvider: (_provider, requested) => requested as PermissionMode,
     currentProviderModel: 'local-preview-only', currentProviderEffort: 'default',
-    isLoading: false, canAbortSession: false, tokenBudget: null, sendByCtrlEnter: false,
+    isLoading: Boolean(previewRun), canAbortSession: false, tokenBudget: null, sendByCtrlEnter: false,
+    steerMessage: async (_sessionId, content) => {
+      addMessage({ type: 'user', content, timestamp: Date.now() });
+    },
     sendMessage: () => {
       addMessage({ type: 'assistant', content: locale === 'en'
         ? 'Saved to local preview history only. No chat model, command, or node task was run.'
@@ -91,8 +95,8 @@ function ComposerCompletionPreview() {
         </div>
         <p className="rounded-lg bg-muted/40 p-3 text-sm">
           {locale === 'en'
-            ? 'Open Inline completion below and enable suggestions first. Try typing “Please explain”. Tab accepts, Esc dismisses, and Ctrl+Alt+M changes mode. Send only adds local context.'
-            : '先展开输入框下方的“自动补全”并开启。可试着输入“请把上一段回答总结成”或“Please explain”。Tab 采纳，Esc 忽略，Ctrl+Alt+M 切模式；发送只追加本地测试上下文。'}
+            ? 'Open the sparkle button next to attachments to enable Inline completion. Try typing “Please explain”. Tab accepts, Esc dismisses, and Ctrl+Alt+M changes mode. Send only adds local context.'
+            : '点击附件旁的星光图标，开启“自动补全”。可试着输入“请把上一段回答总结成”或“Please explain”。Tab 采纳，Esc 忽略，Ctrl+Alt+M 切模式；发送只追加本地测试上下文。'}
         </p>
         <div aria-label="Local test conversation" className="max-h-[35vh] space-y-3 overflow-y-auto rounded-xl border border-border p-3">
           {messages[session].map((message, index) => (
@@ -120,7 +124,10 @@ function ComposerCompletionPreview() {
         <div className="mt-auto">
           <ChatComposer
             pendingPermissionRequests={[]} handlePermissionDecision={() => {}} handleGrantToolPermission={() => ({ success: false })}
-            activity={null} isLoading={false} onAbortSession={() => {}}
+            activity={null} isLoading={Boolean(previewRun)} onAbortSession={() => {}}
+            onSteer={previewRun ? composer.handleSteer : undefined} canSteer={previewRun === 'ready'}
+            steerUnavailableReason={previewRun === 'legacy' ? i18n.t('input.steer.upgradeRequired') : undefined}
+            isSteering={composer.isSteering} steerError={composer.steerError}
             permissionMode={mode} availablePermissionModes={modes} onSelectPermissionMode={setMode} providerLabel="Codex"
             effort="default" availableEffortOptions={[]} onSelectEffort={() => {}}
             model="local-preview-only" availableModelOptions={[{ value: 'local-preview-only', label: 'Local preview · no chat agent' }]}
