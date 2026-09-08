@@ -48,6 +48,13 @@ vi.mock('@/modules/chat/hooks/useVoiceRewrite', () => ({
 vi.mock('@/modules/chat/hooks/useInlineCompletion', () => ({
   useInlineCompletion: vi.fn(() => ({
     candidate: null,
+    configured: true,
+    ready: true,
+    preferences: { completionEnabled: true, useHistory: true },
+    phase: 'idle',
+    notice: null,
+    canUndo: false,
+    setPreference: vi.fn(),
     invalidate: mocks.invalidate,
     isComposing: () => false,
   })),
@@ -71,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resizeViewport(originalWidth);
+  vi.unstubAllEnvs();
 });
 
 function fixture(overrides: Partial<ComponentProps<typeof ChatComposer>> = {}) {
@@ -145,7 +153,7 @@ function fixture(overrides: Partial<ComponentProps<typeof ChatComposer>> = {}) {
 test.each([390, 1024])('native steering is a separate non-submitting action at %ipx', (width) => {
   resizeViewport(width);
   const onSteer = vi.fn();
-  const f = fixture({ isLoading: true, onSteer });
+  const f = fixture({ isLoading: true, onSteer, canSteer: true });
   const button = screen.getByRole('button', { name: 'Steer now' });
   expect(button.getAttribute('type')).toBe('button');
   fireEvent.click(button);
@@ -165,12 +173,43 @@ test('unsupported sessions retain queueing without a steering button', () => {
 
 test('steering submission disables both duplicate submission paths and preserves visible text', () => {
   const onSteer = vi.fn();
-  const f = fixture({ isLoading: true, isSteering: true, onSteer });
+  const f = fixture({ isLoading: true, isSteering: true, onSteer, canSteer: true });
   fireEvent.click(screen.getByRole('button', { name: 'Sending correction…' }));
   fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
   expect(onSteer).not.toHaveBeenCalled();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
+});
+
+test.each([320, 390, 1024])('an old node at %ipx explains the disabled immediate action instead of hiding it', (width) => {
+  resizeViewport(width);
+  const onSteer = vi.fn();
+  const reason = 'Update the node backend to enable Send now.';
+  const f = fixture({ isLoading: true, onSteer, canSteer: false, steerUnavailableReason: reason });
+  const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
+  expect(immediate.disabled).toBe(true);
+  expect(document.getElementById(immediate.getAttribute('aria-describedby')!)?.textContent).toBe(reason);
+  fireEvent.click(immediate);
+  expect(onSteer).not.toHaveBeenCalled();
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect(f.props.onAbortSession).not.toHaveBeenCalled();
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
+  expect(f.props.onSubmit).toHaveBeenCalledOnce();
+});
+
+test('steering is disabled until advertised and enables in place without removing the queue option', () => {
+  const onSteer = vi.fn();
+  const f = fixture({ isLoading: true, onSteer });
+  const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
+  expect(immediate.disabled).toBe(true);
+  f.rerender(<ChatComposer {...f.props} canSteer />);
+  expect(immediate.disabled).toBe(false);
+  fireEvent.click(immediate);
+  expect(onSteer).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect(f.props.onAbortSession).not.toHaveBeenCalled();
 });
 
 test('a rejected correction stays visible even when the turn has ended', () => {
@@ -252,6 +291,22 @@ test('a portaled tools menu closes when folded and does not reopen with the comp
   expect(screen.queryByRole('menu')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Expand input' }));
   expect(screen.queryByRole('menu')).toBeNull();
+});
+
+test('managed completion lives in the toolbar and its popup closes when the mobile composer folds', () => {
+  vi.stubEnv('VITE_CODEY_PORTAL_SSO', 'true');
+  const f = fixture();
+  const completion = screen.getByRole('button', { name: 'completion.title · completion.on' });
+  expect(f.container.querySelector('[data-slot="prompt-input-tools"]')?.contains(completion)).toBe(true);
+  expect(f.container.querySelector('[data-slot="prompt-input-body"]')?.nextElementSibling?.getAttribute('role')).toBe('status');
+  fireEvent.click(completion);
+  expect(screen.getByRole('dialog', { name: 'completion.title' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand input' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.getByRole('button', { name: 'completion.title · completion.on' })).toBeTruthy();
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
 });
 
 test('the processing status and Stop action remain accessible while folded', () => {

@@ -6,12 +6,13 @@ import { I18nextProvider } from 'react-i18next';
 
 import '@/index.css';
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
+import { ComposerCompletionControl } from '@/modules/chat/composer/ComposerCompletionControl';
 import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
 import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import { PromptInput, PromptInputBody, PromptInputSubmit, PromptInputTextarea } from '@/modules/chat/composer/PromptInput';
-import type { CodeyVoiceConfig, CodeyVoicePreferences, PermissionMode, VoiceInputState } from '@/shared/types';
+import type { CodeyVoiceConfig, CodeyVoicePreferences, ComposerPreferences, PermissionMode, VoiceInputState } from '@/shared/types';
 
 const params = new URLSearchParams(window.location.search);
 const locale = params.get('locale') || 'zh-CN';
@@ -48,6 +49,10 @@ function ComposerToolbarPreview() {
   const [voiceState, setVoiceState] = useState<VoiceInputState>(voiceModes.find((value) => value === params.get('state')) || 'idle');
   // Selectors update this in-memory fixture, not a real user's saved provider.
   const [preferences, setPreferences] = useState<CodeyVoicePreferences>({ provider: 'azure-speech', language: 'auto' });
+  // Completion consent is simulated locally; this fixture never requests suggestions.
+  const [completionPreferences, setCompletionPreferences] = useState<ComposerPreferences>({
+    completionEnabled: params.get('completion') !== 'off', useHistory: true,
+  });
   // Menus may change a fake next-turn preference without contacting a model.
   const [effort, setEffort] = useState('max');
   // Test permission appearance without modifying real approval policies.
@@ -74,6 +79,8 @@ function ComposerToolbarPreview() {
               placeholder={locale === 'zh-CN' ? '输入消息，或输入 / 使用命令…' : 'Message Codex, or type / for commands…'} />
           </PromptInputBody>
           <ComposerToolbar onAttachFiles={() => record('attach')}
+            completionControl={<ComposerCompletionControl configured ready preferences={completionPreferences}
+              onPreferenceChange={(patch) => setCompletionPreferences((value) => ({ ...value, ...patch }))} />}
             voiceControl={<ComposerVoiceControl state={voiceState} disabled={false}
               onToggle={() => {
                 record('mic');

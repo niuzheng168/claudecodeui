@@ -8,6 +8,7 @@ import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 
 type Props = {
   onAttachFiles: () => void;
+  completionControl?: ReactNode;
   voiceControl?: ReactNode;
   rewriteControl?: ReactNode;
   rewriteNotice?: ReactNode;
@@ -30,7 +31,7 @@ type Props = {
 
 /** ChatComposer uses this two-level toolbar to keep primary actions visible and secondary settings out of the typing row. */
 export function ComposerToolbar({
-  onAttachFiles, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
+  onAttachFiles, completionControl, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
   tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
   canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError,
 }: Props) {
@@ -49,6 +50,7 @@ export function ComposerToolbar({
             onClick={onAttachFiles} className="text-muted-foreground">
             <PaperclipIcon />
           </PromptInputButton>
+          {completionControl}
           {voiceControl}
           {rewriteControl}
           <ComposerToolsMenu commandsCount={commandsCount} onShowCommands={onShowCommands}

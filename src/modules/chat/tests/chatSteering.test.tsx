@@ -65,6 +65,54 @@ test('steering is advertised per live session and disappears on completion/disco
   expect(view.result.current.canSteer).toBe(true);
 });
 
+test('legacy nodes report an upgrade requirement instead of silently hiding steering', async () => {
+  const view = renderHook(() => useChatSteering('a'));
+  expect(view.result.current.unavailableReason).toBe('input.steer.checking');
+  emit({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, lastSeq: 12 });
+  expect(view.result.current.canSteer).toBe(false);
+  expect(view.result.current.unavailableReason).toBe('input.steer.upgradeRequired');
+  await expect(view.result.current.steerMessage('a', 'Do not queue this', [])).rejects.toThrow('STEER_UNAVAILABLE');
+  expect(mocks.send).not.toHaveBeenCalled();
+  emit({ kind: 'complete', sessionId: 'a' });
+  emit({ kind: 'status', sessionId: 'a', status: 'running' });
+  expect(view.result.current.unavailableReason).toBe('input.steer.upgradeRequired');
+  // A fresh capability after a node update restores the existing action.
+  emit({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, canSteer: true, runId: 'upgraded-run' });
+  expect(view.result.current.canSteer).toBe(true);
+  expect(view.result.current.unavailableReason).toBeNull();
+});
+
+test('a modern unsupported runtime is distinguished from an outdated node and another session', () => {
+  const view = renderHook(({ sessionId }) => useChatSteering(sessionId), { initialProps: { sessionId: 'a' } });
+  emit({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, canSteer: false, runId: 'sdk-run' });
+  expect(view.result.current.canSteer).toBe(false);
+  expect(view.result.current.unavailableReason).toBe('input.steer.unavailable');
+  view.rerender({ sessionId: 'b' });
+  expect(view.result.current.unavailableReason).toBe('input.steer.checking');
+  emit({ kind: 'chat_subscribed', sessionId: 'b', isProcessing: true });
+  expect(view.result.current.unavailableReason).toBe('input.steer.upgradeRequired');
+  view.rerender({ sessionId: 'a' });
+  expect(view.result.current.unavailableReason).toBe('input.steer.unavailable');
+});
+
+test('a capability without a run token cannot enable a potentially misdirected correction', () => {
+  const view = renderHook(() => useChatSteering('a'));
+  emit({ kind: 'status', sessionId: 'a', canSteer: true });
+  expect(view.result.current.canSteer).toBe(false);
+  expect(view.result.current.unavailableReason).toBe('input.steer.upgradeRequired');
+});
+
+test('disconnects invalidate capabilities even before a reconnect notification', () => {
+  const view = activeSteering();
+  mocks.connected = false;
+  view.rerender();
+  expect(view.result.current.unavailableReason).toBe('input.steer.disconnected');
+  mocks.connected = true;
+  view.rerender();
+  expect(view.result.current.canSteer).toBe(false);
+  expect(view.result.current.unavailableReason).toBe('input.steer.checking');
+});
+
 test('only a matching session/request acknowledgement resolves a correction, even after navigation', async () => {
   const view = renderHook(({ sessionId }) => useChatSteering(sessionId), { initialProps: { sessionId: 'a' } });
   emit({ kind: 'status', sessionId: 'a', canSteer: true, runId: 'run-a' });

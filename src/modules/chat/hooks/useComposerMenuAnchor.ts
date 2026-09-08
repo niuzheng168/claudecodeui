@@ -6,7 +6,7 @@ import type { ComposerMenuAnchor } from '@/shared/types';
 const VIEWPORT_MARGIN = 8;
 const MENU_GAP = 8;
 
-/** Chat's model, permission, voice/rewrite and tools popovers share positioning and keyboard dismissal. */
+/** Chat's model, permission, completion, voice/rewrite and tools popovers share positioning and keyboard dismissal. */
 export function useComposerMenuAnchor(
   isOpen: boolean,
   onClose: () => void,

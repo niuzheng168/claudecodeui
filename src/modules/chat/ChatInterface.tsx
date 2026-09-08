@@ -503,7 +503,9 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
-          onSteer={steering.canSteer ? handleSteer : undefined}
+          onSteer={provider === 'codex' ? handleSteer : undefined}
+          canSteer={steering.canSteer}
+          steerUnavailableReason={steering.unavailableReason}
           isSteering={isSteering}
           steerError={steerError}
           permissionMode={permissionMode}
