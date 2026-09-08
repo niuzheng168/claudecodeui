@@ -19,7 +19,7 @@ import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-threa
  * primitive, `thread/fork`, which is what the Codex IDE clients build their
  * own "fork" and "edit an earlier message" on top of.
  *
- * Legacy forks use the packaged CLI. Windows native history may instead use
+ * Legacy forks use the packaged CLI. Windows/macOS native history may instead use
  * the explicitly configured desktop CLI for a strictly read-only snapshot.
  * Neither path substitutes for the desktop owner when running native turns;
  * native paginated forks must still stay in Codex app.
@@ -224,7 +224,7 @@ async function withAppServer<T>(
 
 export const codexAppServer = {
   /**
-   * Used by CodexSessionsProvider on Windows, where the desktop daemon's Unix
+   * Used by CodexSessionsProvider on Windows/macOS when the owning desktop
    * control socket is unavailable. Reads through the explicitly configured
    * desktop CLI, never a CLI found in the project/PATH or a guessed JSONL export.
    * No resume/start/fork RPC is permitted and the temporary process must retain
@@ -236,7 +236,7 @@ export const codexAppServer = {
   ): Promise<AnyRecord> {
     const executable = process.env.CODEY_CODEX_EXECUTABLE;
     if (!executable || !path.isAbsolute(executable)) {
-      throw new AppError('The Windows native Codex history reader has no configured desktop executable.', {
+      throw new AppError('The native Codex history reader has no configured desktop executable.', {
         code: 'CODEX_HISTORY_READER_UNAVAILABLE',
         statusCode: 503,
       });

@@ -74,12 +74,29 @@ export class CodexDaemonClient {
    * An existing but incompatible daemon fails explicitly instead of inviting
    * a second process to take over one of its threads.
    */
-  static async connect(options: { home?: string; timeoutMs?: number } = {}): Promise<CodexDaemonClient | null> {
-    const socketPath = path.join(options.home ?? resolveCodexHomeDirectory(), 'app-server-control', 'app-server-control.sock');
+  static async connect(options: { home?: string; timeoutMs?: number; socketPath?: string } = {}): Promise<CodexDaemonClient | null> {
+    // A Mac node may own a separate backend for Codey-created tasks. Its
+    // explicit socket must never fall back to exec or a different desktop.
+    const explicitSocket = options.socketPath ?? (options.home ? undefined : process.env.CODEY_CODEX_DAEMON_SOCKET);
+    if (explicitSocket && !path.isAbsolute(explicitSocket)) {
+      throw new AppError('The configured Codex backend socket must be an absolute path.', {
+        code: 'CODEX_DAEMON_UNAVAILABLE', statusCode: 503,
+      });
+    }
+    const unavailable = () => new AppError('The configured Codex backend is unavailable. Wait for its local service; no exec fallback was started.', {
+      code: 'CODEX_DAEMON_UNAVAILABLE', statusCode: 503,
+    });
+    const socketPath = explicitSocket || path.join(options.home ?? resolveCodexHomeDirectory(), 'app-server-control', 'app-server-control.sock');
     try {
-      if (!(await lstat(socketPath)).isSocket()) return null;
+      if (!(await lstat(socketPath)).isSocket()) {
+        if (explicitSocket) throw unavailable();
+        return null;
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (explicitSocket) throw unavailable();
+        return null;
+      }
       throw error;
     }
 
@@ -105,7 +122,10 @@ export class CodexDaemonClient {
       return client;
     } catch (error) {
       client.close();
-      if ((error as NodeJS.ErrnoException).code === 'ECONNREFUSED') return null;
+      if ((error as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+        if (explicitSocket) throw unavailable();
+        return null;
+      }
       throw error;
     }
   }
