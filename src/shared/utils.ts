@@ -393,17 +393,26 @@ export const getSessionTitle = (session: ProjectSession): string => {
 };
 
 /**
- * Builds the browser tab title for the current selection: the session title when one is
- * open, otherwise the project name, otherwise the app name.
+ * Main, sidebar and completion notifications keep the routed Codey node first
+ * in the tab title. Standalone CloudCLI retains its session/project titles.
  */
 export const getPageTitle = (
   selectedProject: Project | null,
   selectedSession: ProjectSession | null,
 ): string => {
+  // Use the node API/router prefix, never the shared asset release or the
+  // current SPA route, so session navigation cannot rename or lose the node.
+  const nodeId = getDeploymentBasePath().match(/^\/cloudcli\/([a-z0-9][a-z0-9_-]{0,31})\/$/i)?.[1];
+  const displayName = selectedProject?.displayName?.trim();
+  if (nodeId) {
+    const workspaceTitle = `cloudcli - ${nodeId}`;
+    const selectionTitle = selectedSession ? getSessionTitle(selectedSession) : displayName;
+    return selectionTitle ? `${workspaceTitle} · ${selectionTitle}` : workspaceTitle;
+  }
+
   if (selectedSession) {
     return getSessionTitle(selectedSession);
   }
 
-  const displayName = selectedProject?.displayName?.trim();
   return displayName ? `${displayName} - ${DEFAULT_PAGE_TITLE}` : DEFAULT_PAGE_TITLE;
 };
