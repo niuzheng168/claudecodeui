@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -223,8 +223,17 @@ export default function ChatComposer({
   // Keep the user's mobile reading preference without hiding the desktop composer or discarding drafts.
   const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] = useState(false);
   const isComposerCollapsed = isMobile && isMobileComposerCollapsed;
+  // Only one toggle is mounted at a time: in the footer when open, above the hidden form when closed.
+  const composerToggleRef = useRef<HTMLButtonElement | null>(null);
+  // Explicit toggles transfer keyboard focus without reopening the mobile keyboard or stealing focus on resize.
+  const restoreToggleFocusRef = useRef(false);
   const composerContentId = useId();
   const steeringHintId = useId();
+  useLayoutEffect(() => {
+    if (!restoreToggleFocusRef.current) return;
+    restoreToggleFocusRef.current = false;
+    if (isMobile) composerToggleRef.current?.focus({ preventScroll: true });
+  }, [isComposerCollapsed, isMobile]);
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -421,31 +430,24 @@ export default function ChatComposer({
       )}
 
       {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
-        {isMobile && (
+        {isComposerCollapsed && (
           <button
+            ref={composerToggleRef}
             type="button"
-            aria-expanded={!isComposerCollapsed}
+            aria-expanded={false}
             aria-controls={composerContentId}
             disabled={voiceState !== 'idle' || rewrite.busy}
             onClick={() => {
-              if (!isComposerCollapsed) {
-                textareaRef.current?.blur();
-                onInputFocusChange?.(false);
-                onCloseCommandMenu();
-                completion.invalidate();
-              }
-              setIsMobileComposerCollapsed(!isComposerCollapsed);
+              restoreToggleFocusRef.current = true;
+              setIsMobileComposerCollapsed(false);
             }}
             className={[
-              'flex min-h-11 w-full touch-manipulation items-center justify-center gap-2 border border-border/50 bg-card/80 px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
-              isComposerCollapsed ? 'rounded-xl shadow-sm' : 'rounded-t-xl border-b-0',
+              'flex min-h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl border border-border/50 bg-card/80 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
               hasActivityIndicator ? 'rounded-t-none' : '',
             ].filter(Boolean).join(' ')}
           >
-            {isComposerCollapsed
-              ? <ChevronUpIcon className="h-4 w-4" aria-hidden />
-              : <ChevronDownIcon className="h-4 w-4" aria-hidden />}
-            {t(isComposerCollapsed ? 'composer.expandInput' : 'composer.collapseInput')}
+            <ChevronUpIcon className="h-4 w-4" aria-hidden />
+            {t('composer.expandInput')}
           </button>
         )}
         {/* Keep fields mounted and measurable so drafts, attachments and textarea sizing survive folding. */}
@@ -499,8 +501,10 @@ export default function ChatComposer({
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
           status={isLoading ? 'streaming' : 'ready'}
           className={[
+            // Animating inherited visibility prevents the new mobile toggle from receiving focus.
+            isMobile ? 'transition-[border-color,border-radius,box-shadow]' : '',
             isTextareaExpanded ? 'chat-input-expanded' : '',
-            hasActivityIndicator || isMobile ? 'rounded-t-none' : '',
+            hasActivityIndicator ? 'rounded-t-none' : '',
           ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
@@ -620,6 +624,22 @@ export default function ChatComposer({
 
         {!isComposerCollapsed && <ComposerToolbar
           onAttachFiles={openAttachmentPicker}
+          collapseControl={isMobile ? (
+            <button ref={composerToggleRef} type="button" aria-expanded={true} aria-controls={composerContentId}
+              disabled={voiceState !== 'idle' || rewrite.busy}
+              onClick={() => {
+                textareaRef.current?.blur();
+                onInputFocusChange?.(false);
+                onCloseCommandMenu();
+                completion.invalidate();
+                restoreToggleFocusRef.current = true;
+                setIsMobileComposerCollapsed(true);
+              }}
+              className="inline-flex h-6 shrink-0 touch-manipulation items-center gap-1 rounded-md px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50">
+              <ChevronDownIcon className="h-3.5 w-3.5" aria-hidden />
+              {t('composer.collapseInput')}
+            </button>
+          ) : null}
           completionControl={managedVoice ? (
             <ComposerCompletionControl configured={completion.configured} ready={completion.ready}
               preferences={completion.preferences} onPreferenceChange={completion.setPreference} />

@@ -50,12 +50,13 @@ function fixture({ hasInput = false, state = 'idle', error = null }: { hasInput?
   const callbacks = {
     attach: vi.fn(), mic: vi.fn(), cancel: vi.fn(), voiceChange: vi.fn(), refresh: vi.fn(),
     tokens: vi.fn(), commands: vi.fn(), clear: vi.fn(), schedule: vi.fn(), model: vi.fn(),
-    effort: vi.fn(), permission: vi.fn(), submit: vi.fn(),
+    effort: vi.fn(), permission: vi.fn(), submit: vi.fn(), collapse: vi.fn(),
   };
   const result = render(
     <PromptInput onSubmit={(event) => { event.preventDefault(); callbacks.submit(); }}>
       <textarea aria-label="Draft" defaultValue={hasInput ? 'A draft' : ''} />
       <ComposerToolbar onAttachFiles={callbacks.attach}
+        collapseControl={<button type="button" onClick={callbacks.collapse}>Collapse input</button>}
         completionControl={<ComposerCompletionControl configured ready
           preferences={{ completionEnabled: true, useHistory: true }} onPreferenceChange={vi.fn()} />}
         voiceControl={<ComposerVoiceControl state={state} disabled={false} onToggle={callbacks.mic} onCancel={callbacks.cancel}
@@ -102,6 +103,17 @@ test('completion shares the attachment tool row instead of reserving a settings 
   expect(f.container.querySelector('[data-slot="composer-primary"]')?.contains(completion)).toBe(true);
   expect(completion.textContent).toBe('');
   expect(screen.queryByLabelText('completion.enable')).toBeNull();
+});
+
+test('collapse shares the token status row without crowding the primary actions or submitting', () => {
+  const f = fixture();
+  const collapse = screen.getByRole('button', { name: 'Collapse input' });
+  const tokens = screen.getByRole('button', { name: 'Show token usage' });
+  expect(collapse.closest('[data-slot="composer-status"]')).toBe(tokens.closest('[data-slot="composer-status"]'));
+  expect(f.container.querySelector('[data-slot="composer-primary"]')?.contains(collapse)).toBe(false);
+  fireEvent.click(collapse);
+  expect(f.callbacks.collapse).toHaveBeenCalledOnce();
+  expect(f.callbacks.submit).not.toHaveBeenCalled();
 });
 
 test('voice options disclose selectors without starting recording and Escape returns keyboard focus', async () => {

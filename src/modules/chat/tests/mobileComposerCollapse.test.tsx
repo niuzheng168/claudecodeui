@@ -218,14 +218,47 @@ test('a rejected correction stays visible even when the turn has ended', () => {
   expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
 });
 
-test.each([320, 390, 767])('mobile at %ipx starts expanded with an accessible, non-submitting toggle', (width) => {
+test.each([320, 390, 767])('mobile at %ipx places the accessible collapse toggle in the existing status row', (width) => {
   resizeViewport(width);
-  fixture();
+  const f = fixture();
   const toggle = screen.getByRole('button', { name: 'Collapse input' });
+  const form = f.container.querySelector('[data-slot="prompt-input"]')!;
   expect(toggle.getAttribute('type')).toBe('button');
   expect(toggle.getAttribute('aria-expanded')).toBe('true');
   expect(document.getElementById(toggle.getAttribute('aria-controls')!)?.contains(screen.getByRole('textbox'))).toBe(true);
+  expect(toggle.closest('[data-slot="composer-status"]')).toBe(f.container.querySelector('[data-slot="composer-status"]'));
+  expect(form.contains(toggle)).toBe(true);
+  expect(form.classList.contains('rounded-t-none')).toBe(false);
+  expect(form.classList.contains('transition-[border-color,border-radius,box-shadow]')).toBe(true);
+  expect(form.classList.contains('transition-all')).toBe(false);
   expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+});
+
+test('explicit folding and unfolding transfer keyboard focus without focusing the textarea or submitting', () => {
+  const f = fixture();
+  const collapse = screen.getByRole('button', { name: 'Collapse input' });
+  const contentId = collapse.getAttribute('aria-controls');
+  act(() => collapse.focus());
+  fireEvent.click(collapse);
+  const expand = screen.getByRole('button', { name: 'Expand input' });
+  expect(expand.getAttribute('aria-controls')).toBe(contentId);
+  expect(document.activeElement).toBe(expand);
+  expect(f.container.querySelector('[data-slot="prompt-input"]')?.contains(expand)).toBe(false);
+  fireEvent.click(expand);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Collapse input' }));
+  expect(document.activeElement).not.toBe(screen.getByRole('textbox'));
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect(f.props.onAbortSession).not.toHaveBeenCalled();
+});
+
+test('the activity indicator still joins the mobile composer without a separate collapse header', () => {
+  const f = fixture({
+    isLoading: true,
+    activity: { startedAt: Date.now(), statusText: 'Working', canInterrupt: true },
+  });
+  expect(f.container.querySelector('[data-slot="prompt-input"]')?.classList.contains('rounded-t-none')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Collapse input' }).closest('[data-slot="composer-status"]')).not.toBeNull();
+  expect(screen.getByText('Working…')).toBeTruthy();
 });
 
 test('folding removes the editing controls, dismisses the keyboard, and preserves draft, selection and attachments', () => {
@@ -281,6 +314,24 @@ test('switching to desktop always reveals the composer even after folding it on 
   resizeViewport(390);
   expect(screen.getByRole('button', { name: 'Expand input' })).toBeTruthy();
   expect(screen.queryByRole('textbox')).toBeNull();
+});
+
+test('responsive layout changes do not steal focus from the draft or an outside control', () => {
+  const f = fixture();
+  const textarea = screen.getByRole('textbox');
+  act(() => textarea.focus());
+  resizeViewport(1024);
+  expect(document.activeElement).toBe(textarea);
+  resizeViewport(390);
+  expect(document.activeElement).toBe(textarea);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  const outside = document.createElement('button');
+  f.container.append(outside);
+  act(() => outside.focus());
+  resizeViewport(1024);
+  resizeViewport(390);
+  expect(document.activeElement).toBe(outside);
 });
 
 test('a portaled tools menu closes when folded and does not reopen with the composer', () => {
