@@ -79,12 +79,13 @@ function ComposerModelMenu({
       <button
         ref={triggerRef}
         type="button"
+        data-slot="composer-model"
         onClick={() => {
           updateAnchor();
           setIsModelSectionOpen(false);
           setIsOpen((current) => !current);
         }}
-        className="flex h-8 min-w-0 max-w-44 shrink items-center justify-center gap-1 rounded-lg bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="ml-auto flex h-8 min-w-14 max-w-44 flex-1 items-center justify-center gap-1 rounded-lg bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={`${ariaLabel}: ${triggerLabel}${hasEffortSection ? ` · ${effortLabel}` : ''}`}

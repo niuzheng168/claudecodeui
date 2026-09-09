@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { FocusEvent, ReactNode } from 'react';
 import { PaperclipIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -30,7 +30,19 @@ type Props = {
   voiceError?: string | null;
 };
 
-/** ChatComposer uses this two-level toolbar to keep primary actions visible and secondary settings out of the typing row. */
+function revealFocusedTool({ currentTarget, target }: FocusEvent<HTMLDivElement>) {
+  // Portalled menus also bubble React focus events here, but must never scroll the tool strip.
+  if (!currentTarget.contains(target) || currentTarget.scrollWidth <= currentTarget.clientWidth) return;
+  const strip = currentTarget.getBoundingClientRect();
+  const tool = target.getBoundingClientRect();
+  // Native focus scrolling can leave partially visible buttons clipped; include their 2px focus ring.
+  const left = tool.left - strip.left - 2;
+  const right = tool.right - strip.right + 2;
+  if (left < 0) currentTarget.scrollLeft += left;
+  else if (right > 0) currentTarget.scrollLeft += right;
+}
+
+/** ChatComposer keeps primary actions on one line, with secondary status below and scrollable tools on narrow panes. */
 export function ComposerToolbar({
   onAttachFiles, completionControl, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
   tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
@@ -45,8 +57,10 @@ export function ComposerToolbar({
         </p>
       )}
       {rewriteNotice}
-      <div className="composer-primary flex min-w-0 items-center gap-1.5" data-slot="composer-primary">
-        <PromptInputTools className="shrink-0 gap-0.5">
+      <div className="composer-primary flex min-w-0 flex-nowrap items-center gap-1" data-slot="composer-primary">
+        {/* Only tools may scroll: model, permissions and send must stay visible without shrinking the icon buttons. */}
+        <PromptInputTools onFocusCapture={revealFocusedTool}
+          className="-my-1 -ml-0.5 mr-auto min-w-0 shrink gap-px overflow-x-auto overscroll-x-contain px-0.5 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0">
           <PromptInputButton tooltip={{ content: t('input.attachFiles') }} aria-label={t('input.attachFiles')}
             onClick={onAttachFiles} className="text-muted-foreground">
             <PaperclipIcon />
@@ -57,11 +71,9 @@ export function ComposerToolbar({
           <ComposerToolsMenu commandsCount={commandsCount} onShowCommands={onShowCommands}
             hasInput={hasInput} onClearInput={onClearInput} canSchedule={canSchedule} onSchedule={onSchedule} />
         </PromptInputTools>
-        <div className="composer-actions ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5">
-          {modelControl}
-          {permissionControl}
-          {submitControl}
-        </div>
+        {modelControl}
+        {permissionControl}
+        {submitControl}
       </div>
       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 px-1" data-slot="composer-status">
         <TokenUsageSummary usage={tokenUsage} onClick={onShowTokenUsage} />
