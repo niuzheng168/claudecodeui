@@ -1,4 +1,4 @@
-import { AppError } from '@/shared/utils.js';
+import { AppError, readObjectRecord } from '@/shared/index.js';
 
 type GitConfig = {
   git_name: string | null;
@@ -26,9 +26,10 @@ type UserDependencies = {
   };
   drafts: {
     getDrafts(userId: number): DraftRecord[];
-    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage: unknown | null }): void;
+    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage?: unknown | null }): void;
     deleteDraft(userId: number, scope: string): void;
   };
+  steerQueuedDraft?: (userId: number, input: unknown) => Promise<unknown>;
   readSystemGitConfig(): Promise<GitConfig>;
   applyGlobalGitConfig(gitName: string, gitEmail: string): Promise<void>;
   logInfo(message: string): void;
@@ -165,7 +166,7 @@ export function createUserService(dependencies: UserDependencies) {
 
     saveDraft(userId: number, scopeInput: unknown, body: unknown) {
       const scope = readDraftScope(scopeInput);
-      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown };
+      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown; preserveQueuedMessage?: unknown };
       const text = typeof payload.text === 'string' ? payload.text : '';
 
       if (text.length > MAX_DRAFT_TEXT_LENGTH) {
@@ -177,7 +178,7 @@ export function createUserService(dependencies: UserDependencies) {
 
       dependencies.drafts.saveDraft(userId, scope, {
         text,
-        queuedMessage: payload.queuedMessage ?? null,
+        ...(payload.preserveQueuedMessage === true ? {} : { queuedMessage: payload.queuedMessage ?? null }),
       });
       return { success: true };
     },
@@ -185,6 +186,17 @@ export function createUserService(dependencies: UserDependencies) {
     deleteDraft(userId: number, scopeInput: unknown) {
       dependencies.drafts.deleteDraft(userId, readDraftScope(scopeInput));
       return { success: true };
+    },
+
+    /** Queued input is consumed by the runtime gateway, never by a separate delete-then-send race. */
+    async steerQueuedDraft(userId: number, scopeInput: unknown, body: unknown) {
+      const sessionId = readDraftScope(scopeInput);
+      if (!dependencies.steerQueuedDraft) {
+        throw new AppError('Queued steering is unavailable on this node.', {
+          code: 'STEER_UNSUPPORTED', statusCode: 501,
+        });
+      }
+      return dependencies.steerQueuedDraft(userId, { ...readObjectRecord(body), sessionId });
     },
   };
 }

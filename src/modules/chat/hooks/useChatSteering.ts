@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useTranslation } from 'react-i18next';
 
 import { useWebSocket } from '@/shared/context/WebSocketContext';
-import type { SteerChatMessage } from '@/shared/types';
+import { api } from '@/shared/api';
+import type { ServerEvent, SteerChatMessage } from '@/shared/types';
 
 type PendingSteer = {
   requestId: string;
@@ -10,15 +11,21 @@ type PendingSteer = {
   resolve: () => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  controller?: AbortController;
 };
 
 type SessionSteeringCapability = {
   runId: string | null;
   unavailableReason: 'unavailable' | 'upgradeRequired' | null;
+  queued: boolean;
 };
 
 // Longer than the daemon's acknowledgement deadline; never automatically retry.
 const STEER_TIMEOUT_MS = 15_000;
+
+function unconfirmedError(message: string): Error {
+  return Object.assign(new Error(message), { queueHeld: true });
+}
 
 /** ChatInterface uses this to discover native steering and await one correlated acknowledgement without affecting the run. */
 export function useChatSteering(sessionId: string | null) {
@@ -43,14 +50,32 @@ export function useChatSteering(sessionId: string | null) {
     if (!pending) return;
     pendingRef.current = null;
     clearTimeout(pending.timer);
+    // Aborting a queue HTTP request does not interrupt the native chat turn.
+    pending.controller?.abort();
     pending.reject(error);
   }, []);
+
+  const receiveSteerResult = useCallback((event: ServerEvent) => {
+    const pending = pendingRef.current;
+    if (!pending || event.requestId !== pending.requestId || event.sessionId !== pending.sessionId) return;
+    if (event.accepted !== true) {
+      const message = event.queueHeld === true ? t('input.queue.reviewHint')
+        : t(`input.steer.errors.${String(event.code)}`, {
+          defaultValue: String(event.error || t('input.steer.failed')),
+        });
+      failPending(Object.assign(new Error(message), { queueHeld: event.queueHeld === true }));
+    } else {
+      pendingRef.current = null;
+      clearTimeout(pending.timer);
+      pending.resolve();
+    }
+  }, [failPending, t]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      failPending(new Error(unconfirmedMessageRef.current));
+      failPending(unconfirmedError(unconfirmedMessageRef.current));
     };
   }, [failPending]);
 
@@ -63,17 +88,7 @@ export function useChatSteering(sessionId: string | null) {
     }
     const sid = typeof event.sessionId === 'string' ? event.sessionId : null;
     if (event.kind === 'chat_steer_result') {
-      const pending = pendingRef.current;
-      if (!pending || event.requestId !== pending.requestId || sid !== pending.sessionId) return;
-      if (event.accepted !== true) {
-        failPending(new Error(t(`input.steer.errors.${String(event.code)}`, {
-          defaultValue: String(event.error || t('input.steer.failed')),
-        })));
-      } else {
-        pendingRef.current = null;
-        clearTimeout(pending.timer);
-        pending.resolve();
-      }
+      receiveSteerResult(event);
       return;
     }
     if (!sid) return;
@@ -88,12 +103,13 @@ export function useChatSteering(sessionId: string | null) {
       runId: enabled ? runId : null,
       unavailableReason: enabled ? null
         : typeof event.canSteer !== 'boolean' || (event.canSteer && !runId) ? 'upgradeRequired' : 'unavailable',
+      queued: enabled && event.canSteerQueued === true,
     };
     setSessionCapabilities((previous) => {
       if (event.kind === 'complete' && !previous.has(sid)) return previous;
       const current = previous.get(sid);
       if (event.kind !== 'complete' && current?.runId === capability.runId
-        && current.unavailableReason === capability.unavailableReason) return previous;
+        && current.unavailableReason === capability.unavailableReason && current.queued === capability.queued) return previous;
       const next = new Map(previous);
       // Old backends cannot send a capability status on the next turn either.
       // Keep their upgrade explanation until a fresh subscribe/status or reconnect.
@@ -104,31 +120,54 @@ export function useChatSteering(sessionId: string | null) {
       }
       return next;
     });
-  }), [failPending, subscribe, t]);
+  }), [receiveSteerResult, subscribe]);
 
   useEffect(() => {
     if (isConnected) return;
-    failPending(new Error(t('input.steer.unconfirmed')));
+    failPending(unconfirmedError(t('input.steer.unconfirmed')));
   }, [failPending, isConnected, t]);
 
-  const steerMessage = useCallback<SteerChatMessage>((targetSessionId, content, attachments) => {
+  const steerMessage = useCallback<SteerChatMessage>((targetSessionId, content, attachments, queuedMessage) => {
     if (!mountedRef.current || !connectedRef.current) {
       return Promise.reject(new Error(t('input.steer.disconnected')));
     }
     if (pendingRef.current) {
       return Promise.reject(new Error(t('input.steer.pending')));
     }
-    // This closure is captured by the composer BEFORE uploading attachments.
-    // A newer capability update must not redirect that submission to a new run.
+    // Captured before waiting for the queued save (or legacy uploads). A newer
+    // capability update must not redirect the receipt to a different native run.
     const expectedRunId = sessionCapabilities.get(targetSessionId)?.runId;
     if (!expectedRunId) {
       return Promise.reject(new Error(t('input.steer.errors.STEER_UNAVAILABLE')));
     }
+    if (queuedMessage && !sessionCapabilities.get(targetSessionId)?.queued) {
+      return Promise.reject(new Error(t('input.steer.upgradeRequired')));
+    }
     return new Promise<void>((resolve, reject) => {
       const requestId = crypto.randomUUID();
-      const timer = setTimeout(() => failPending(new Error(t('input.steer.unconfirmed'))), STEER_TIMEOUT_MS);
-      pendingRef.current = { requestId, sessionId: targetSessionId, resolve, reject, timer };
+      const timer = setTimeout(() => failPending(unconfirmedError(t('input.steer.unconfirmed'))), STEER_TIMEOUT_MS);
+      const controller = queuedMessage ? new AbortController() : undefined;
+      pendingRef.current = { requestId, sessionId: targetSessionId, resolve, reject, timer, controller };
       try {
+        if (queuedMessage) {
+          void api.user.steerQueuedDraft(targetSessionId, {
+            requestId, expectedRunId, queuedMessage,
+          }, controller?.signal).then(async (response) => {
+            if (pendingRef.current?.requestId !== requestId) return;
+            if ([404, 501].includes(response.status)) {
+              failPending(new Error(t('input.steer.upgradeRequired')));
+              return;
+            }
+            if (!response.ok) throw unconfirmedError(t('input.steer.unconfirmed'));
+            const event = await response.json() as ServerEvent;
+            if (event.requestId !== requestId || event.sessionId !== targetSessionId
+              || typeof event.accepted !== 'boolean') throw unconfirmedError(t('input.steer.unconfirmed'));
+            receiveSteerResult(event);
+          }).catch(() => {
+            if (pendingRef.current?.requestId === requestId) failPending(unconfirmedError(t('input.steer.unconfirmed')));
+          });
+          return;
+        }
         sendMessage({
           type: 'chat.steer', requestId, expectedRunId, sessionId: targetSessionId, content,
           options: { attachments },
@@ -137,14 +176,17 @@ export function useChatSteering(sessionId: string | null) {
         failPending(error instanceof Error ? error : new Error(String(error)));
       }
     });
-  }, [failPending, sendMessage, sessionCapabilities, t]);
+  }, [failPending, receiveSteerResult, sendMessage, sessionCapabilities, t]);
 
   const capability = sessionId ? sessionCapabilities.get(sessionId) : undefined;
   const canSteer = isConnected && Boolean(capability?.runId);
+  const unavailableReason = canSteer ? null : t(!isConnected ? 'input.steer.disconnected'
+    : `input.steer.${capability?.unavailableReason ?? 'checking'}`);
   return {
     canSteer,
-    unavailableReason: canSteer ? null : t(!isConnected ? 'input.steer.disconnected'
-      : `input.steer.${capability?.unavailableReason ?? 'checking'}`),
+    unavailableReason,
+    canSteerQueued: canSteer && capability?.queued === true,
+    queuedUnavailableReason: canSteer && !capability?.queued ? t('input.steer.upgradeRequired') : unavailableReason,
     steerMessage,
   };
 }

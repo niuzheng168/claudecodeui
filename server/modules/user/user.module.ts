@@ -1,6 +1,8 @@
 import spawn from 'cross-spawn';
 
 import { sessionDraftsDb, userDb, userPreferencesDb } from '@/modules/database/index.js';
+import { providerRuntimeService } from '@/modules/providers/index.js';
+import { steerQueuedChatMessage } from '@/modules/websocket/index.js';
 
 import { createUserRouter } from './user.routes.js';
 import { createUserService } from './user.service.js';
@@ -54,6 +56,7 @@ const userService = createUserService({
     saveDraft: (userId, scope, draft) => sessionDraftsDb.saveDraft(userId, scope, draft),
     deleteDraft: (userId, scope) => sessionDraftsDb.deleteDraft(userId, scope),
   },
+  steerQueuedDraft: (userId, input) => steerQueuedChatMessage(userId, input, { runtime: providerRuntimeService }),
   readSystemGitConfig,
   applyGlobalGitConfig: async (gitName, gitEmail) => {
     await runGit(['config', '--global', 'user.name', gitName]);

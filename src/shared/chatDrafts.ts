@@ -1,5 +1,5 @@
 import { api } from '@/shared/api';
-import type { QueuedSendOptions } from '@/shared/types';
+import type { StoredQueuedMessage } from '@/shared/types';
 import { deploymentStorageKey } from '@/shared/utils';
 
 /**
@@ -16,19 +16,6 @@ import { deploymentStorageKey } from '@/shared/utils';
  * been sent yet and so has no session. Drafts used to be keyed by project
  * alone, which meant every session in a project shared one draft.
  */
-
-/** A queued message as it is stored: text plus the send options it was composed under. */
-export type StoredQueuedMessage = {
-  content: string;
-  options?: QueuedSendOptions;
-  /** Legacy image-only descriptors retained for queued draft compatibility. */
-  images?: unknown[];
-  /**
-   * JSON-safe descriptors returned by POST /api/assets/files. Unlike browser
-   * File objects, they can follow a queued message across session switches.
-   */
-  attachments?: unknown[];
-};
 
 type DraftRecord = {
   text: string;
@@ -54,6 +41,17 @@ const listeners = new Set<() => void>();
 
 let drafts = new Map<string, DraftRecord>();
 const pendingScopes = new Set<string>();
+// Only explicit queue actions may replace server-owned queued input; typing must never resurrect it.
+const pendingQueuedScopes = new Set<string>();
+// Writes are ordered per session, and immediate steering waits for its queue receipt to reach the server.
+const serverWrites = new Map<string, Promise<void>>();
+// A lost queue-save response must not be retried by a later textarea autosave:
+// the server might already have consumed it. Explicit edits or a matching hydrate resolve it.
+const queuedWriteFailures = new Map<string, { message: StoredQueuedMessage | null; error: Error }>();
+// Hydration and failed writes must not roll back a newer edit or a confirmed server-side queue claim.
+const revisions = new Map<string, number>();
+// Deferred writes from a previous login must not start using the next login's credentials.
+let draftEpoch = 0;
 let serverWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -118,28 +116,43 @@ function flushServerWrites(): void {
   pendingScopes.clear();
 
   for (const scope of scopes) {
-    const draft = drafts.get(scope);
-
-    // A save that fails must never surface as an unhandled rejection out of a
-    // timer callback: the mirror already holds the draft, and the next
-    // keystroke re-sends it.
-    try {
-      if (!draft || isEmptyDraft(draft)) {
-        void api.user.deleteDraft(scope).catch((error: unknown) => {
-          console.error('Failed to delete chat draft:', error);
-        });
-        continue;
-      }
-
-      void api.user.saveDraft(scope, {
-        text: draft.text,
-        queuedMessage: draft.queuedMessage,
-      }).catch((error: unknown) => {
+    const draft = drafts.get(scope) ?? EMPTY_DRAFT;
+    const writesQueue = pendingQueuedScopes.delete(scope);
+    const revision = revisions.get(scope);
+    const epoch = draftEpoch;
+    const payload = {
+      text: draft.text,
+      // Older nodes still receive the complete snapshot. New nodes ignore this
+      // field for text-only saves, so a late autosave cannot undo a queue claim.
+      queuedMessage: draft.queuedMessage,
+      ...(!writesQueue ? { preserveQueuedMessage: true } : {}),
+    };
+    const save = async () => {
+      if (epoch !== draftEpoch) return;
+      const response = await api.user.saveDraft(scope, payload);
+      if (!response.ok) throw new Error('Failed to save chat draft');
+    };
+    const previous = serverWrites.get(scope);
+    const request = previous ? previous.catch(() => {}).then(save) : save();
+    const writing = request.then(() => {
+      if (serverWrites.get(scope) === writing) serverWrites.delete(scope);
+    }, (error: unknown) => {
+      if (serverWrites.get(scope) === writing) serverWrites.delete(scope);
+      if (epoch === draftEpoch) {
+        if (writesQueue && (drafts.get(scope)?.queuedMessage ?? null) === draft.queuedMessage) {
+          queuedWriteFailures.set(scope, {
+            message: draft.queuedMessage,
+            error: new Error('Queue save was not confirmed. Check the conversation before editing and resending.'),
+          });
+        } else if (!writesQueue && revisions.get(scope) === revision) {
+          pendingScopes.add(scope);
+        }
         console.error('Failed to save chat draft:', error);
-      });
-    } catch (error) {
-      console.error('Failed to save chat draft:', error);
-    }
+      }
+      throw error;
+    });
+    serverWrites.set(scope, writing);
+    void writing.catch(() => {}); // Queue clicks await this failure; autosaves must not create unhandled rejections.
   }
 }
 
@@ -160,7 +173,7 @@ function flushServerWritesNow(): void {
   flushServerWrites();
 }
 
-function updateDraft(scope: string, update: Partial<DraftRecord>): void {
+function updateDraft(scope: string, update: Partial<DraftRecord>, persist = true): void {
   const current = drafts.get(scope) ?? EMPTY_DRAFT;
   const next: DraftRecord = { ...current, ...update };
 
@@ -175,9 +188,14 @@ function updateDraft(scope: string, update: Partial<DraftRecord>): void {
     nextDrafts.set(scope, next);
   }
   drafts = nextDrafts;
+  revisions.set(scope, (revisions.get(scope) ?? 0) + 1);
 
   writeMirror();
-  queueServerWrite(scope);
+  if (Object.prototype.hasOwnProperty.call(update, 'queuedMessage')) queuedWriteFailures.delete(scope);
+  if (persist) {
+    if (Object.prototype.hasOwnProperty.call(update, 'queuedMessage')) pendingQueuedScopes.add(scope);
+    queueServerWrite(scope);
+  }
   notifyListeners();
 }
 
@@ -220,6 +238,27 @@ export function clearQueuedMessage(scope: string): void {
   flushServerWritesNow();
 }
 
+/** Chat's queued steering waits for prior queue saves without blocking writes to other sessions. */
+export async function flushChatDraft(scope: string): Promise<void> {
+  flushServerWritesNow();
+  await serverWrites.get(scope);
+  const failedQueue = queuedWriteFailures.get(scope);
+  if (failedQueue) throw failedQueue.error;
+}
+
+/** Chat forgets only the receipt consumed by the server; it must not issue a second queue deletion. */
+export function forgetQueuedMessage(scope: string, expected: StoredQueuedMessage): boolean {
+  if (JSON.stringify(readQueuedMessage(scope)) !== JSON.stringify(expected)) return false;
+  updateDraft(scope, { queuedMessage: null }, false);
+  return true;
+}
+
+/** Chat marks an uncertain local receipt for review without resurrecting it on the server. */
+export function holdQueuedMessage(scope: string, expected: StoredQueuedMessage): void {
+  if (JSON.stringify(readQueuedMessage(scope)) !== JSON.stringify(expected)) return;
+  updateDraft(scope, { queuedMessage: { ...expected, steerHold: 'unconfirmed' } }, false);
+}
+
 /** Subscribes to any draft change; returns the unsubscribe function. */
 export function subscribeToChatDrafts(listener: () => void): () => void {
   listeners.add(listener);
@@ -236,6 +275,9 @@ export function subscribeToChatDrafts(listener: () => void): () => void {
  * staler server copy would delete what they are in the middle of writing.
  */
 export async function hydrateChatDrafts(): Promise<void> {
+  const epoch = draftEpoch;
+  const startedRevisions = new Map(revisions);
+  const writingScopes = new Set(serverWrites.keys());
   let serverDrafts: Array<{ scope?: unknown; text?: unknown; queuedMessage?: unknown }> = [];
 
   try {
@@ -254,11 +296,18 @@ export async function hydrateChatDrafts(): Promise<void> {
     console.error('Failed to load chat drafts:', error);
     return;
   }
+  if (epoch !== draftEpoch) return;
+  const locallyChanged = (scope: string) => pendingScopes.has(scope) || writingScopes.has(scope)
+    || serverWrites.has(scope) || queuedWriteFailures.has(scope) || startedRevisions.get(scope) !== revisions.get(scope);
 
   const merged = new Map<string, DraftRecord>();
   for (const draft of serverDrafts) {
     const scope = typeof draft.scope === 'string' ? draft.scope : '';
-    if (!scope || pendingScopes.has(scope)) {
+    const failedQueue = queuedWriteFailures.get(scope);
+    if (failedQueue && JSON.stringify(draft.queuedMessage) === JSON.stringify(failedQueue.message)) {
+      queuedWriteFailures.delete(scope); // An authoritative read confirms the earlier save reached the server.
+    }
+    if (!scope || locallyChanged(scope)) {
       continue;
     }
 
@@ -273,11 +322,8 @@ export async function hydrateChatDrafts(): Promise<void> {
   // Local edits whose debounced write has not left the browser yet win over
   // the server snapshot. Every other missing scope was deleted remotely and
   // must also disappear from the mirror.
-  for (const scope of pendingScopes) {
-    const pending = drafts.get(scope);
-    if (pending) {
-      merged.set(scope, pending);
-    }
+  for (const [scope, pending] of drafts) {
+    if (locallyChanged(scope)) merged.set(scope, pending);
   }
 
   drafts = merged;
@@ -287,8 +333,13 @@ export async function hydrateChatDrafts(): Promise<void> {
 
 /** Drops every cached draft on sign-out, so the next user sees none of them. */
 export function resetChatDrafts(): void {
+  draftEpoch += 1;
   drafts = new Map();
   pendingScopes.clear();
+  pendingQueuedScopes.clear();
+  serverWrites.clear();
+  queuedWriteFailures.clear();
+  revisions.clear();
   if (serverWriteTimer !== null) {
     clearTimeout(serverWriteTimer);
     serverWriteTimer = null;

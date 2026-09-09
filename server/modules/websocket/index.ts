@@ -8,4 +8,6 @@ export { broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './servi
 // runDetachedChatTurn: used by the scheduled-messages module to run a turn
 // from a timer, with no socket to stream to or report errors on.
 export { runDetachedChatTurn } from './services/chat-websocket.service.js';
+// User's queue endpoint atomically promotes a stored message into its current native turn.
+export { steerQueuedChatMessage } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';

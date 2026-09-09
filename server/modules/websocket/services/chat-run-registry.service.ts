@@ -98,6 +98,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
 
   const outbound: NormalizedMessage = {
     ...message,
+    ...(typeof message.canSteer === 'boolean' ? { canSteerQueued: message.canSteer } : {}),
     sessionId: run.appSessionId,
     runId: run.id,
     seq: run.lastSeq,

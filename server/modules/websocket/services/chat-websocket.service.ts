@@ -1,8 +1,9 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { WebSocket } from 'ws';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
@@ -20,6 +21,8 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
+import { readObjectRecord } from '@/shared/index.js';
+import type { QueuedSessionMessageRecord } from '@/shared/index.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -170,9 +173,48 @@ async function handleChatSteer(
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies,
 ): Promise<void> {
+  sendJson(ws, await performChatSteer(ws, userId, data, dependencies));
+}
+
+function queuedSnapshot(value: unknown) {
+  const record = readObjectRecord(value);
+  if (!record || typeof record.content !== 'string') return null;
+  return {
+    id: typeof record.id === 'string' ? record.id : null,
+    content: record.content,
+    options: readObjectRecord(record.options) ?? {},
+    attachments: Array.isArray(record.attachments) ? record.attachments
+      : Array.isArray(record.images) ? record.images : [],
+    steerHold: record.steerHold ?? null,
+  };
+}
+
+/**
+ * User's authenticated queue endpoint uses the same ownership/run guards and
+ * native steering as WebSocket clients, but requires an exact queued receipt.
+ * HTTP 404 on older nodes is safe: it cannot accidentally steer while leaving
+ * the original queue waiting to be dispatched.
+ */
+export async function steerQueuedChatMessage(
+  userId: number,
+  input: unknown,
+  dependencies: ChatWebSocketDependencies,
+): Promise<AnyRecord> {
+  const data = readObjectRecord(input) ?? {};
+  return performChatSteer(null, userId, { ...data, queuedMessage: data.queuedMessage ?? null }, dependencies);
+}
+
+async function performChatSteer(
+  ws: WebSocket | null,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+): Promise<AnyRecord> {
   const sessionId = readRequiredSessionId(data);
   const requestId = typeof data.requestId === 'string' ? data.requestId.trim() : '';
   const result = { kind: 'chat_steer_result', sessionId, requestId };
+  let queued: QueuedSessionMessageRecord | null = null;
+  let claimed = false;
   try {
     if (!sessionId || !requestId || requestId.length > 128) {
       throw new AppError('chat.steer requires a sessionId and requestId.', {
@@ -201,9 +243,32 @@ async function handleChatSteer(
         code: 'STEER_UNAVAILABLE', statusCode: 409,
       });
     }
-    const command = typeof data.content === 'string' ? data.content : '';
+    let command = typeof data.content === 'string' ? data.content : '';
     const options = data.options && typeof data.options === 'object' ? data.options : {};
-    const attachments = filterAttachmentsToUploadStore(options.attachments).filter(
+    let attachmentInput = options.attachments;
+    if (Object.hasOwn(data, 'queuedMessage')) {
+      const expected = queuedSnapshot(data.queuedMessage);
+      if (!expected || !Number.isSafeInteger(Number(userId)) || Number(userId) < 1) {
+        throw new AppError('A queued steering request requires a valid owner and queued message.', {
+          code: 'INVALID_STEER_REQUEST', statusCode: 400,
+        });
+      }
+      queued = sessionDraftsDb.getQueuedMessage(Number(userId), sessionId);
+      const stored = queuedSnapshot(queued?.queuedMessage);
+      if (!queued || !stored || !isDeepStrictEqual(stored, expected)) {
+        throw new AppError('This queued message changed or was already sent. The current queue was not modified.', {
+          code: 'STEER_QUEUE_CHANGED', statusCode: 409,
+        });
+      }
+      if (stored.steerHold) {
+        throw new AppError('Check the previous delivery before editing and submitting this message again.', {
+          code: 'STEER_REVIEW_REQUIRED', statusCode: 409,
+        });
+      }
+      command = stored.content;
+      attachmentInput = stored.attachments;
+    }
+    const attachments = filterAttachmentsToUploadStore(attachmentInput).filter(
       (descriptor, index, all) => all.findIndex((candidate) => candidate.path === descriptor.path) === index,
     );
     if (!command.trim() && attachments.length === 0) {
@@ -215,7 +280,15 @@ async function handleChatSteer(
     const files = attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor));
     // Subscribe the requester, but keep the same run, writer, event sequence,
     // model and permissions. Only validated attachment inputs reach the runtime.
-    chatRunRegistry.attachConnection(sessionId, ws);
+    if (ws) chatRunRegistry.attachConnection(sessionId, ws);
+    if (queued) {
+      claimed = sessionDraftsDb.claimQueuedMessage(queued);
+      if (!claimed) {
+        throw new AppError('This queued message changed or was already sent.', {
+          code: 'STEER_QUEUE_CHANGED', statusCode: 409,
+        });
+      }
+    }
     await dependencies.runtime.steer(run.provider, sessionId, command, { images, files });
     // The daemon owns persistence. This accepted echo goes to every watching
     // Codey tab and is replayable without a duplicate optimistic client row.
@@ -229,13 +302,42 @@ async function handleChatSteer(
       // into a refusal that invites resubmitting the same instruction.
       console.warn('[Chat] Accepted steering input could not be echoed:', error instanceof Error ? error.message : String(error));
     }
-    sendJson(ws, { ...result, accepted: true });
+    if (queued) {
+      try {
+        sessionDraftsDb.deleteEmptyDraft(queued.userId, queued.sessionId);
+      } catch {
+        // Native acceptance already happened; housekeeping must not invite a duplicate retry.
+        console.warn('[Chat] Could not clean up the empty queued-message row after acceptance.');
+      }
+    }
+    return { ...result, accepted: true };
   } catch (error) {
-    sendJson(ws, {
+    let queueRestored: boolean | undefined;
+    let queueHeld: boolean | undefined;
+    if (claimed && queued) {
+      const refused = error instanceof AppError
+        && ['STEER_UNAVAILABLE', 'CODEX_DAEMON_RPC_ERROR'].includes(error.code);
+      queueHeld = !refused;
+      const replacement = refused ? queued : {
+        ...queued,
+        claimToken: JSON.stringify({ ...readObjectRecord(queued.queuedMessage), steerHold: 'unconfirmed' }),
+      };
+      // An uncertain native acknowledgement must never become an automatic
+      // second send. Keep it visible for review, without overwriting a newer queue.
+      try {
+        queueRestored = sessionDraftsDb.restoreQueuedMessage(replacement);
+      } catch {
+        queueRestored = false;
+        queueHeld = true;
+        console.error('[Chat] Could not restore the queued message after a failed native append.');
+      }
+    }
+    return {
       ...result, accepted: false,
       code: error instanceof AppError ? error.code : 'STEER_FAILED',
       error: error instanceof Error ? error.message : String(error),
-    });
+      queueRestored, queueHeld,
+    };
   }
 }
 
@@ -563,12 +665,14 @@ function handleChatSubscribe(
     // Pending approvals are tracked under the app session id inside the
     // Claude runtime, so they can be looked up directly.
     const pendingPermissions = dependencies.runtime.getPendingApprovalsForSession(sessionId);
+    const canSteer = isProcessing && Boolean(run && dependencies.runtime.canSteer?.(run.provider, sessionId));
 
     sendJson(ws, {
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
-      canSteer: isProcessing && Boolean(run && dependencies.runtime.canSteer?.(run.provider, sessionId)),
+      canSteer,
+      canSteerQueued: canSteer,
       runId: isProcessing ? run?.id : undefined,
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,

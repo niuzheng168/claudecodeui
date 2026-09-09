@@ -10,6 +10,7 @@ import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState'
 import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import { hydrateUserPreferences } from '@/shared/userSettings';
 import { hydrateChatDrafts } from '@/shared/chatDrafts';
+import { api } from '@/shared/api';
 import type { ChatMessage, PermissionMode, Project } from '@/shared/types';
 
 const query = new URLSearchParams(window.location.search);
@@ -56,8 +57,16 @@ function ComposerCompletionPreview() {
     resolvePermissionModeForProvider: (_provider, requested) => requested as PermissionMode,
     currentProviderModel: 'local-preview-only', currentProviderEffort: 'default',
     isLoading: Boolean(previewRun), canAbortSession: false, tokenBudget: null, sendByCtrlEnter: false,
-    steerMessage: async (_sessionId, content) => {
-      addMessage({ type: 'user', content, timestamp: Date.now() });
+    steerMessage: async (sessionId, content, _attachments, queuedMessage) => {
+      if (!queuedMessage) throw new Error('Only queued preview messages can be appended.');
+      const response = await api.user.steerQueuedDraft(sessionId, {
+        requestId: crypto.randomUUID(), expectedRunId: 'preview-run', queuedMessage,
+      });
+      const result = await response.json();
+      if (!response.ok || result.accepted !== true) throw new Error(result.error || 'Preview append failed');
+      setMessages((previous) => ({
+        ...previous, [sessionId]: [...previous[sessionId], { type: 'user', content, timestamp: Date.now() }].slice(-20),
+      }));
     },
     sendMessage: () => {
       addMessage({ type: 'assistant', content: locale === 'en'
@@ -125,7 +134,7 @@ function ComposerCompletionPreview() {
           <ChatComposer
             pendingPermissionRequests={[]} handlePermissionDecision={() => {}} handleGrantToolPermission={() => ({ success: false })}
             activity={null} isLoading={Boolean(previewRun)} onAbortSession={() => {}}
-            onSteer={previewRun ? composer.handleSteer : undefined} canSteer={previewRun === 'ready'}
+            onSteerQueued={previewRun ? composer.handleSteerQueued : undefined} canSteer={previewRun === 'ready'}
             steerUnavailableReason={previewRun === 'legacy' ? i18n.t('input.steer.upgradeRequired') : undefined}
             isSteering={composer.isSteering} steerError={composer.steerError}
             permissionMode={mode} availablePermissionModes={modes} onSelectPermissionMode={setMode} providerLabel="Codex"

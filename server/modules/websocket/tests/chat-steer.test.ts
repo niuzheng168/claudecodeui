@@ -5,12 +5,14 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { setImmediate as nextTick } from 'node:timers/promises';
 
-import { sessionsDb } from '@/modules/database/index.js';
-import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
+import { sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
+import { handleChatConnection, steerQueuedChatMessage } from '@/modules/websocket/services/chat-websocket.service.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import type { AnyRecord } from '@/shared/types.js';
+import { AppError } from '@/shared/index.js';
+import type { QueuedSessionMessageRecord } from '@/shared/index.js';
 
 function socket() {
   return Object.assign(new EventEmitter(), {
@@ -165,9 +167,156 @@ test('reconnecting clients receive native steering capability only for supported
   await fixture(t, async ({ client, send, runtime }) => {
     await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
     assert.equal(client.frames.at(-1)?.canSteer, true);
+    assert.equal(client.frames.at(-1)?.canSteerQueued, true);
     runtime.canSteer = () => false;
     await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
     assert.equal(client.frames.at(-1)?.canSteer, false);
+    assert.equal(client.frames.at(-1)?.canSteerQueued, false);
+  });
+});
+
+test('live capability events advertise queued promotion on this backend without changing the run token', async (t) => {
+  await fixture(t, async ({ run, observer }) => {
+    run.writer.send({ kind: 'status', provider: 'codex', sessionId: 'native-a', canSteer: true });
+    assert.equal(observer.frames.at(-1)?.canSteerQueued, true);
+    assert.equal(observer.frames.at(-1)?.runId, run.id);
+    run.writer.send({ kind: 'status', provider: 'codex', sessionId: 'native-a', canSteer: false });
+    assert.equal(observer.frames.at(-1)?.canSteerQueued, false);
+  });
+});
+
+function queuedStore(t: TestContext, message: AnyRecord = { id: 'queue-a', content: 'Queued instructions' }) {
+  let stored: QueuedSessionMessageRecord | null = {
+    userId: 1, sessionId: 'session-a', queuedMessage: message, claimToken: JSON.stringify(message),
+  };
+  t.mock.method(sessionDraftsDb, 'getQueuedMessage', (userId: number, sessionId: string) =>
+    stored?.userId === userId && stored?.sessionId === sessionId ? stored : null);
+  const claim = t.mock.method(sessionDraftsDb, 'claimQueuedMessage', (candidate: QueuedSessionMessageRecord) => {
+    if (!stored || stored.claimToken !== candidate.claimToken) return false;
+    stored = null;
+    return true;
+  });
+  const restore = t.mock.method(sessionDraftsDb, 'restoreQueuedMessage', (candidate: QueuedSessionMessageRecord) => {
+    if (stored) return false;
+    stored = { ...candidate, queuedMessage: JSON.parse(candidate.claimToken) };
+    return true;
+  });
+  t.mock.method(sessionDraftsDb, 'deleteEmptyDraft', () => {});
+  return {
+    message, claim, restore, read: () => stored,
+    replace: (next: AnyRecord) => {
+      stored = { userId: 1, sessionId: 'session-a', queuedMessage: next, claimToken: JSON.stringify(next) };
+    },
+  };
+}
+
+test('HTTP promotion claims the queued receipt before awaiting native acceptance, blocking a duplicate request', async (t) => {
+  await fixture(t, async ({ runtime, run, observer, calls }) => {
+    const queue = queuedStore(t);
+    let accept!: () => void;
+    runtime.steer = (...args) => {
+      calls.push(['steer', ...args]);
+      return new Promise<void>((resolve) => { accept = resolve; });
+    };
+    const request = {
+      sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message,
+      content: 'Do not send this textarea draft', options: { model: 'not-the-model' },
+    };
+    const pending = steerQueuedChatMessage(1, request, { runtime: runtime as never });
+    assert.equal(queue.read(), null);
+    assert.equal(queue.claim.mock.callCount(), 1);
+    assert.equal((await steerQueuedChatMessage(1, request, { runtime: runtime as never })).code, 'STEER_QUEUE_CHANGED');
+    assert.deepEqual(calls, [['steer', 'codex', 'session-a', 'Queued instructions', { images: [], files: [] }]]);
+    accept();
+    assert.equal((await pending).accepted, true);
+    assert.equal(queue.restore.mock.callCount(), 0);
+    assert.equal(observer.frames.filter((frame) => frame.role === 'user').length, 1);
+    assert.equal(run.status, 'running');
+  });
+});
+
+test('queued steering validates owner, run and exact queue without claiming stale input', async (t) => {
+  await fixture(t, async ({ runtime, run, calls }) => {
+    const queue = queuedStore(t);
+    const request = { sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message };
+    for (const [userId, overrides, code] of [
+      [2, {}, 'STEER_FORBIDDEN'],
+      [1, { expectedRunId: 'old' }, 'STEER_STALE_RUN'],
+      [1, { queuedMessage: { ...queue.message, id: 'other' } }, 'STEER_QUEUE_CHANGED'],
+      [1, { queuedMessage: { ...queue.message, content: 'different' } }, 'STEER_QUEUE_CHANGED'],
+      [1, { queuedMessage: undefined }, 'INVALID_STEER_REQUEST'],
+    ] as const) {
+      assert.equal((await steerQueuedChatMessage(userId, { ...request, ...overrides }, { runtime: runtime as never })).code, code);
+    }
+    assert.equal(calls.length, 0);
+    assert.equal(queue.claim.mock.callCount(), 0);
+    assert.deepEqual(queue.read()?.queuedMessage, queue.message);
+  });
+});
+
+test('a definite native refusal restores the original queued message without a fallback run', async (t) => {
+  await fixture(t, async ({ runtime, run, observer }) => {
+    const queue = queuedStore(t);
+    runtime.steer = async () => { throw new AppError('Turn no longer accepts input', { code: 'CODEX_DAEMON_RPC_ERROR' }); };
+    const result = await steerQueuedChatMessage(1, {
+      sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message,
+    }, { runtime: runtime as never });
+    assert.equal(result.accepted, false);
+    assert.equal(result.queueRestored, true);
+    assert.equal(result.queueHeld, false);
+    assert.deepEqual(queue.read()?.queuedMessage, queue.message);
+    assert.equal(observer.frames.length, 0);
+    assert.equal(run.status, 'running');
+  });
+});
+
+test('ambiguous native failure restores a held queue that cannot immediately be retried', async (t) => {
+  await fixture(t, async ({ runtime, run, observer }) => {
+    const queue = queuedStore(t);
+    let attempts = 0;
+    runtime.steer = async () => { attempts++; throw new Error('Daemon disconnected before acknowledgement'); };
+    const request = { sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message };
+    const result = await steerQueuedChatMessage(1, request, { runtime: runtime as never });
+    assert.equal(result.queueRestored, true);
+    assert.equal(result.queueHeld, true);
+    const held = { ...queue.message, steerHold: 'unconfirmed' };
+    assert.deepEqual(queue.read()?.queuedMessage, held);
+    assert.equal((await steerQueuedChatMessage(1, { ...request, queuedMessage: held }, { runtime: runtime as never })).code, 'STEER_REVIEW_REQUIRED');
+    assert.equal(attempts, 1);
+    assert.equal(observer.frames.length, 0);
+  });
+});
+
+test('a late native refusal cannot overwrite a queue created on another device', async (t) => {
+  await fixture(t, async ({ runtime, run }) => {
+    const queue = queuedStore(t);
+    let refuse!: (error: Error) => void;
+    runtime.steer = () => new Promise<void>((_resolve, reject) => { refuse = reject; });
+    const pending = steerQueuedChatMessage(1, {
+      sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message,
+    }, { runtime: runtime as never });
+    const next = { id: 'new', content: 'From another device' };
+    queue.replace(next);
+    refuse(new AppError('Refused', { code: 'STEER_UNAVAILABLE' }));
+    assert.equal((await pending).queueRestored, false);
+    assert.deepEqual(queue.read()?.queuedMessage, next);
+  });
+});
+
+test('queued acceptance stays accepted when empty-row housekeeping fails', async (t) => {
+  await fixture(t, async ({ runtime, run, calls }) => {
+    const file = { path: path.join(getGlobalImageAssetsDir(), 'notes.txt'), name: 'notes.txt' };
+    const queue = queuedStore(t, { id: 'q', content: '', attachments: [file], options: { model: 'ignore', permissionMode: 'ignore' } });
+    t.mock.method(sessionDraftsDb, 'deleteEmptyDraft', () => { throw new Error('Disk busy'); });
+    const result = await steerQueuedChatMessage(1, {
+      sessionId: 'session-a', requestId: 'r', expectedRunId: run.id, queuedMessage: queue.message,
+    }, { runtime: runtime as never });
+    assert.equal(result.accepted, true);
+    assert.equal(queue.read(), null);
+    assert.equal(queue.restore.mock.callCount(), 0);
+    assert.deepEqual((calls[0][4] as AnyRecord).images, []);
+    assert.equal((calls[0][4] as AnyRecord).files[0].path, file.path);
+    assert.deepEqual(Object.keys(calls[0][4] as AnyRecord), ['images', 'files']);
   });
 });
 

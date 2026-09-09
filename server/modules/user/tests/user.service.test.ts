@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
+import express from 'express';
+
 import { createUserService } from '../user.service.js';
+import { createUserRouter } from '../user.routes.js';
 
 type UserDependencies = Parameters<typeof createUserService>[0];
 
@@ -148,4 +152,73 @@ test('saveDraft rejects text past the storage limit', () => {
     () => service.saveDraft(5, 'session-1', { text: 'x'.repeat(100_001) }),
     /too long/i,
   );
+});
+
+test('text-only draft saves opt out of replacing the server-owned queue', () => {
+  const saved: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    drafts: { getDrafts: () => [], saveDraft: (...args) => saved.push(args), deleteDraft: () => {} },
+  }));
+  service.saveDraft(5, 'session-1', { text: 'typing', queuedMessage: { content: 'stale snapshot' }, preserveQueuedMessage: true });
+  service.saveDraft(5, 'session-1', { text: '', queuedMessage: null, preserveQueuedMessage: true });
+  assert.deepEqual(saved, [[5, 'session-1', { text: 'typing' }], [5, 'session-1', { text: '' }]]);
+});
+
+test('queued steering delegates with the authenticated user and validated scope, not body overrides', async () => {
+  const calls: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    steerQueuedDraft: async (...args) => { calls.push(args); return { accepted: true }; },
+  }));
+  const queuedMessage = { id: 'queue-1', content: 'append this' };
+  assert.deepEqual(await service.steerQueuedDraft(5, 'session-1', {
+    userId: 99, sessionId: 'forged-session', requestId: 'r', expectedRunId: 'run', queuedMessage,
+  }), { accepted: true });
+  assert.deepEqual(calls, [[5, {
+    userId: 99, sessionId: 'session-1', requestId: 'r', expectedRunId: 'run', queuedMessage,
+  }]]);
+  await assert.rejects(service.steerQueuedDraft(5, '', {}), /scope/i);
+  assert.equal(calls.length, 1);
+});
+
+test('an unconfigured queued transport rejects without mutating the queue', async () => {
+  const service = createUserService(createDependencies());
+  await assert.rejects(service.steerQueuedDraft(5, 'session-1', {}), (error: Error & { code?: string }) => error.code === 'STEER_UNSUPPORTED');
+});
+
+test('POST drafts/steer returns its correlated result and forwards scope validation errors', async (t) => {
+  const calls: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    steerQueuedDraft: async (userId, input) => {
+      calls.push([userId, input]);
+      return { kind: 'chat_steer_result', requestId: 'r', sessionId: 'session-1', accepted: true };
+    },
+  }));
+  const app = express();
+  app.use(express.json(), (request, _response, next) => {
+    Object.assign(request, { user: { id: 5 } });
+    next();
+  });
+  app.use('/api/user', createUserRouter(service));
+  const errors: express.ErrorRequestHandler = (error, _request, response, _next) => {
+    response.status(error.statusCode ?? 500).json({ code: error.code });
+  };
+  app.use(errors);
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const url = `http://127.0.0.1:${address.port}/api/user/drafts/steer`;
+  const response = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope: 'session-1', requestId: 'r', queuedMessage: { id: 'q', content: 'queued' } }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { kind: 'chat_steer_result', requestId: 'r', sessionId: 'session-1', accepted: true });
+  assert.equal(calls[0][0], 5);
+  const invalid = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: '' }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 1);
 });

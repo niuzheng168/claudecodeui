@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,6 +17,7 @@ async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  await writeFile(process.env.DATABASE_PATH, ''); // Never seed an isolated test from a real legacy database.
   await initializeDatabase();
 
   try {
@@ -114,6 +115,19 @@ test('a queued message stays pending while its session is busy', async () => {
     assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, {
       content: 'send after this run',
     });
+  });
+});
+
+test('unconfirmed immediate delivery is held before claim, even after the native run finishes', async (t) => {
+  await withIsolatedDatabase(async (userId) => {
+    const queuedMessage = { id: 'uncertain', content: 'check before retrying', steerHold: 'unconfirmed' };
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
+    const claim = t.mock.method(sessionDraftsDb, 'claimQueuedMessage');
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+    assert.equal(runs.length, 0);
+    assert.equal(claim.mock.callCount(), 0);
+    assert.deepEqual(sessionDraftsDb.getQueuedMessage(userId, SESSION_ID)?.queuedMessage, queuedMessage);
   });
 });
 

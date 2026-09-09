@@ -1,4 +1,5 @@
 import { getConnection } from '@/modules/database/connection.js';
+import type { QueuedSessionMessageRecord } from '@/shared/index.js';
 
 /**
  * One chat scope's unsent state: the text still in the composer, plus the
@@ -17,14 +18,6 @@ type DraftRow = {
   draft_text: string;
   queued_message: string | null;
   updated_at: string;
-};
-
-/** A server-owned queued turn together with the exact stored value used to claim it once. */
-export type QueuedSessionMessageRecord = {
-  userId: number;
-  sessionId: string;
-  queuedMessage: unknown;
-  claimToken: string;
 };
 
 type QueuedMessageRow = {
@@ -96,6 +89,17 @@ export const sessionDraftsDb = {
     }));
   },
 
+  /** WebSocket/user queued steering reads one authenticated owner's exact compare-and-set receipt. */
+  getQueuedMessage(userId: number, sessionId: string): QueuedSessionMessageRecord | null {
+    const row = getConnection().prepare(
+      'SELECT user_id, draft_scope, queued_message FROM session_drafts WHERE user_id = ? AND draft_scope = ? AND queued_message IS NOT NULL',
+    ).get(userId, sessionId) as QueuedMessageRow | undefined;
+    return row ? {
+      userId: row.user_id, sessionId: row.draft_scope,
+      queuedMessage: parseQueuedMessage(row.queued_message), claimToken: row.queued_message,
+    } : null;
+  },
+
   /** Atomically removes a queued turn only if it has not been edited since listing. */
   claimQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
     const result = getConnection()
@@ -108,15 +112,18 @@ export const sessionDraftsDb = {
     return result.changes > 0;
   },
 
-  /** Restores a claim lost to the narrow race where another run starts first. */
-  restoreQueuedMessage(candidate: QueuedSessionMessageRecord): void {
-    getConnection()
+  /** Restores a refused claim without replacing a newer queue, even if an empty draft row was cleaned up. */
+  restoreQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
+    const result = getConnection()
       .prepare(
-        `UPDATE session_drafts
-         SET queued_message = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = ? AND draft_scope = ? AND queued_message IS NULL`
+        `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
+         VALUES (?, ?, '', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, draft_scope) DO UPDATE SET
+           queued_message = excluded.queued_message, updated_at = CURRENT_TIMESTAMP
+         WHERE session_drafts.queued_message IS NULL`
       )
-      .run(candidate.claimToken, candidate.userId, candidate.sessionId);
+      .run(candidate.userId, candidate.sessionId, candidate.claimToken);
+    return result.changes > 0;
   },
 
   /** Removes the placeholder row left after its last queued turn is claimed. */
@@ -138,9 +145,22 @@ export const sessionDraftsDb = {
   saveDraft(
     userId: number,
     scope: string,
-    draft: { text: string; queuedMessage: unknown | null }
+    draft: { text: string; queuedMessage?: unknown | null }
   ): void {
     const db = getConnection();
+
+    // Autosaving textarea text must not recreate a claimed queue or erase a
+    // queued message submitted from another device.
+    if (!Object.hasOwn(draft, 'queuedMessage')) {
+      db.prepare(
+        `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
+         VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, draft_scope) DO UPDATE SET
+           draft_text = excluded.draft_text, updated_at = CURRENT_TIMESTAMP`,
+      ).run(userId, scope, draft.text);
+      sessionDraftsDb.deleteEmptyDraft(userId, scope);
+      return;
+    }
 
     if (!draft.text && draft.queuedMessage === null) {
       db.prepare('DELETE FROM session_drafts WHERE user_id = ? AND draft_scope = ?')

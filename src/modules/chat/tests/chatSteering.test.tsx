@@ -10,9 +10,11 @@ const mocks = vi.hoisted(() => ({
   connected: true,
   listeners: new Set<(event: ServerEvent) => void>(),
   send: vi.fn(),
+  steerQueued: vi.fn(),
   t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.t }) }));
+vi.mock('@/shared/api', () => ({ api: { user: { steerQueuedDraft: mocks.steerQueued } } }));
 vi.mock('@/shared/context/WebSocketContext', () => ({
   useWebSocket: () => ({
     isConnected: mocks.connected,
@@ -214,4 +216,82 @@ test('uploads keep the original run token even if a newer turn starts before sub
   });
   await rejection;
   expect(mocks.send).toHaveBeenCalledTimes(1);
+});
+
+test('queued promotion needs its own negotiated capability, not just native steering', async () => {
+  const view = activeSteering();
+  expect(view.result.current.canSteerQueued).toBe(false);
+  expect(view.result.current.queuedUnavailableReason).toBe('input.steer.upgradeRequired');
+  await expect(view.result.current.steerMessage('a', 'queued', [], { id: 'q', content: 'queued' })).rejects.toThrow('upgradeRequired');
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(mocks.steerQueued).not.toHaveBeenCalled();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  expect(view.result.current.canSteerQueued).toBe(true);
+  expect(view.result.current.queuedUnavailableReason).toBeNull();
+});
+
+test('queued promotion uses the authenticated HTTP receipt and the originally captured run, never chat.send', async () => {
+  mocks.steerQueued.mockImplementation(async (scope, request) => new Response(JSON.stringify({
+    kind: 'chat_steer_result', sessionId: scope, requestId: request.requestId, accepted: true,
+  })));
+  const view = activeSteering();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  const steer = view.result.current.steerMessage;
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-new' });
+  const queuedMessage = { id: 'q', content: 'Queued text', attachments: [{ name: 'notes.txt' }] };
+  await steer('a', queuedMessage.content, queuedMessage.attachments, queuedMessage);
+  expect(mocks.steerQueued).toHaveBeenCalledWith('a', {
+    requestId: expect.any(String), expectedRunId: 'run-a', queuedMessage,
+  }, expect.any(AbortSignal));
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+test.each([404, 501])('an older HTTP endpoint (%i) leaves the queue alone with no unsafe WS fallback', async (status) => {
+  mocks.steerQueued.mockResolvedValue(new Response('{}', { status }));
+  const view = activeSteering();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  await expect(view.result.current.steerMessage('a', 'queued', [], { content: 'queued' })).rejects.toThrow('upgradeRequired');
+  expect(mocks.steerQueued).toHaveBeenCalledOnce();
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+test('queued refusal preserves native failure metadata for review rather than allowing auto-retry', async () => {
+  mocks.steerQueued.mockImplementation(async (scope, request) => new Response(JSON.stringify({
+    sessionId: scope, requestId: request.requestId, accepted: false, queueHeld: true, code: 'TIMEOUT',
+  })));
+  const view = activeSteering();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  await expect(view.result.current.steerMessage('a', 'queued', [], { content: 'queued' })).rejects.toMatchObject({
+    queueHeld: true, message: 'input.queue.reviewHint',
+  });
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+test('a queued HTTP timeout aborts only the request and ignores a late response', async () => {
+  vi.useFakeTimers();
+  let respond!: (response: Response) => void;
+  mocks.steerQueued.mockImplementation(() => new Promise((resolve) => { respond = resolve; }));
+  const view = activeSteering();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  const pending = view.result.current.steerMessage('a', 'queued', [], { content: 'queued' });
+  const rejection = expect(pending).rejects.toMatchObject({ queueHeld: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  await rejection;
+  expect(mocks.steerQueued.mock.calls[0][2].aborted).toBe(true);
+  respond(new Response(JSON.stringify({
+    sessionId: 'a', requestId: mocks.steerQueued.mock.calls[0][1].requestId, accepted: true,
+  })));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(mocks.steerQueued).toHaveBeenCalledOnce();
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+test('a mismatched HTTP acknowledgement is unconfirmed rather than consuming another queue', async () => {
+  mocks.steerQueued.mockResolvedValue(new Response(JSON.stringify({
+    sessionId: 'other', requestId: 'other', accepted: true,
+  })));
+  const view = activeSteering();
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  await expect(view.result.current.steerMessage('a', 'queued', [], { content: 'queued' })).rejects.toMatchObject({ queueHeld: true });
+  expect(mocks.send).not.toHaveBeenCalled();
 });

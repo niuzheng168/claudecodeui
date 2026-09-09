@@ -133,3 +133,53 @@ test('deleteDraft removes only the named scope', async () => {
     );
   });
 });
+
+test('queue claims compare both the owner and exact receipt, including identical-text replacements', async () => {
+  await withDatabase(() => {
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'next draft', queuedMessage: { id: 'old', content: 'same' } });
+    const receipt = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    assert.equal(sessionDraftsDb.getQueuedMessage(USER_ID + 1, 'session-a'), null);
+    assert.equal(sessionDraftsDb.claimQueuedMessage({ ...receipt, userId: USER_ID + 1 }), false);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'next draft', queuedMessage: { id: 'new', content: 'same' } });
+    assert.equal(sessionDraftsDb.claimQueuedMessage(receipt), false);
+    const next = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    assert.equal(sessionDraftsDb.claimQueuedMessage(next), true);
+    assert.equal(sessionDraftsDb.claimQueuedMessage(next), false);
+    assert.equal(sessionDraftsDb.getDrafts(USER_ID)[0].text, 'next draft');
+    assert.equal(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a'), null);
+  });
+});
+
+test('text-only autosaves neither resurrect claimed queues nor erase another device queue', async () => {
+  await withDatabase(() => {
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '', queuedMessage: { id: 'q', content: 'first' } });
+    sessionDraftsDb.claimQueuedMessage(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'still typing' });
+    assert.equal(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a'), null);
+    const replacement = { id: 'other-device', content: 'later' };
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '', queuedMessage: replacement });
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '' });
+    assert.deepEqual(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')?.queuedMessage, replacement);
+    sessionDraftsDb.claimQueuedMessage(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '' });
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID), []);
+  });
+});
+
+test('restoring a failed claim preserves new text, recreates cleaned rows and never overwrites a newer queue', async () => {
+  await withDatabase(() => {
+    const original = { id: 'q', content: 'first' };
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '', queuedMessage: original });
+    const receipt = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    sessionDraftsDb.claimQueuedMessage(receipt);
+    sessionDraftsDb.deleteEmptyDraft(USER_ID, 'session-a');
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(receipt), true);
+    sessionDraftsDb.claimQueuedMessage(receipt);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'typing meanwhile' });
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(receipt), true);
+    assert.equal(sessionDraftsDb.getDrafts(USER_ID)[0].text, 'typing meanwhile');
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'newer', queuedMessage: { id: 'new', content: 'new' } });
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(receipt), false);
+    assert.deepEqual(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')?.queuedMessage, { id: 'new', content: 'new' });
+  });
+});
