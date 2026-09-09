@@ -2,9 +2,10 @@ import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index
 import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
+import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { codexRuntime as sdkRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
-import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
+import { assertCodexDesktopSelection, readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import type { ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import {
   AppError, createCompleteMessage, createNormalizedMessage, readObjectRecord,
@@ -18,6 +19,7 @@ type SharedRun = {
   aborted: boolean;
   finished: boolean;
   workingDirectory: string;
+  desktopQueue?: CodexNativeQueueRun;
 };
 
 async function connectRuntimeClient(): Promise<ICodexRpcClient | null> {
@@ -161,6 +163,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
   async abort(sessionId: string): Promise<boolean> {
     const run = this.runs.get(sessionId);
+    if (run?.desktopQueue) {
+      const cancelled = await run.desktopQueue.cancel();
+      if (cancelled) run.aborted = true;
+      return cancelled;
+    }
     if (!run || !run.client) {
       const stopped = await this.fallback.abort(sessionId);
       if (run) run.aborted = true;
@@ -176,14 +183,14 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
   canSteer(sessionId: string): boolean {
     const run = this.runs.get(sessionId);
-    return Boolean(run?.client && run.threadId && run.turnId && !run.aborted && !run.finished);
+    return Boolean(run?.client && !run.desktopQueue && run.threadId && run.turnId && !run.aborted && !run.finished);
   }
 
   async steer(sessionId: string, command: string, options: AnyRecord): Promise<void> {
     // Capture the owned turn before any async work. A completion/new run must
     // never redirect this prompt into another turn or another desktop client.
     const run = this.runs.get(sessionId);
-    if (!run?.client || !run.threadId || !run.turnId || run.aborted || run.finished) {
+    if (!run?.client || run.desktopQueue || !run.threadId || !run.turnId || run.aborted || run.finished) {
       throw new AppError('This turn cannot be steered now. Keep the draft or queue it for the next turn.', {
         code: 'STEER_UNAVAILABLE', statusCode: 409,
       });
@@ -266,7 +273,22 @@ export class CodexSharedRuntime implements IProviderRuntime {
       // Attach without changing permissions: the thread may still have an
       // active desktop turn. Apply Codey's selection only at turn/start,
       // after the busy check, alongside the user's model/effort selection.
-      const resumed = await client.request('thread/resume', { threadId: run.threadId, excludeTurns: true });
+      let resumed: AnyRecord;
+      try {
+        resumed = await client.request('thread/resume', { threadId: run.threadId, excludeTurns: true });
+      } catch (error) {
+        const record = readObjectRecord(error);
+        // Only the exact native refusal proves that this prompt has not been
+        // submitted. Never queue after an ambiguous turn/start/network failure.
+        if (process.platform === 'win32' && client.ownsProcess
+          && record?.code === 'CODEX_STDIO_RPC_ERROR'
+          && error instanceof Error
+          && error.message === `thread ${run.threadId} already has an active writer`) {
+          if (!run.aborted) await this.runThroughDesktopQueue(run, input, options, writer, context);
+          return;
+        }
+        throw error;
+      }
       if (resumed.thread?.id !== run.threadId) {
         throw new Error('Codex did not attach the requested thread. No prompt was submitted.');
       }
@@ -404,6 +426,47 @@ export class CodexSharedRuntime implements IProviderRuntime {
       offDisconnect();
       offRequest();
       if (flushTimer) clearTimeout(flushTimer);
+    }
+  }
+
+  private async runThroughDesktopQueue(
+    run: SharedRun, input: AnyRecord[], options: AnyRecord,
+    writer: ProviderRuntimeWriter, context: ProviderRuntimeContext,
+  ): Promise<void> {
+    const sessionId = String(options.sessionId);
+    await assertCodexDesktopSelection(run.threadId!, { ...options, cwd: run.workingDirectory });
+    if (run.aborted) return;
+    send(writer, createNormalizedMessage({
+      provider: 'codex', sessionId, kind: 'task_notification', status: 'info',
+      summary: 'Codex Desktop owns this session. Sending through its native queue, without taking its writer. This turn uses the desktop session’s model and permissions; desktop tool approvals stay there.',
+    }));
+    run.desktopQueue = new CodexNativeQueueRun(run.client!, run.threadId!, {
+      started: (turnId) => {
+        run.turnId = turnId;
+        send(writer, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'status', canSteer: false, canInterrupt: false,
+        }));
+      },
+      item: (item, turnId) => {
+        for (const raw of projectCodexDaemonItem(item, turnId, new Date().toISOString())) {
+          for (const message of context.normalizeMessage(raw, run.threadId)) send(writer, message);
+        }
+      },
+    });
+    const result = await run.desktopQueue.run(input);
+    run.finished = true;
+    const turn = result.turn;
+    if (turn?.status === 'failed') throw new Error(turn.error?.message || 'The desktop Codex turn failed.');
+    send(writer, createCompleteMessage({
+      provider: 'codex', sessionId, actualSessionId: run.threadId,
+      exitCode: turn?.status === 'completed' ? 0 : 1,
+      aborted: result.cancelled || turn?.status === 'interrupted',
+    }));
+    if (turn?.status === 'completed') {
+      (notifyRunStopped as (input: AnyRecord) => void)({
+        userId: writer.userId ?? null, provider: 'codex', sessionId,
+        sessionName: options.sessionSummary, stopReason: 'completed',
+      });
     }
   }
 }
