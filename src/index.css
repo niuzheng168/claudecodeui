@@ -581,18 +581,21 @@
     display: none;
   }
 
+  @container (max-width: 360px) {
+    /* Use the narrow model button's space for its label rather than a decorative dropdown arrow. */
+    .composer-primary > [data-slot="composer-model"] > svg {
+      display: none;
+    }
+  }
+
   @container (min-width: 520px) {
     .composer-shortcut-hint {
       display: block;
     }
-  }
 
-  @container (max-width: 360px) {
-    .composer-primary {
-      flex-wrap: wrap;
-    }
-    .composer-primary > .composer-actions {
-      flex-basis: 100%;
+    /* Keep the natural model label width on roomy panes; smaller panes share space with the tools. */
+    .composer-primary > [data-slot="composer-model"] {
+      flex: 0 1 auto;
     }
   }
 

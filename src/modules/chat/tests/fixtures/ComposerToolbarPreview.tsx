@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createInstance } from 'i18next';
 import { I18nextProvider } from 'react-i18next';
+import { ChevronDown } from 'lucide-react';
 
 import '@/index.css';
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
@@ -79,6 +80,11 @@ function ComposerToolbarPreview() {
               placeholder={locale === 'zh-CN' ? '输入消息，或输入 / 使用命令…' : 'Message Codex, or type / for commands…'} />
           </PromptInputBody>
           <ComposerToolbar onAttachFiles={() => record('attach')}
+            collapseControl={<button type="button" onClick={() => record('collapse')}
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1 text-[11px] text-muted-foreground md:hidden">
+              <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+              {translations.t('composer.collapseInput')}
+            </button>}
             completionControl={<ComposerCompletionControl configured ready preferences={completionPreferences}
               onPreferenceChange={(patch) => setCompletionPreferences((value) => ({ ...value, ...patch }))} />}
             voiceControl={<ComposerVoiceControl state={voiceState} disabled={false}
@@ -103,11 +109,11 @@ function ComposerToolbarPreview() {
               onCancel={() => { record('cancel-rewrite'); setRewriteBusy(false); }}
               onUndo={() => { if (rewriteSnapshot) { record('undo-rewrite'); setInput(rewriteSnapshot.original); } }}
               onRestore={() => { if (rewriteSnapshot) { record('restore-rewrite'); setInput(rewriteSnapshot.rewritten); } }} />}
-            modelControl={<ComposerModelMenu effort={effort} effortOptions={['low', 'medium', 'high', 'max'].map((value) => ({ value }))}
+            modelControl={<ComposerModelMenu effort={effort} effortOptions={params.get('model') === 'none' ? [] : ['low', 'medium', 'high', 'max'].map((value) => ({ value }))}
               onSelectEffort={(value) => { setEffort(value); record(`effort:${value}`); }}
-              model="gpt-6-astra" modelOptions={[{ value: 'gpt-6-astra', label: modelLabel }]}
+              model="gpt-6-astra" modelOptions={params.get('model') === 'none' ? [] : [{ value: 'gpt-6-astra', label: modelLabel }]}
               onSelectModel={(value) => record(`model:${value}`)} modelsLoading={false} />}
-            permissionControl={<ComposerPermissionMenu permissionMode={permission} permissionModes={['default', 'plan', 'acceptEdits', 'bypassPermissions']}
+            permissionControl={<ComposerPermissionMenu permissionMode={permission} permissionModes={params.get('permissions') === 'none' ? [] : ['default', 'plan', 'acceptEdits', 'bypassPermissions']}
               providerLabel="Codex" onSelectPermissionMode={(value) => { setPermission(value); record(`permission:${value}`); }} />}
             submitControl={<PromptInputSubmit aria-label={locale === 'zh-CN' ? '发送' : 'Send'}
               disabled={!input.trim()} className="h-9 w-9" />}

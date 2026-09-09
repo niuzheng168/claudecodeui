@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { ComposerToolbar } from '@/modules/chat/composer/ComposerToolbar';
 import { ComposerCompletionControl } from '@/modules/chat/composer/ComposerCompletionControl';
 import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceControl';
+import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
 import { PromptInput, PromptInputSubmit } from '@/modules/chat/composer/PromptInput';
@@ -46,11 +47,14 @@ afterEach(() => {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalViewport.height });
 });
 
-function fixture({ hasInput = false, state = 'idle', error = null }: { hasInput?: boolean; state?: VoiceInputState; error?: string | null } = {}) {
+function fixture({ hasInput = false, state = 'idle', error = null, rewritten = false, hasModelOptions = true }: {
+  hasInput?: boolean; state?: VoiceInputState; error?: string | null; rewritten?: boolean; hasModelOptions?: boolean;
+} = {}) {
   const callbacks = {
     attach: vi.fn(), mic: vi.fn(), cancel: vi.fn(), voiceChange: vi.fn(), refresh: vi.fn(),
     tokens: vi.fn(), commands: vi.fn(), clear: vi.fn(), schedule: vi.fn(), model: vi.fn(),
     effort: vi.fn(), permission: vi.fn(), submit: vi.fn(), collapse: vi.fn(),
+    rewrite: vi.fn(), cancelRewrite: vi.fn(), undoRewrite: vi.fn(), restoreRewrite: vi.fn(),
   };
   const result = render(
     <PromptInput onSubmit={(event) => { event.preventDefault(); callbacks.submit(); }}>
@@ -62,12 +66,16 @@ function fixture({ hasInput = false, state = 'idle', error = null }: { hasInput?
         voiceControl={<ComposerVoiceControl state={state} disabled={false} onToggle={callbacks.mic} onCancel={callbacks.cancel}
           managed={{ config, preferences: { provider: 'azure-speech', language: 'auto' }, onChange: callbacks.voiceChange,
             onRefresh: callbacks.refresh, loadFailed: false }} />}
-        modelControl={<ComposerModelMenu effort="max" effortOptions={[{ value: 'high' }, { value: 'max' }]}
-          onSelectEffort={callbacks.effort} model="gpt-6-astra" modelOptions={[{ value: 'gpt-6-astra', label: fullModelLabel }]}
+        rewriteControl={<VoiceRewriteControl busy={false} canRewrite={hasInput && state === 'idle'}
+          canUndo={rewritten && state === 'idle'} canRestore={false} hasPreviousRewrite={rewritten} configured
+          onRewrite={callbacks.rewrite} onCancel={callbacks.cancelRewrite}
+          onUndo={callbacks.undoRewrite} onRestore={callbacks.restoreRewrite} />}
+        modelControl={<ComposerModelMenu effort="max" effortOptions={hasModelOptions ? [{ value: 'high' }, { value: 'max' }] : []}
+          onSelectEffort={callbacks.effort} model="gpt-6-astra" modelOptions={hasModelOptions ? [{ value: 'gpt-6-astra', label: fullModelLabel }] : []}
           onSelectModel={callbacks.model} modelsLoading={false} />}
         permissionControl={<ComposerPermissionMenu permissionMode="default" permissionModes={['default', 'plan']}
           providerLabel="Codex" onSelectPermissionMode={callbacks.permission} />}
-        submitControl={<PromptInputSubmit aria-label="Send" disabled={!hasInput} />}
+        submitControl={<PromptInputSubmit aria-label="Send" disabled={!hasInput} className="h-9 w-9" />}
         tokenUsage={{ used: 12345 }} onShowTokenUsage={callbacks.tokens}
         commandsCount={12} onShowCommands={callbacks.commands} hasInput={hasInput} onClearInput={callbacks.clear}
         canSchedule={hasInput} onSchedule={callbacks.schedule} submitHint="Enter to send" hideHint={false}
@@ -103,6 +111,81 @@ test('completion shares the attachment tool row instead of reserving a settings 
   expect(f.container.querySelector('[data-slot="composer-primary"]')?.contains(completion)).toBe(true);
   expect(completion.textContent).toBe('');
   expect(screen.queryByLabelText('completion.enable')).toBeNull();
+});
+
+test.each([
+  { state: 'idle' as const, rewritten: false },
+  { state: 'recording' as const, rewritten: false },
+  { state: 'idle' as const, rewritten: true },
+])('only tools can scroll while model, permissions and send stay in the non-wrapping row (%j)', (options) => {
+  const f = fixture({ hasInput: true, ...options });
+  const primary = f.container.querySelector('[data-slot="composer-primary"]')!;
+  const tools = primary.querySelector('[data-slot="prompt-input-tools"]')!;
+  expect(primary.classList.contains('flex-nowrap')).toBe(true);
+  expect(tools.classList.contains('min-w-0')).toBe(true);
+  expect(tools.classList.contains('mr-auto')).toBe(true);
+  expect(tools.classList.contains('overflow-x-auto')).toBe(true);
+  expect(tools.classList.contains('[&>*]:shrink-0')).toBe(true);
+
+  const model = screen.getByRole('button', { name: /Select model and reasoning effort/ });
+  for (const button of [model, screen.getByRole('button', { name: /How should Codex/ }), screen.getByRole('button', { name: 'Send' })]) {
+    expect(button.parentElement).toBe(primary);
+    expect(tools.contains(button)).toBe(false);
+  }
+  expect(model.getAttribute('data-slot')).toBe('composer-model');
+  expect(model.getAttribute('title')).toContain(fullModelLabel);
+  if (options.state === 'recording') {
+    expect(tools.contains(screen.getByRole('button', { name: 'Cancel voice input' }))).toBe(true);
+  }
+  if (options.rewritten) {
+    const undo = screen.getByRole('button', { name: 'voice.rewrite.undo' });
+    expect(tools.contains(undo)).toBe(true);
+    fireEvent.click(undo);
+    expect(f.callbacks.undoRewrite).toHaveBeenCalledOnce();
+    expect(f.callbacks.submit).not.toHaveBeenCalled();
+  }
+});
+
+test('the tools still push permissions and send to the end when no model control is available', () => {
+  const f = fixture({ hasInput: true, hasModelOptions: false });
+  const primary = f.container.querySelector('[data-slot="composer-primary"]')!;
+  const tools = primary.querySelector('[data-slot="prompt-input-tools"]')!;
+  expect(screen.queryByRole('button', { name: /Select model and reasoning effort/ })).toBeNull();
+  expect(tools.classList.contains('mr-auto')).toBe(true);
+  expect(primary.lastElementChild).toBe(screen.getByRole('button', { name: 'Send' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect(f.callbacks.submit).toHaveBeenCalledOnce();
+});
+
+test.each([
+  { edge: 'right', left: 84, initialScroll: 0, expectedScroll: 8 },
+  { edge: 'left', left: 0, initialScroll: 40, expectedScroll: 28 },
+  { edge: 'already visible', left: 30, initialScroll: 40, expectedScroll: 40 },
+])('keyboard focus reveals the whole tool and its focus ring at the $edge edge', ({ left, initialScroll, expectedScroll }) => {
+  const f = fixture();
+  const tools = f.container.querySelector<HTMLDivElement>('[data-slot="prompt-input-tools"]')!;
+  Object.defineProperties(tools, { clientWidth: { value: 100 }, scrollWidth: { value: 220 } });
+  vi.spyOn(tools, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 100, 100, 40));
+  tools.scrollLeft = initialScroll;
+  const more = screen.getByRole('button', { name: 'More tools' });
+  vi.spyOn(more, 'getBoundingClientRect').mockReturnValue(new DOMRect(left, 104, 32, 32));
+  fireEvent.focus(more);
+  expect(tools.scrollLeft).toBe(expectedScroll);
+  expect(f.callbacks.submit).not.toHaveBeenCalled();
+});
+
+test('focusing a portalled tools menu does not move the strip underneath it', async () => {
+  const f = fixture();
+  const tools = f.container.querySelector<HTMLDivElement>('[data-slot="prompt-input-tools"]')!;
+  Object.defineProperties(tools, { clientWidth: { value: 100 }, scrollWidth: { value: 220 } });
+  const measure = vi.spyOn(tools, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 100, 100, 40));
+  tools.scrollLeft = 40;
+  fireEvent.click(screen.getByRole('button', { name: 'More tools' }));
+  const command = screen.getByRole('menuitem', { name: /Show all commands/ });
+  await waitFor(() => expect(document.activeElement).toBe(command));
+  expect(tools.contains(command)).toBe(false);
+  expect(tools.scrollLeft).toBe(40);
+  expect(measure).not.toHaveBeenCalled();
 });
 
 test('collapse shares the token status row without crowding the primary actions or submitting', () => {
