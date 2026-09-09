@@ -8,6 +8,7 @@ import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
 
 type Props = {
   onAttachFiles: () => void;
+  collapseControl?: ReactNode;
   completionControl?: ReactNode;
   voiceControl?: ReactNode;
   rewriteControl?: ReactNode;
@@ -33,7 +34,7 @@ type Props = {
 export function ComposerToolbar({
   onAttachFiles, completionControl, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
   tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
-  canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError,
+  canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError, collapseControl,
 }: Props) {
   const { t } = useTranslation('chat');
   return (
@@ -71,6 +72,7 @@ export function ComposerToolbar({
             {submitHint}
           </span>
         )}
+        {collapseControl}
       </div>
     </PromptInputFooter>
   );
