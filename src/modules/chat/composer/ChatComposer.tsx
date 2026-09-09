@@ -356,6 +356,13 @@ export default function ChatComposer({
     replaceDraft: replaceCompletionDraft,
   });
 
+  const queuedSteerUnavailableReason = !canSteer
+    ? steerUnavailableReason
+    : voiceState !== 'idle'
+      ? t('input.steer.voiceBusy')
+      : rewrite.busy
+        ? t('input.steer.rewriteBusy')
+        : null;
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
@@ -427,7 +434,7 @@ export default function ChatComposer({
           onDelete={onDeleteQueuedDraft}
           onSteer={isLoading && !isEditingSentMessage ? onSteerQueued : undefined}
           canSteer={canSteer && voiceState === 'idle' && !rewrite.busy}
-          steerUnavailableReason={steerUnavailableReason}
+          steerUnavailableReason={queuedSteerUnavailableReason}
           isSteering={isSteering}
           steerError={steerError}
           held={queuedDraft.steerHold === 'unconfirmed'}

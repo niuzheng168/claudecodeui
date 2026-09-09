@@ -1,8 +1,9 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { useChatSteering } from '@/modules/chat/hooks/useChatSteering';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
+import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import type { ServerEvent } from '@/shared/types';
 
@@ -228,6 +229,40 @@ test('queued promotion needs its own negotiated capability, not just native stee
   emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
   expect(view.result.current.canSteerQueued).toBe(true);
   expect(view.result.current.queuedUnavailableReason).toBeNull();
+});
+
+test('native-only nodes show the queue upgrade requirement without a hover or unsafe fallback', async () => {
+  const receipt = { id: 'queued-1', content: 'A queued instruction', attachments: [] };
+  let submission: Promise<void> | undefined;
+  mocks.steerQueued.mockImplementation(async (scope, request) => new Response(JSON.stringify({
+    kind: 'chat_steer_result', sessionId: scope, requestId: request.requestId, accepted: true,
+  })));
+  function QueuedSteeringCard() {
+    const steering = useChatSteering('a');
+    return (
+      <QueuedMessageCard content={receipt.content} onEdit={() => {}} onDelete={() => {}}
+        canSteer={steering.canSteerQueued} steerUnavailableReason={steering.queuedUnavailableReason}
+        onSteer={() => { submission = steering.steerMessage('a', receipt.content, [], receipt); }} />
+    );
+  }
+  render(<QueuedSteeringCard />);
+  // Matches the running node: native steering exists, but atomic queued promotion does not.
+  emit({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, canSteer: true, runId: 'run-a' });
+  const button = screen.getByRole('button', { name: 'input.steer.send' }) as HTMLButtonElement;
+  const explanation = screen.getByText('input.steer.upgradeRequired');
+  expect(button.disabled).toBe(true);
+  expect(button.getAttribute('aria-describedby')).toBe(explanation.id);
+  fireEvent.click(button);
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(mocks.steerQueued).not.toHaveBeenCalled();
+
+  emit({ kind: 'status', sessionId: 'a', canSteer: true, canSteerQueued: true, runId: 'run-a' });
+  expect(button.disabled).toBe(false);
+  expect(screen.queryByText('input.steer.upgradeRequired')).toBeNull();
+  fireEvent.click(button);
+  await act(async () => { await submission; });
+  expect(mocks.steerQueued).toHaveBeenCalledOnce();
+  expect(mocks.send).not.toHaveBeenCalled();
 });
 
 test('queued promotion uses the authenticated HTTP receipt and the originally captured run, never chat.send', async () => {

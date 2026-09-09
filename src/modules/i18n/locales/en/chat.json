@@ -211,6 +211,8 @@
       "checking": "Checking whether the current run can accept instructions now…",
       "unavailable": "This runtime cannot accept instructions now. You can still queue the message.",
       "upgradeRequired": "This node's backend is out of date. Update the node to enable Send now.",
+      "voiceBusy": "Finish or cancel voice input before appending the queued message.",
+      "rewriteBusy": "Finish or cancel voice rewriting before appending the queued message.",
       "failed": "Queued append failed",
       "pending": "A correction is already being submitted.",
       "disconnected": "Not connected. Reconnect before sending a correction.",
