@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import WebSocket from 'ws';
 
-import type { AnyRecord } from '@/shared/types.js';
-import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/utils.js';
+import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
+import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/index.js';
 
 type PendingRequest = {
   resolve(value: AnyRecord): void;
@@ -18,7 +18,7 @@ type PendingRequest = {
  * that already owns desktop threads. Never starts/stops a daemon, modifies its
  * database, removes a writer lock, or retries a submitted turn.
  */
-export class CodexDaemonClient {
+export class CodexDaemonClient implements ICodexRpcClient {
   private nextId = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notifications = new Set<(method: string, params: AnyRecord) => void>();

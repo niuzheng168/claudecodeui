@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider } from '@/shared/index.js';
 
 /**
  * Static, backend-owned description of what one provider integration supports.
@@ -39,7 +39,7 @@ type ProviderCapabilities = {
 /**
  * The capability matrix mirrors what each runtime actually implements today:
  * - permission modes match the option sets accepted by each CLI/SDK.
- * - only the Claude SDK integration surfaces interactive permission requests.
+ * - Claude and the explicitly configured Windows Codex runtime surface approvals.
  * - Cursor has no token usage endpoint support (its store.db has no usage rows).
  */
 const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
@@ -111,10 +111,13 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
  */
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
-    return PROVIDER_CAPABILITIES[provider];
+    const value = PROVIDER_CAPABILITIES[provider];
+    return provider === 'codex' && process.platform === 'win32' && process.env.CODEY_CODEX_RUNTIME_TRANSPORT === 'stdio'
+      ? { ...value, supportsPermissionRequests: true } : value;
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {
-    return Object.values(PROVIDER_CAPABILITIES);
+    return Object.keys(PROVIDER_CAPABILITIES).map((provider) =>
+      this.getProviderCapabilities(provider as LLMProvider));
   },
 };

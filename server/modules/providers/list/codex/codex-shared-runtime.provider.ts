@@ -1,23 +1,37 @@
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
+import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { codexRuntime as sdkRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
-import { appendFilesInputTag, buildCodexInputItems } from '@/shared/image-attachments.js';
-import type { IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/types.js';
+import type { ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import {
   AppError, createCompleteMessage, createNormalizedMessage, readObjectRecord,
-} from '@/shared/utils.js';
+  appendFilesInputTag, buildCodexInputItems,
+} from '@/shared/index.js';
 
 type SharedRun = {
-  client: CodexDaemonClient | null;
+  client: ICodexRpcClient | null;
   threadId: string | null;
   turnId: string | null;
   aborted: boolean;
   finished: boolean;
   workingDirectory: string;
 };
+
+async function connectRuntimeClient(): Promise<ICodexRpcClient | null> {
+  const transport = process.env.CODEY_CODEX_RUNTIME_TRANSPORT;
+  if (transport !== undefined && transport !== '') {
+    if (transport !== 'stdio' || process.platform !== 'win32' || process.env.CODEY_CODEX_DAEMON_SOCKET) {
+      throw new AppError('The configured Codex execution transport is invalid or ambiguous; no alternate runtime was started.', {
+        code: 'CODEX_RUNTIME_TRANSPORT_INVALID', statusCode: 503,
+      });
+    }
+    return CodexStdioClient.connect();
+  }
+  return CodexDaemonClient.connect();
+}
 
 function describeResumeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -38,14 +52,19 @@ function send(writer: ProviderRuntimeWriter, message: unknown): void {
 }
 
 /**
- * Used by CodexProvider to create and continue threads through the existing
- * desktop owner. Only legacy installations without a daemon retain the SDK
- * adapter. Once a daemon request is attempted, there is no exec fallback.
+ * Used by CodexProvider to run through the existing Unix owner, or the reviewed
+ * Windows stdio runtime. Writer conflicts fail closed; no desktop process or
+ * lock is stopped/removed. Once native RPC is selected, there is no exec fallback.
  */
 export class CodexSharedRuntime implements IProviderRuntime {
   private readonly runs = new Map<string, SharedRun>();
+  private readonly ownedPermissions = new CodexStdioPermissions();
+  readonly permissions = this.ownedPermissions.gateway;
 
-  constructor(private readonly fallback: IProviderRuntime = sdkRuntime) {}
+  constructor(
+    private readonly fallback: IProviderRuntime = sdkRuntime,
+    private readonly connect: () => Promise<ICodexRpcClient | null> = connectRuntimeClient,
+  ) {}
 
   async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
     const sessionId = typeof options.sessionId === 'string' ? options.sessionId : undefined;
@@ -67,8 +86,19 @@ export class CodexSharedRuntime implements IProviderRuntime {
       workingDirectory: options.cwd || options.projectPath || process.cwd(),
     };
     this.runs.set(sessionId, run);
+    let deferredComplete: AnyRecord | null = null;
+    const output: ProviderRuntimeWriter = {
+      userId: writer.userId, isSSEStreamWriter: writer.isSSEStreamWriter,
+      isWebSocketWriter: writer.isWebSocketWriter, setSessionId: writer.setSessionId?.bind(writer),
+      send: (value) => {
+        let record: AnyRecord | null = null;
+        try { record = readObjectRecord(typeof value === 'string' ? JSON.parse(value) : value); } catch { /* Forward non-JSON unchanged. */ }
+        if (run.client?.ownsProcess && record?.kind === 'complete') deferredComplete = record;
+        else writer.send(value);
+      },
+    };
     try {
-      run.client = await CodexDaemonClient.connect();
+      run.client = await this.connect();
       if (run.aborted) return;
       if (!run.client) {
         const historyMode = threadId ? await readCodexHistoryMode(threadId) : null;
@@ -95,13 +125,13 @@ export class CodexSharedRuntime implements IProviderRuntime {
         return;
       }
 
-      await this.runThroughDaemon(run, command, options, writer, context);
+      await this.runThroughDaemon(run, command, options, output, context);
     } catch (error) {
       if (!run.aborted) {
-        send(writer, createNormalizedMessage({
+        send(output, createNormalizedMessage({
           provider: 'codex', sessionId, kind: 'error', content: describeResumeError(error),
         }));
-        send(writer, createCompleteMessage({ provider: 'codex', sessionId, exitCode: 1 }));
+        send(output, createCompleteMessage({ provider: 'codex', sessionId, exitCode: 1 }));
         // The legacy JS notifier infers sessionId from its null default even
         // though the runtime contract accepts provider/app session strings.
         (notifyRunFailed as (input: AnyRecord) => void)({
@@ -111,8 +141,21 @@ export class CodexSharedRuntime implements IProviderRuntime {
       }
     } finally {
       run.finished = true;
-      run.client?.close();
-      this.runs.delete(sessionId);
+      if (run.client) this.ownedPermissions.cancel(sessionId, run.client);
+      try {
+        // Release the owned child's native writer before the browser sees
+        // completion and submits a queued message against the same thread.
+        await run.client?.close();
+      } catch {
+        send(writer, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'error',
+          content: 'The native Codex process has not released its writer yet. Wait before retrying this session.',
+        }));
+        deferredComplete = createCompleteMessage({ provider: 'codex', sessionId, exitCode: 1 });
+      } finally {
+        if (this.runs.get(sessionId) === run) this.runs.delete(sessionId);
+      }
+      if (deferredComplete) send(writer, deferredComplete);
     }
   }
 
@@ -306,7 +349,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
     };
     const offEvent = client.onNotification(handleEvent);
     const offDisconnect = client.onDisconnect(rejectTurn);
-    const offRequest = client.onServerRequest((method, params) => {
+    const offRequest = client.onServerRequest((method, params, id) => {
+      if (client.ownsProcess) {
+        this.ownedPermissions.handle(client, sessionId, run.threadId!, method, params, id, writer);
+        return;
+      }
       if (params.threadId !== run.threadId) return;
       // Desktop-specific tools and approvals stay with the desktop client.
       // Answering/declining them here could resolve another client's request.

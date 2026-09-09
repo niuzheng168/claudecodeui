@@ -6,3 +6,14 @@ export { AppError, normalizeProjectPath, validateWorkspacePath } from './utils.j
 // Queued delivery uses exact persistence receipts and safe JSON parsing across module boundaries.
 export type { QueuedSessionMessageRecord } from './types.js';
 export { readObjectRecord } from './utils.js';
+// Codex provider transports/runtime share the RPC, message and attachment contracts.
+export type { ICodexRpcClient, IProviderRuntime } from './interfaces.js';
+export type {
+  AnyRecord, CodexRpcRequestId, CodexRpcServerReply, ProviderRuntimeContext,
+  ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
+  LLMProvider,
+} from './types.js';
+export {
+  createCompleteMessage, createNormalizedMessage, resolveCodexHomeDirectory,
+} from './utils.js';
+export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.js';
