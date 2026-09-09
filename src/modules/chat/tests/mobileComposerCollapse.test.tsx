@@ -150,72 +150,112 @@ function fixture(overrides: Partial<ComponentProps<typeof ChatComposer>> = {}) {
   return { ...render(<ChatComposer {...props} />), props };
 }
 
-test.each([390, 1024])('native steering is a separate non-submitting action at %ipx', (width) => {
+test.each([320, 390, 1024])('queued steering sits beside Edit/Delete outside the form at %ipx', (width) => {
   resizeViewport(width);
-  const onSteer = vi.fn();
-  const f = fixture({ isLoading: true, onSteer, canSteer: true });
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
   const button = screen.getByRole('button', { name: 'Steer now' });
   expect(button.getAttribute('type')).toBe('button');
+  const actions = f.container.querySelector('[data-slot="queued-message-actions"]');
+  expect(actions?.contains(button)).toBe(true);
+  expect(actions?.contains(screen.getByRole('button', { name: 'Edit queued message' }))).toBe(true);
+  expect(actions?.contains(screen.getByRole('button', { name: 'Delete queued message' }))).toBe(true);
+  expect(button.closest('form')).toBeNull();
+  expect(f.container.querySelector('[data-slot="composer-steering"]')).toBeNull();
   fireEvent.click(button);
-  expect(onSteer).toHaveBeenCalledTimes(1);
+  expect(onSteerQueued).toHaveBeenCalledTimes(1);
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
   expect(f.props.onSubmit).toHaveBeenCalledTimes(1);
-  expect(onSteer).toHaveBeenCalledTimes(1);
+  expect(onSteerQueued).toHaveBeenCalledTimes(1);
 });
 
-test('unsupported sessions retain queueing without a steering button', () => {
-  fixture({ isLoading: true });
+test('even supported runs have no immediate action before a message is queued', () => {
+  fixture({ isLoading: true, onSteerQueued: vi.fn(), canSteer: true });
   expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
 });
 
-test('steering submission disables both duplicate submission paths and preserves visible text', () => {
-  const onSteer = vi.fn();
-  const f = fixture({ isLoading: true, isSteering: true, onSteer, canSteer: true });
+test('steering submission disables duplicate sends, Edit and Delete without changing the textarea', () => {
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, isSteering: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
   fireEvent.click(screen.getByRole('button', { name: 'Sending correction…' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
-  expect(onSteer).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Delete queued message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
+  expect(onSteerQueued).not.toHaveBeenCalled();
+  expect(f.props.onEditQueuedDraft).not.toHaveBeenCalled();
+  expect(f.props.onDeleteQueuedDraft).not.toHaveBeenCalled();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
 });
 
 test.each([320, 390, 1024])('an old node at %ipx explains the disabled immediate action instead of hiding it', (width) => {
   resizeViewport(width);
-  const onSteer = vi.fn();
+  const onSteerQueued = vi.fn();
   const reason = 'Update the node backend to enable Send now.';
-  const f = fixture({ isLoading: true, onSteer, canSteer: false, steerUnavailableReason: reason });
+  const f = fixture({ isLoading: true, onSteerQueued, canSteer: false, steerUnavailableReason: reason, queuedDraft: { content: 'Queued correction', attachments: [] } });
   const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
   expect(immediate.disabled).toBe(true);
-  expect(document.getElementById(immediate.getAttribute('aria-describedby')!)?.textContent).toBe(reason);
+  expect(immediate.title).toBe(reason);
   fireEvent.click(immediate);
-  expect(onSteer).not.toHaveBeenCalled();
+  expect(onSteerQueued).not.toHaveBeenCalled();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
-  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
   expect(f.props.onSubmit).toHaveBeenCalledOnce();
 });
 
 test('steering is disabled until advertised and enables in place without removing the queue option', () => {
-  const onSteer = vi.fn();
-  const f = fixture({ isLoading: true, onSteer });
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, onSteerQueued, queuedDraft: { content: 'Queued correction', attachments: [] } });
   const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
   expect(immediate.disabled).toBe(true);
   f.rerender(<ChatComposer {...f.props} canSteer />);
   expect(immediate.disabled).toBe(false);
   fireEvent.click(immediate);
-  expect(onSteer).toHaveBeenCalledOnce();
-  expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
+  expect(onSteerQueued).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Update queued message' })).toBeTruthy();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
 });
 
 test('a rejected correction stays visible even when the turn has ended', () => {
-  fixture({ isLoading: false, steerError: 'The turn ended; draft kept' });
+  const f = fixture({ isLoading: false, steerError: 'The turn ended; draft kept', queuedDraft: { content: 'Queued correction', attachments: [] } });
   expect(screen.getByRole('alert').textContent).toContain('The turn ended; draft kept');
+  expect(screen.getByRole('alert').closest('[data-slot="queued-message"]')).toBeTruthy();
+  expect(f.container.querySelector('form')?.contains(screen.getByRole('alert'))).toBe(false);
   expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
+});
+
+test('immediate append remains accessible while the mobile input is collapsed', () => {
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(onSteerQueued).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Expand input' })).toBeTruthy();
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+});
+
+test('unconfirmed queued delivery offers review/edit, not another immediate attempt', () => {
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Review first', attachments: [], steerHold: 'unconfirmed' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(onSteerQueued).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toBe('input.queue.reviewHint');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+  expect(f.props.onEditQueuedDraft).toHaveBeenCalledOnce();
+});
+
+test.each(['recording', 'requesting', 'transcribing'] as const)('queued append is disabled during voice %s', (voiceState) => {
+  mocks.voiceState = voiceState;
+  const onSteerQueued = vi.fn();
+  fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(onSteerQueued).not.toHaveBeenCalled();
 });
 
 test.each([320, 390, 767])('mobile at %ipx places the accessible collapse toggle in the existing status row', (width) => {

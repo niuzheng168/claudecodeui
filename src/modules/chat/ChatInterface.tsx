@@ -211,7 +211,7 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
-    handleSteer,
+    handleSteerQueued,
     isSteering,
     steerError,
     queuedDraft,
@@ -503,9 +503,9 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
-          onSteer={provider === 'codex' ? handleSteer : undefined}
-          canSteer={steering.canSteer}
-          steerUnavailableReason={steering.unavailableReason}
+          onSteerQueued={provider === 'codex' ? handleSteerQueued : undefined}
+          canSteer={steering.canSteerQueued}
+          steerUnavailableReason={steering.queuedUnavailableReason}
           isSteering={isSteering}
           steerError={steerError}
           permissionMode={permissionMode}

@@ -81,6 +81,15 @@ export function createUserRouter(service: ReturnType<typeof createUserService>):
     }
   });
 
+  router.post('/drafts/steer', async (req, res, next) => {
+    try {
+      const body = req.body as { scope?: unknown };
+      res.json(await service.steerQueuedDraft(readUserId(req), body?.scope, req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.delete('/drafts', (req, res, next) => {
     try {
       const body = req.body as { scope?: unknown };

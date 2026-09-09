@@ -58,8 +58,8 @@ type ChatComposerProps = {
   activity: SessionActivity | null;
   isLoading: boolean;
   onAbortSession: () => void;
-  /** Present for providers with native steering; the current run must also advertise canSteer. */
-  onSteer?: () => void;
+  /** Promotes the queued card, never the textarea; the run must advertise queued steering. */
+  onSteerQueued?: () => void;
   canSteer?: boolean;
   steerUnavailableReason?: string | null;
   isSteering?: boolean;
@@ -146,7 +146,7 @@ export default function ChatComposer({
   activity,
   isLoading,
   onAbortSession,
-  onSteer,
+  onSteerQueued,
   canSteer = false,
   steerUnavailableReason = null,
   isSteering = false,
@@ -228,7 +228,6 @@ export default function ChatComposer({
   // Explicit toggles transfer keyboard focus without reopening the mobile keyboard or stealing focus on resize.
   const restoreToggleFocusRef = useRef(false);
   const composerContentId = useId();
-  const steeringHintId = useId();
   useLayoutEffect(() => {
     if (!restoreToggleFocusRef.current) return;
     restoreToggleFocusRef.current = false;
@@ -426,6 +425,12 @@ export default function ChatComposer({
             onEditQueuedDraft();
           }}
           onDelete={onDeleteQueuedDraft}
+          onSteer={isLoading && !isEditingSentMessage ? onSteerQueued : undefined}
+          canSteer={canSteer && voiceState === 'idle' && !rewrite.busy}
+          steerUnavailableReason={steerUnavailableReason}
+          isSteering={isSteering}
+          steerError={steerError}
+          held={queuedDraft.steerHold === 'unconfirmed'}
         />
       )}
 
@@ -589,30 +594,6 @@ export default function ChatComposer({
                 textareaRef={textareaRef} onVisibilityChange={setGhostVisible} />
             )}
         </PromptInputBody>
-
-        {isLoading && onSteer && !isEditingSentMessage && (
-          <div className="flex items-center justify-between gap-3 px-2 pt-2" data-slot="composer-steering">
-            <span id={steeringHintId} className="min-w-0 text-xs text-muted-foreground">
-              {canSteer ? t('input.steer.hint') : steerUnavailableReason || t('input.steer.unavailable')}
-            </span>
-            <button
-              type="button"
-              onClick={onSteer}
-              disabled={!canSteer || isSteering || (!input.trim() && attachedFiles.length === 0) || voiceState !== 'idle' || rewrite.busy}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('input.steer.description')}
-              aria-describedby={steeringHintId}
-            >
-              {isSteering && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
-              {t(isSteering ? 'input.steer.sending' : 'input.steer.send')}
-            </button>
-          </div>
-        )}
-        {steerError && (
-          <p role="alert" className="break-words px-2 pt-2 text-xs text-destructive">
-            {t('input.steer.failed')}: {steerError}
-          </p>
-        )}
 
         {managedVoice && (
           <ComposerCompletionBar candidate={completion.candidate} ghostVisible={ghostVisible}

@@ -59,6 +59,20 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
 };
 
 // ---------------------------
+//----------------- QUEUED CHAT DELIVERY ------------
+/**
+ * An authenticated user's persisted queue receipt. The exact serialized
+ * claimToken is used for compare-and-set removal, so edits or a dispatcher
+ * claim that win the race cannot be delivered again by immediate steering.
+ */
+export type QueuedSessionMessageRecord = {
+  userId: number;
+  sessionId: string;
+  queuedMessage: unknown;
+  claimToken: string;
+};
+
+// ---------------------------
 //----------------- PROVIDER MESSAGE MODEL ------------
 /**
  * Providers supported by the unified server runtime.
@@ -315,6 +329,8 @@ export type NormalizedMessage = {
   canInterrupt?: boolean;
   /** Whether the owning runtime can accept input in this same running turn. */
   canSteer?: boolean;
+  /** The gateway can atomically consume a queued message before steering this run. */
+  canSteerQueued?: boolean;
   requestId?: string;
   input?: unknown;
   context?: unknown;

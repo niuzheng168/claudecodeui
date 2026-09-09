@@ -2,6 +2,7 @@ import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.j
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
+import { readObjectRecord } from '@/shared/index.js';
 
 /**
  * How often due messages are looked for.
@@ -87,7 +88,8 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
-    if (chatRunRegistry.isProcessing(candidate.sessionId)) {
+    if (chatRunRegistry.isProcessing(candidate.sessionId)
+      || readObjectRecord(candidate.queuedMessage)?.steerHold === 'unconfirmed') {
       return;
     }
     if (!sessionDraftsDb.claimQueuedMessage(candidate)) {

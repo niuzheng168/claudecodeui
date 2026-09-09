@@ -570,6 +570,8 @@ export type CommandModalPayload = {
 
 /** A composer message queued while its session is still busy, holding the text, the in-memory and already-uploaded attachments and the send options snapshotted at queue time so it can be auto-sent unchanged once the session goes idle. */
 export type QueuedDraft = {
+  /** A new receipt for each explicit queue submission, including identical replacement messages. */
+  id?: string;
   content: string;
   /** Browser files retained while this composer stays mounted, for editing. */
   attachments: File[];
@@ -581,10 +583,25 @@ export type QueuedDraft = {
    * permission settings while another session is being viewed.
    */
   options?: QueuedSendOptions;
+  /** An ambiguous immediate delivery must be reviewed, not automatically sent a second time. */
+  steerHold?: 'unconfirmed';
 };
 
-/** Submits additional input to the same running turn; resolves only after server acceptance and never retries or queues. */
-export type SteerChatMessage = (sessionId: string, content: string, attachments: unknown[]) => Promise<void>;
+/** JSON-safe queued input shared by draft persistence and atomic queued-message steering. */
+export type StoredQueuedMessage = {
+  id?: string;
+  content: string;
+  options?: QueuedSendOptions;
+  /** Legacy image-only records remain readable without re-uploading browser files. */
+  images?: unknown[];
+  attachments?: unknown[];
+  steerHold?: 'unconfirmed';
+};
+
+/** Adds input to the running turn; a queued snapshot must be atomically claimed before native acceptance. */
+export type SteerChatMessage = (
+  sessionId: string, content: string, attachments: unknown[], queuedMessage?: StoredQueuedMessage,
+) => Promise<void>;
 
 /** Viewport-relative composer popup bounds; exactly one of top/bottom anchors the surface without overflowing narrow or short windows. */
 export type ComposerMenuAnchor = {

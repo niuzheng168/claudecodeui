@@ -14,11 +14,14 @@ import { useDropzone } from 'react-dropzone';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { StoredQueuedMessage, SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import { isComposerModeShortcut } from '@/shared/utils';
 import {
   clearQueuedMessage,
+  flushChatDraft,
+  forgetQueuedMessage,
+  holdQueuedMessage,
   hydrateChatDrafts,
   readDraftText,
   readQueuedMessage,
@@ -128,13 +131,31 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   const saved = readQueuedMessage(sessionKey);
   return saved
     ? {
+        id: saved.id,
         content: saved.content,
         attachments: [],
         uploadedAttachments: saved.attachments ?? saved.images,
         options: saved.options,
+        steerHold: saved.steerHold,
       }
     : null;
 };
+
+function storedQueuedDraft(draft: QueuedDraft): StoredQueuedMessage {
+  return {
+    id: draft.id,
+    content: draft.content,
+    options: draft.options,
+    attachments: draft.uploadedAttachments ?? [],
+    ...(draft.steerHold ? { steerHold: draft.steerHold } : {}),
+  };
+}
+
+function matchesQueuedDraft(draft: QueuedDraft | null, saved: StoredQueuedMessage | null): boolean {
+  return Boolean(draft && saved && draft.id === saved.id && draft.content === saved.content
+    && JSON.stringify(draft.options ?? {}) === JSON.stringify(saved.options ?? {})
+    && JSON.stringify(draft.uploadedAttachments ?? []) === JSON.stringify(saved.attachments ?? saved.images ?? []));
+}
 
 const getNotificationSessionSummary = (
   selectedSession: ProjectSession | null,
@@ -247,20 +268,20 @@ export function useChatComposerState({
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
 
+  // The displayed server-owned queue retains local File previews until its receipt changes.
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
       return null;
     }
     return restoreQueuedDraft(sessionKey);
   });
-  // Which session the in-memory `queuedDraft` belongs to. On a session switch
-  // there is one commit where `sessionKey` already points at the new session
-  // while `queuedDraft` still holds the old session's draft; the persistence
-  // effect must not write across that gap.
+  // Prevent a card from the previous render/session being promoted in the new session.
   const queuedDraftSessionRef = useRef<string | null>(sessionKey);
 
-  // Keep upload/ack progress and errors scoped to the originating draft.
-  const [steeringState, setSteeringState] = useState<{ scope: string; pending: boolean; error: string | null } | null>(null);
+  // Keep queued-claim/ack progress and errors scoped to the originating session.
+  const [steeringState, setSteeringState] = useState<{
+    scope: string; message: StoredQueuedMessage; pending: boolean; error: string | null;
+  } | null>(null);
   // Synchronous lock prevents two clicks/Enter from sending or queueing the same draft before React commits.
   const steeringInFlightRef = useRef<string | null>(null);
 
@@ -636,6 +657,7 @@ export function useChatComposerState({
         // queued submission. Put the same durable draft back without uploading
         // its files again.
         if (queuedSubmission) {
+          if (sessionKey) writeQueuedMessage(sessionKey, storedQueuedDraft(queuedSubmission));
           queuedDraftSessionRef.current = sessionKey;
           setQueuedDraft(queuedSubmission);
           return;
@@ -658,19 +680,15 @@ export function useChatComposerState({
         }
 
         const durableDraft: QueuedDraft = {
+          id: crypto.randomUUID(),
           content: currentInput,
           attachments: currentAttachments,
           uploadedAttachments,
           options: queuedOptions,
         };
         if (queuedSessionKey) {
-          // Write the claim ticket synchronously after upload; this closes the
-          // gap before React's persistence effect runs.
-          writeQueuedMessage(queuedSessionKey, {
-            content: durableDraft.content,
-            options: durableDraft.options,
-            attachments: durableDraft.uploadedAttachments,
-          });
+          // Only explicit Send/Edit/Delete actions write the server-owned queue.
+          writeQueuedMessage(queuedSessionKey, storedQueuedDraft(durableDraft));
         }
 
         // The server owns dispatch after persistence. If the user changed
@@ -886,45 +904,51 @@ export function useChatComposerState({
     ],
   );
 
-  const handleSteer = useCallback(async () => {
+  const handleSteerQueued = useCallback(async () => {
     const scope = sessionKey;
-    const content = inputValueRef.current;
-    const files = attachedFiles;
+    const saved = scope ? readQueuedMessage(scope) : null;
     if (!scope || !isLoading || provider !== 'codex' || !steerMessage || editingAnchorId
-      || steeringInFlightRef.current || (!content.trim() && files.length === 0)) return;
+      || steeringInFlightRef.current || queuedDraftSessionRef.current !== scope
+      || !saved || saved.steerHold || queuedDraft?.steerHold || !matchesQueuedDraft(queuedDraft, saved)) return;
 
     steeringInFlightRef.current = scope;
-    setSteeringState({ scope, pending: true, error: null });
+    setSteeringState({ scope, message: saved, pending: true, error: null });
     try {
-      const attachments = await uploadAttachmentFiles(files);
-      await steerMessage(scope, content, attachments);
-      // Clear only the accepted snapshot. Typing, cross-device edits and a
-      // session switch during upload/ack must not erase another draft.
-      if (readDraftText(scope) === content) writeDraftText(scope, '');
+      // Send first persists the queue and uploads its files. Wait for that save,
+      // then promote the exact receipt; never read or re-upload the new textarea draft.
+      await flushChatDraft(scope);
+      await steerMessage(scope, saved.content, saved.attachments ?? saved.images ?? [], saved);
+      forgetQueuedMessage(scope, saved);
       if (sessionKeyRef.current === scope) {
-        if (inputValueRef.current === content) {
-          setInput('');
-          inputValueRef.current = '';
-          resetCommandMenuState();
-          setIsTextareaExpanded(false);
-        }
-        setAttachedFiles((current) => current === files ? [] : current);
+        setQueuedDraft((current) => matchesQueuedDraft(current, saved) ? restoreQueuedDraft(scope) : current);
         setIsUserScrolledUp(false);
         scrollToBottom();
       }
-      // No optimistic echo, new-run activity or queue mutation: the accepted
+      // No optimistic echo or new-run activity: the accepted
       // prompt arrives through the existing run's sequenced websocket stream.
-      setSteeringState({ scope, pending: false, error: null });
+      setSteeringState({ scope, message: saved, pending: false, error: null });
     } catch (error) {
+      // A lost acknowledgement is not permission to send again. Mark only the
+      // local receipt for review; the server restores/holds it atomically on failure.
+      if (error && typeof error === 'object' && 'queueHeld' in error && error.queueHeld === true) {
+        holdQueuedMessage(scope, saved);
+        if (sessionKeyRef.current === scope) {
+          setQueuedDraft((current) => matchesQueuedDraft(current, saved)
+            ? { ...current!, steerHold: 'unconfirmed' } : current);
+        }
+      }
       setSteeringState({
-        scope, pending: false, error: error instanceof Error ? error.message : String(error),
+        scope, message: saved, pending: false, error: error instanceof Error ? error.message : String(error),
       });
     } finally {
       steeringInFlightRef.current = null;
+      // Reconcile another device's edit or the dispatcher's claim without ever
+      // writing a stale React snapshot back into the queue.
+      void hydrateChatDrafts();
     }
   }, [
-    attachedFiles, editingAnchorId, isLoading, provider, resetCommandMenuState,
-    scrollToBottom, sessionKey, setInput, setIsUserScrolledUp, steerMessage,
+    editingAnchorId, isLoading, provider, queuedDraft,
+    scrollToBottom, sessionKey, setIsUserScrolledUp, steerMessage,
   ]);
 
   useEffect(() => {
@@ -932,40 +956,35 @@ export function useChatComposerState({
   }, [handleSubmit]);
 
   // The VPS dispatcher owns sending. While the card is visible, periodically
-  // reconcile only its removal so the UI notices when the server claims it.
+  // reconcile the server receipt so the UI notices claims and held/remote edits.
   useEffect(() => {
     if (!sessionKey || !queuedDraft) {
       return;
     }
-    let cancelled = false;
-    const reconcile = async () => {
-      await hydrateChatDrafts();
-      if (!cancelled && !readQueuedMessage(sessionKey)) {
-        queuedDraftSessionRef.current = sessionKey;
-        setQueuedDraft(null);
-      }
-    };
-    const timer = setInterval(() => void reconcile(), 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+    const timer = setInterval(() => void hydrateChatDrafts(), 5_000);
+    return () => clearInterval(timer);
   }, [queuedDraft, sessionKey]);
 
   const editQueuedDraft = useCallback(() => {
-    if (!queuedDraft) {
+    if (!queuedDraft || !sessionKey || queuedDraftSessionRef.current !== sessionKey
+      || steeringInFlightRef.current === sessionKey) {
       return;
     }
+    clearQueuedMessage(sessionKey);
+    setSteeringState(null);
     setQueuedDraft(null);
     setInput(queuedDraft.content);
     inputValueRef.current = queuedDraft.content;
     setAttachedFiles(queuedDraft.attachments);
     textareaRef.current?.focus();
-  }, [queuedDraft]);
+  }, [queuedDraft, sessionKey, setInput]);
 
   const deleteQueuedDraft = useCallback(() => {
+    if (!sessionKey || steeringInFlightRef.current === sessionKey) return;
+    clearQueuedMessage(sessionKey);
+    setSteeringState(null);
     setQueuedDraft(null);
-  }, []);
+  }, [sessionKey]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
@@ -1002,8 +1021,13 @@ export function useChatComposerState({
       return;
     }
 
+    // Queue changes/other sessions also notify this store. They must not replace
+    // freshly typed React text whose own persistence effect has not run yet.
+    let lastSavedInput: string | undefined;
     const restoreDraft = () => {
       const savedInput = readDraftText(draftScope);
+      if (savedInput === lastSavedInput) return;
+      lastSavedInput = savedInput;
       setInputState((previous) => {
         if (previous.scope === draftScope && previous.value === savedInput) {
           return previous;
@@ -1026,39 +1050,29 @@ export function useChatComposerState({
     writeDraftText(draftScope, inputState.value);
   }, [inputState, draftScope]);
 
-  // Persist the queued draft under its session's key. Must be defined BEFORE
-  // the swap effect below: on a session switch there is one commit where
-  // `sessionKey` already points at the new session while `queuedDraft` (and
-  // the owner ref) still describe the old one — the ref mismatch makes this
-  // effect skip that commit instead of writing/clearing across sessions.
+  // Restoring, hydrating and accepting are read-only queue operations. Persisting
+  // from an effect would resurrect a consumed queue or erase another device's edit.
   useEffect(() => {
-    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
-      return;
-    }
-    if (
-      queuedDraft
-      && (queuedDraft.content.trim() || (queuedDraft.uploadedAttachments?.length ?? 0) > 0)
-    ) {
-      writeQueuedMessage(sessionKey, {
-        content: queuedDraft.content,
-        options: queuedDraft.options,
-        attachments: queuedDraft.uploadedAttachments,
-      });
-    } else {
-      clearQueuedMessage(sessionKey);
-    }
-  }, [queuedDraft, sessionKey]);
-
-  // Switching sessions swaps in that session's queued draft. Browser File
-  // objects are local to the mounted composer, while their already-uploaded
-  // descriptors restore from storage and remain sendable.
-  useEffect(() => {
+    let switched = queuedDraftSessionRef.current !== sessionKey;
     queuedDraftSessionRef.current = sessionKey;
     if (!sessionKey) {
       setQueuedDraft(null);
       return;
     }
-    setQueuedDraft(restoreQueuedDraft(sessionKey));
+    const restoreQueue = () => {
+      if (steeringInFlightRef.current === sessionKey) return;
+      const saved = readQueuedMessage(sessionKey);
+      const retainFiles = !switched;
+      switched = false;
+      setQueuedDraft((current) => {
+        if (retainFiles && matchesQueuedDraft(current, saved)) {
+          return current?.steerHold === saved?.steerHold ? current : { ...current!, steerHold: saved?.steerHold };
+        }
+        return restoreQueuedDraft(sessionKey);
+      });
+    };
+    restoreQueue();
+    return subscribeToChatDrafts(restoreQueue);
   }, [sessionKey]);
 
   useEffect(() => {
@@ -1284,9 +1298,10 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
-    handleSteer,
+    handleSteerQueued,
     isSteering: steeringState?.scope === sessionKey && steeringState.pending,
-    steerError: steeringState?.scope === sessionKey ? steeringState.error : null,
+    steerError: steeringState?.scope === sessionKey && matchesQueuedDraft(queuedDraft, steeringState.message)
+      ? steeringState.error : null,
     queuedDraft,
     editQueuedDraft,
     deleteQueuedDraft,
