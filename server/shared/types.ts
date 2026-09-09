@@ -21,6 +21,15 @@ export type ApiSuccessShape<TData = unknown> = {
  */
 export type AnyRecord = Record<string, any>;
 
+//----------------- CODEX APP-SERVER RPC CONTRACTS ------------
+/** JSON-RPC correlation ID from the node-owned Codex process, never a session ID. */
+export type CodexRpcRequestId = number | string;
+
+/** Exactly one response to a server request; errors must not include private stderr. */
+export type CodexRpcServerReply =
+  | { result: AnyRecord }
+  | { error: { code: number; message: string } };
+
 // ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**

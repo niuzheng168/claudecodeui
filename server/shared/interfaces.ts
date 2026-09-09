@@ -1,5 +1,7 @@
 import type {
   AnyRecord,
+  CodexRpcRequestId,
+  CodexRpcServerReply,
   FetchHistoryOptions,
   FetchHistoryResult,
   LLMProvider,
@@ -18,6 +20,23 @@ import type {
   ProviderRuntimeWriter,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
+
+//----------------- CODEX RPC TRANSPORT INTERFACE ------------
+/**
+ * Provider-owned RPC connection used by Codex's Unix-daemon and Windows-stdio
+ * adapters. Closing a daemon connection never stops the desktop owner. An
+ * owned stdio connection must await its own child exit before a queued turn
+ * can resume the same thread. Only that owned connection may answer approvals.
+ */
+export interface ICodexRpcClient {
+  readonly ownsProcess?: boolean;
+  request(method: string, params: AnyRecord): Promise<AnyRecord>;
+  onNotification(listener: (method: string, params: AnyRecord) => void): () => void;
+  onServerRequest(listener: (method: string, params: AnyRecord, id?: CodexRpcRequestId) => void): () => void;
+  onDisconnect(listener: (error: Error) => void): () => void;
+  respondToServerRequest?(id: CodexRpcRequestId, reply: CodexRpcServerReply): void;
+  close(): void | Promise<void>;
+}
 
 //----------------- PROVIDER CONTRACT INTERFACES ------------
 
