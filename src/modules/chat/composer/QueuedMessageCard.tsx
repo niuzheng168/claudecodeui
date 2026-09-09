@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, PencilIcon, XIcon, ZapIcon } from 'lucide-react';
 
@@ -17,6 +18,7 @@ type QueuedMessageCardProps = {
 /**
  * Rendered by chat's ChatComposer to show the message queued for a busy
  * session, with immediate append, edit and delete actions before it is auto-sent.
+ * Disabled append actions explain their requirements without needing a mouse hover.
  */
 export default function QueuedMessageCard({
   content,
@@ -31,6 +33,9 @@ export default function QueuedMessageCard({
   held = false,
 }: QueuedMessageCardProps) {
   const { t } = useTranslation('chat');
+  const unavailableReasonId = useId();
+  const unavailableReason = steerUnavailableReason || t('input.steer.unavailable');
+  const showUnavailableReason = Boolean(onSteer && !canSteer && !isSteering && !held && !steerError);
 
   return (
     <div data-slot="queued-message" className="settings-content-enter mx-auto mb-2 max-w-[54.25rem] rounded-xl rounded-t-none border border-dashed border-primary/25 bg-primary/[0.04] px-3 py-2" aria-busy={isSteering}>
@@ -59,8 +64,9 @@ export default function QueuedMessageCard({
               onClick={onSteer}
               disabled={!canSteer || isSteering || held}
               aria-label={t(isSteering ? 'input.steer.sending' : 'input.steer.send')}
-              title={held ? t('input.queue.reviewHint') : !canSteer
-                ? steerUnavailableReason || t('input.steer.unavailable') : t('input.steer.description')}
+              aria-describedby={showUnavailableReason ? unavailableReasonId : undefined}
+              title={held ? t('input.queue.reviewHint') : isSteering ? t('input.steer.pending')
+                : !canSteer ? unavailableReason : t('input.steer.description')}
               className="inline-flex items-center gap-1 whitespace-nowrap rounded-md p-1.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSteering ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <ZapIcon aria-hidden className="h-3.5 w-3.5" />}
@@ -89,6 +95,11 @@ export default function QueuedMessageCard({
           </button>
         </div>
       </div>
+      {showUnavailableReason && (
+        <p id={unavailableReasonId} role="status" className="mt-1 break-words text-xs text-muted-foreground">
+          {unavailableReason}
+        </p>
+      )}
       {(steerError || held) && (
         <p role="alert" className="mt-1 break-words text-xs text-destructive">
           {held ? t('input.queue.reviewHint') : `${t('input.steer.failed')}: ${steerError}`}

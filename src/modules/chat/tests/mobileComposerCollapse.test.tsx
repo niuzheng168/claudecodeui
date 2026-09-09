@@ -25,6 +25,8 @@ vi.mock('react-i18next', () => ({
         'input.stop': 'Stop',
         'input.steer.send': 'Steer now',
         'input.steer.sending': 'Sending correction…',
+        'input.steer.voiceBusy': 'Finish or cancel voice input before appending the queued message.',
+        'input.steer.rewriteBusy': 'Finish or cancel voice rewriting before appending the queued message.',
       };
       return labels[key] || options.defaultValue || key;
     },
@@ -199,6 +201,10 @@ test.each([320, 390, 1024])('an old node at %ipx explains the disabled immediate
   const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
   expect(immediate.disabled).toBe(true);
   expect(immediate.title).toBe(reason);
+  const explanation = screen.getByText(reason);
+  expect(explanation.getAttribute('role')).toBe('status');
+  expect(explanation.closest('[data-slot="queued-message"]')).toBeTruthy();
+  expect(immediate.getAttribute('aria-describedby')).toBe(explanation.id);
   fireEvent.click(immediate);
   expect(onSteerQueued).not.toHaveBeenCalled();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
@@ -210,16 +216,42 @@ test.each([320, 390, 1024])('an old node at %ipx explains the disabled immediate
 
 test('steering is disabled until advertised and enables in place without removing the queue option', () => {
   const onSteerQueued = vi.fn();
-  const f = fixture({ isLoading: true, onSteerQueued, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  const reason = 'Checking support for the active run.';
+  const f = fixture({ isLoading: true, onSteerQueued, steerUnavailableReason: reason, queuedDraft: { content: 'Queued correction', attachments: [] } });
   const immediate = screen.getByRole('button', { name: 'Steer now' }) as HTMLButtonElement;
   expect(immediate.disabled).toBe(true);
+  expect(screen.getByText(reason)).toBeTruthy();
   f.rerender(<ChatComposer {...f.props} canSteer />);
   expect(immediate.disabled).toBe(false);
+  expect(immediate.getAttribute('aria-describedby')).toBeNull();
+  expect(screen.queryByText(reason)).toBeNull();
   fireEvent.click(immediate);
   expect(onSteerQueued).toHaveBeenCalledOnce();
   expect(screen.getByRole('button', { name: 'Update queued message' })).toBeTruthy();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
+});
+
+test('an unavailable action keeps its explanation visible while the mobile input is collapsed', () => {
+  const reason = 'Update the node backend to enable Send now.';
+  fixture({ isLoading: true, onSteerQueued: vi.fn(), steerUnavailableReason: reason, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  expect(screen.getByText(reason).closest('[aria-hidden="true"]')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Expand input' })).toBeTruthy();
+});
+
+test.each([
+  { isSteering: true },
+  { steerError: 'Check the previous delivery.' },
+  { held: true },
+])('pending delivery and review feedback take priority over an availability hint (%j)', ({ held, ...overrides }) => {
+  const reason = 'Update the node backend to enable Send now.';
+  fixture({
+    isLoading: true, onSteerQueued: vi.fn(), canSteer: false, steerUnavailableReason: reason,
+    queuedDraft: { content: 'Queued correction', attachments: [], ...(held ? { steerHold: 'unconfirmed' } : {}) },
+    ...overrides,
+  });
+  expect(screen.queryByText(reason)).toBeNull();
 });
 
 test('a rejected correction stays visible even when the turn has ended', () => {
@@ -254,8 +286,33 @@ test.each(['recording', 'requesting', 'transcribing'] as const)('queued append i
   mocks.voiceState = voiceState;
   const onSteerQueued = vi.fn();
   fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  const reason = screen.getByText('Finish or cancel voice input before appending the queued message.');
+  expect(screen.getByRole('button', { name: 'Steer now' }).getAttribute('aria-describedby')).toBe(reason.id);
   fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
   expect(onSteerQueued).not.toHaveBeenCalled();
+});
+
+test('a busy rewrite explains its own lock and restores immediate append when finished', () => {
+  mocks.rewriteBusy = true;
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  const reason = 'Finish or cancel voice rewriting before appending the queued message.';
+  expect(screen.getByText(reason)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(onSteerQueued).not.toHaveBeenCalled();
+  mocks.rewriteBusy = false;
+  f.rerender(<ChatComposer {...f.props} />);
+  expect(screen.queryByText(reason)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(onSteerQueued).toHaveBeenCalledOnce();
+});
+
+test('backend incompatibility is not misreported as a temporary voice lock', () => {
+  mocks.voiceState = 'recording';
+  const reason = 'Update the node backend to enable Send now.';
+  fixture({ isLoading: true, onSteerQueued: vi.fn(), steerUnavailableReason: reason, queuedDraft: { content: 'Queued correction', attachments: [] } });
+  expect(screen.getByText(reason)).toBeTruthy();
+  expect(screen.queryByText('Finish or cancel voice input before appending the queued message.')).toBeNull();
 });
 
 test.each([320, 390, 767])('mobile at %ipx places the accessible collapse toggle in the existing status row', (width) => {
