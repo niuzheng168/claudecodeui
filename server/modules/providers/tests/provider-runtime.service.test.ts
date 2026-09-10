@@ -71,6 +71,7 @@ function createService(providers: IProvider[]) {
 test('providerRegistry owns one runtime for every registered provider', () => {
   const providers = providerRegistry.listProviders();
 
+  assert.equal(providerRegistry.profile, 'full');
   assert.deepEqual(providers.map((provider) => provider.id), [
     'claude',
     'codex',

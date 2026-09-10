@@ -14,6 +14,7 @@ import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, termina
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
+    providerRegistry,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
@@ -354,8 +355,10 @@ async function startServer() {
         const distIndexPath = path.join(APP_ROOT, 'dist', 'index.html');
         const isProduction = fs.existsSync(distIndexPath);
 
-        // Log Claude implementation mode
-        console.log(`${terminalTextStyles.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
+        console.log(
+            `${terminalTextStyles.info('[INFO]')} Provider profile: `
+            + `${providerRegistry.profile} (${providerRegistry.listProviderIds().join(', ')})`,
+        );
         console.log('');
 
         if (isProduction) {
