@@ -288,7 +288,8 @@ export async function queryCodex(command, options = {}, ws, context) {
   const sessionKey = () => sessionId || capturedSessionId || null;
 
   try {
-    codex = new Codex();
+    const configuredCodex = process.env.CODEY_CODEX_EXECUTABLE;
+    codex = new Codex(configuredCodex ? { codexPathOverride: configuredCodex } : {});
 
     const threadOptions = {
       workingDirectory,

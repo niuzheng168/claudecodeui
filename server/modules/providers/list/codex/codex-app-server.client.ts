@@ -53,18 +53,22 @@ export type CodexThreadFork = {
 };
 
 /**
- * Resolves the `codex` launcher shipped in node_modules.
- *
- * Deliberately not the `codex` on PATH: a machine can have a second, older
- * install, and the protocol this speaks is only guaranteed against the
- * version this package depends on.
+ * Resolve the explicitly configured owner CLI first. Managed Codey packages
+ * install Codex from OpenAI and do not carry a second native runtime.
  */
-function resolveCodexLauncher(): string {
+function resolveCodexLauncher(): { executable: string; args: string[] } {
+  const configured = process.env.CODEY_CODEX_EXECUTABLE;
+  if (configured && path.isAbsolute(configured)) {
+    return { executable: configured, args: ['app-server', '--stdio'] };
+  }
   const require_ = createRequire(import.meta.url);
   try {
-    return require_.resolve('@openai/codex/bin/codex.js');
+    return {
+      executable: process.execPath,
+      args: [require_.resolve('@openai/codex/bin/codex.js'), 'app-server'],
+    };
   } catch {
-    throw new AppError('The Codex CLI package is not installed, so Codex conversations cannot be branched.', {
+    throw new AppError('No configured Codex CLI is available, so Codex conversations cannot be branched.', {
       code: 'CODEX_APP_SERVER_UNAVAILABLE',
       statusCode: 501,
     });
@@ -83,8 +87,10 @@ async function withAppServer<T>(
   mode: AppServerMode = { kind: 'legacy-fork' },
 ): Promise<T> {
   const readOnly = mode.kind === 'read-only';
-  const executable = readOnly ? mode.executable : process.execPath;
-  const args = readOnly ? ['app-server', '--stdio'] : [resolveCodexLauncher(), 'app-server'];
+  const command = readOnly
+    ? { executable: mode.executable, args: ['app-server', '--stdio'] }
+    : resolveCodexLauncher();
+  const { executable, args } = command;
   const requestTimeoutMs = readOnly ? mode.timeoutMs : REQUEST_TIMEOUT_MS;
   const child = spawn(executable, args, {
     ...(readOnly ? { cwd: mode.home } : {}),
