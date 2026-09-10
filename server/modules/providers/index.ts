@@ -2,7 +2,6 @@ export { sessionSynchronizerService } from './services/session-synchronizer.serv
 export { providerSkillsService } from './services/skills.service.js';
 export { providerMcpService } from './services/mcp.service.js';
 export { providerRuntimeService } from './services/provider-runtime.service.js';
-export { providerRegistry } from './provider.registry.js';
 
 // providerModelsService: used by Commands to list models and resolve the active session model.
 export { providerModelsService } from './services/provider-models.service.js';
