@@ -1,4 +1,3 @@
-import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 /**
@@ -112,14 +111,13 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
  */
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
-    providerRegistry.resolveProvider(provider);
     const value = PROVIDER_CAPABILITIES[provider];
     return provider === 'codex' && process.platform === 'win32' && process.env.CODEY_CODEX_RUNTIME_TRANSPORT === 'stdio'
       ? { ...value, supportsPermissionRequests: true } : value;
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {
-    return providerRegistry.listProviderIds().map((provider) =>
-      this.getProviderCapabilities(provider));
+    return Object.keys(PROVIDER_CAPABILITIES).map((provider) =>
+      this.getProviderCapabilities(provider as LLMProvider));
   },
 };
