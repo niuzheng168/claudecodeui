@@ -5,6 +5,8 @@ export { providerRuntimeService } from './services/provider-runtime.service.js';
 
 // providerModelsService: used by Commands to list models and resolve the active session model.
 export { providerModelsService } from './services/provider-models.service.js';
+// Commands uses the provider-owned native goal control path and session mapping.
+export { codexCommandsService } from './services/codex-commands.service.js';
 
 // sessionsService: used by the websocket module's chat gateway to resolve an
 // edited message's resume point, which only the providers module can read.

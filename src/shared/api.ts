@@ -396,8 +396,10 @@ export const api = {
   commands: {
     // `projectPath` stays optional: a workspace without a resolved path omits
     // the field entirely, which is what the server expects.
-    list: (projectPath: string | undefined) => post('/api/commands/list', { projectPath }),
+    list: (projectPath: string | undefined, provider?: string) => post('/api/commands/list', { projectPath, provider }),
     execute: (payload: unknown) => post('/api/commands/execute', payload),
+    goal: (sessionId: string | null, argumentsText: string) =>
+      post('/api/commands/goal', { sessionId, arguments: argumentsText }),
   },
 
   // Chat attachments, stored globally under ~/.cloudcli/assets

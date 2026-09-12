@@ -3,10 +3,12 @@ import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.c
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
+import { CodexGoalRun } from '@/modules/providers/list/codex/codex-goal-run.service.js';
+import { controlCodexGoal, formatCodexGoalResult, getCodexGoal, parseCodexGoalCommand } from '@/modules/providers/list/codex/codex-goal.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { codexRuntime as sdkRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 import { assertCodexDesktopSelection, readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
-import type { ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
+import type { CodexGoal, CodexGoalCommand, ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import {
   AppError, createCompleteMessage, createNormalizedMessage, readObjectRecord,
   appendFilesInputTag, buildCodexInputItems,
@@ -19,7 +21,11 @@ type SharedRun = {
   aborted: boolean;
   finished: boolean;
   workingDirectory: string;
+  /** Native Stop waits for an owned writer to be released before the gateway admits another run. */
+  released: Promise<void>;
   desktopQueue?: CodexNativeQueueRun;
+  goal?: CodexGoalRun;
+  localNative?: boolean;
 };
 
 async function connectRuntimeClient(): Promise<ICodexRpcClient | null> {
@@ -66,12 +72,18 @@ export class CodexSharedRuntime implements IProviderRuntime {
   constructor(
     private readonly fallback: IProviderRuntime = sdkRuntime,
     private readonly connect: () => Promise<ICodexRpcClient | null> = connectRuntimeClient,
+    private readonly connectLocalNative: () => Promise<ICodexRpcClient> = () => CodexStdioClient.connectInstalled(),
   ) {}
 
   async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
     const sessionId = typeof options.sessionId === 'string' ? options.sessionId : undefined;
     const threadId = context.resolveProviderSessionId(sessionId);
     if (!sessionId) {
+      if (/^\/(?:goal|plan)(?:\s|$)/.test(command) || options.permissionMode === 'plan' || options.codexPlanMode === true) {
+        throw new AppError('Native commands require a Codey session id. Create the session before sending.', {
+          code: 'NATIVE_COMMAND_SESSION_REQUIRED', statusCode: 400,
+        });
+      }
       await this.fallback.run(command, options, writer, context);
       return;
     }
@@ -83,9 +95,12 @@ export class CodexSharedRuntime implements IProviderRuntime {
       return;
     }
 
+    let markReleased!: () => void;
+    const released = new Promise<void>((resolve) => { markReleased = resolve; });
     const run: SharedRun = {
       client: null, threadId, turnId: null, aborted: false, finished: false,
       workingDirectory: options.cwd || options.projectPath || process.cwd(),
+      released,
     };
     this.runs.set(sessionId, run);
     let deferredComplete: AnyRecord | null = null;
@@ -100,6 +115,39 @@ export class CodexSharedRuntime implements IProviderRuntime {
       },
     };
     try {
+      const goalMatch = command.match(/^\/goal(?:\s+([\s\S]*))?$/);
+      const goalCommand = goalMatch ? parseCodexGoalCommand(goalMatch[1] ?? '') : undefined;
+      const planMatch = command.match(/^\/plan(?:\s+([\s\S]*))?$/);
+      if (planMatch) {
+        const prompt = planMatch[1]?.trim();
+        if (!prompt || prompt === 'on' || prompt === 'off') {
+          throw new AppError('Use /plan in the updated Codey composer to switch modes, or /plan <prompt> to start planning.', {
+            code: 'PLAN_PROMPT_REQUIRED', statusCode: 400,
+          });
+        }
+        command = prompt;
+        options = { ...options, permissionMode: 'plan', codexPlanMode: true };
+      }
+      if (goalCommand && (options.permissionMode === 'plan' || options.codexPlanMode === true)
+        && (goalCommand.action === 'set' || goalCommand.action === 'resume')) {
+        throw new AppError('Leave Plan Mode with /plan off before starting or resuming an autonomous goal.', {
+          code: 'GOAL_IN_PLAN_MODE', statusCode: 409,
+        });
+      }
+      if (goalCommand && (options.images?.length || options.files?.length)) {
+        throw new AppError('Goal commands do not accept attachments. Refer to a project file in the objective instead.', {
+          code: 'GOAL_ATTACHMENTS_UNSUPPORTED', statusCode: 400,
+        });
+      }
+      if (goalCommand && goalCommand.action !== 'set' && goalCommand.action !== 'resume') {
+        const goal = run.threadId ? await this.controlGoal(sessionId, run.threadId, goalCommand, true) : null;
+        send(output, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'text', role: 'assistant',
+          content: formatCodexGoalResult(goal, goalCommand).message,
+        }));
+        send(output, createCompleteMessage({ provider: 'codex', sessionId, exitCode: 0 }));
+        return;
+      }
       run.client = await this.connect();
       if (run.aborted) return;
       if (!run.client) {
@@ -109,6 +157,14 @@ export class CodexSharedRuntime implements IProviderRuntime {
             code: 'CODEX_DAEMON_REQUIRED', statusCode: 409,
           });
         }
+        // An explicit default mode must also reach native RPC: exec cannot
+        // acknowledge leaving a previously selected collaboration mode.
+        if (goalCommand || options.permissionMode === 'plan' || typeof options.codexPlanMode === 'boolean') {
+          run.client = await this.connectLocalNative();
+          run.localNative = true;
+        }
+      }
+      if (!run.client) {
         // Keep legacy installations working, but make an exec writer conflict
         // actionable. Merely finding a .lock file is NOT proof of a live lock.
         await this.fallback.run(command, options, {
@@ -127,7 +183,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
         return;
       }
 
-      await this.runThroughDaemon(run, command, options, output, context);
+      await this.runThroughDaemon(run, command, options, output, context, goalCommand);
     } catch (error) {
       if (!run.aborted) {
         send(output, createNormalizedMessage({
@@ -158,11 +214,50 @@ export class CodexSharedRuntime implements IProviderRuntime {
         if (this.runs.get(sessionId) === run) this.runs.delete(sessionId);
       }
       if (deferredComplete) send(writer, deferredComplete);
+      markReleased();
+    }
+  }
+
+  /** Used by the providers command service; controls the owning connection without taking over another run. */
+  async controlGoal(
+    sessionId: string, threadId: string, command: CodexGoalCommand, fromRun = false,
+  ): Promise<CodexGoal | null> {
+    const run = this.runs.get(sessionId);
+    if (run?.goal) return run.goal.control(command);
+    if (run?.client && run.threadId === threadId && !run.finished) {
+      return controlCodexGoal(run.client, threadId, command);
+    }
+    if (run && !fromRun) {
+      throw new AppError('This session is starting or finishing a run. Try /goal again after its status changes.', {
+        code: 'GOAL_RUN_BUSY', statusCode: 409,
+      });
+    }
+    let client = await this.connect();
+    if (!client) {
+      const historyMode = await readCodexHistoryMode(threadId);
+      if (historyMode && historyMode !== 'legacy') {
+        throw new AppError('Keep the owning Codex app daemon available to manage this native session goal.', {
+          code: 'CODEX_DAEMON_REQUIRED', statusCode: 409,
+        });
+      }
+      client = await this.connectLocalNative();
+    }
+    try {
+      // In particular, never thread/resume for a read or pause/clear command.
+      return await controlCodexGoal(client, threadId, command);
+    } finally {
+      await client.close();
     }
   }
 
   async abort(sessionId: string): Promise<boolean> {
     const run = this.runs.get(sessionId);
+    if (run?.goal) {
+      await run.goal.abort();
+      run.aborted = true;
+      if (run.client?.ownsProcess) await run.released;
+      return true;
+    }
     if (run?.desktopQueue) {
       const cancelled = await run.desktopQueue.cancel();
       if (cancelled) run.aborted = true;
@@ -178,6 +273,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
       await run.client.request('turn/interrupt', { threadId: run.threadId, turnId: run.turnId });
     }
     run.aborted = true;
+    if (run.client.ownsProcess) await run.released;
     return true;
   }
 
@@ -187,6 +283,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
   }
 
   async steer(sessionId: string, command: string, options: AnyRecord): Promise<void> {
+    if (/^\/(?:goal|plan)(?:\s|$)/.test(command)) {
+      throw new AppError('Native commands must use the composer command entry, not an in-flight correction.', {
+        code: 'STEER_COMMAND_UNSUPPORTED', statusCode: 409,
+      });
+    }
     // Capture the owned turn before any async work. A completion/new run must
     // never redirect this prompt into another turn or another desktop client.
     const run = this.runs.get(sessionId);
@@ -218,6 +319,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
+    goalCommand?: CodexGoalCommand,
   ): Promise<void> {
     const client = run.client!;
     const sessionId = String(options.sessionId);
@@ -234,17 +336,33 @@ export class CodexSharedRuntime implements IProviderRuntime {
     if (run.aborted) return;
 
     const permissionMode = options.permissionMode;
+    const planMode = permissionMode === 'plan' || options.codexPlanMode === true;
     const fullAccessSelected = permissionMode === 'bypassPermissions';
     const approvalPolicy = fullAccessSelected || permissionMode === 'acceptEdits' ? 'never' : 'untrusted';
     // The composer sends its selection with every message, including resumes.
     // An omitted mode still inherits the thread's permissions; it must not
     // silently enable full access or reset a desktop user's custom policy.
-    const turnPermissions = permissionMode === 'default' || permissionMode === 'acceptEdits' || fullAccessSelected
+    const turnPermissions = permissionMode === 'default' || permissionMode === 'acceptEdits' || fullAccessSelected || planMode
       ? {
         approvalPolicy,
-        sandboxPolicy: { type: fullAccessSelected ? 'dangerFullAccess' : 'workspaceWrite' },
+        sandboxPolicy: { type: planMode ? 'readOnly' : fullAccessSelected ? 'dangerFullAccess' : 'workspaceWrite' },
       }
       : {};
+    const turnSettings = {
+      ...turnPermissions,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+      ...(planMode || options.codexPlanMode === false || goalCommand ? {
+        collaborationMode: {
+          mode: planMode ? 'plan' : 'default',
+          settings: {
+            model: model || catalog.DEFAULT, reasoning_effort: effort ?? null,
+            // null selects Codex's built-in mode instructions, not a lookalike prompt.
+            developer_instructions: null,
+          },
+        },
+      } : {}),
+    };
 
     if (!run.threadId) {
       // Creating with exec would make source=exec, hidden from the App's
@@ -255,8 +373,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
         ...(model ? { model } : {}),
         // ThreadStartParams uses CLI-style enum strings, unlike the
         // camelCase tagged SandboxPolicy returned by the daemon.
-        sandbox: fullAccessSelected ? 'danger-full-access' : 'workspace-write',
+        sandbox: planMode ? 'read-only' : fullAccessSelected ? 'danger-full-access' : 'workspace-write',
         approvalPolicy,
+        // CLI-only native commands retain the legacy transcript contract, so
+        // later ordinary exec turns remain resumable. Never convert a desktop thread.
+        ...(run.localNative ? { historyMode: 'legacy' } : {}),
       });
       if (typeof created.thread?.id !== 'string' || !created.thread.id) {
         throw new Error('Codex did not acknowledge the new thread id. No prompt was submitted; check Codex app before retrying.');
@@ -270,6 +391,28 @@ export class CodexSharedRuntime implements IProviderRuntime {
         provider: 'codex', kind: 'session_created', sessionId: createdThreadId, newSessionId: createdThreadId,
       }));
     } else {
+      if (goalCommand || (client.ownsProcess && (planMode || typeof options.codexPlanMode === 'boolean'))) {
+        let existingGoal: CodexGoal | null = null;
+        try {
+          existingGoal = await getCodexGoal(client, run.threadId);
+        } catch (error) {
+          // Planning/default-mode turns are independent of the goals feature.
+          // Ignore only an explicit native disabled/unsupported response, never
+          // a disconnect, malformed snapshot, or failure of an actual /goal.
+          const unavailable = !goalCommand && error instanceof AppError
+            && ['CODEX_STDIO_RPC_ERROR', 'CODEX_DAEMON_RPC_ERROR'].includes(error.code)
+            && (error.message === 'goals feature is disabled' || readObjectRecord(error.details)?.rpcCode === -32601);
+          if (!unavailable) throw error;
+        }
+        if (existingGoal?.status === 'active') {
+          // Resuming an unloaded active goal can itself start its scheduler.
+          // Do not accidentally run an old objective before the new settings,
+          // or pause/take over a desktop goal without an explicit user command.
+          throw new AppError('This session already has an active native goal. Inspect /goal, then use /goal pause before changing or resuming it from a new Codey run.', {
+            code: 'CODEX_GOAL_ALREADY_ACTIVE', statusCode: 409,
+          });
+        }
+      }
       // Attach without changing permissions: the thread may still have an
       // active desktop turn. Apply Codey's selection only at turn/start,
       // after the busy check, alongside the user's model/effort selection.
@@ -281,6 +424,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
         // Only the exact native refusal proves that this prompt has not been
         // submitted. Never queue after an ambiguous turn/start/network failure.
         if (process.platform === 'win32' && client.ownsProcess
+          && !goalCommand && !planMode
           && record?.code === 'CODEX_STDIO_RPC_ERROR'
           && error instanceof Error
           && error.message === `thread ${run.threadId} already has an active writer`) {
@@ -329,6 +473,10 @@ export class CodexSharedRuntime implements IProviderRuntime {
     };
     const handleEvent = (method: string, params: AnyRecord) => {
       if (params.threadId !== run.threadId) return;
+      if (method === 'serverRequest/resolved') {
+        this.ownedPermissions.resolvedByNative(client, params.requestId);
+        return;
+      }
       if (!run.turnId) {
         if (earlyEvents.length >= 1_000) {
           rejectTurn(new Error('Codex sent too many events before acknowledging the turn. Check the session in Codex app before retrying.'));
@@ -350,6 +498,11 @@ export class CodexSharedRuntime implements IProviderRuntime {
         item.text = String(item.text || '') + String(params.delta || '');
         items.set(item.id, item);
         queueItem(item);
+      } else if (method === 'item/plan/delta') {
+        const item = items.get(params.itemId) ?? { id: params.itemId, type: 'plan', text: '' };
+        item.text = String(item.text || '') + String(params.delta || '');
+        items.set(item.id, item);
+        queueItem(item);
       } else if (method === 'item/commandExecution/outputDelta') {
         const item = items.get(params.itemId);
         if (item) {
@@ -364,12 +517,14 @@ export class CodexSharedRuntime implements IProviderRuntime {
           })),
         }, run.threadId)) send(writer, message);
       } else if (method === 'turn/completed') {
-        run.finished = true;
         flush();
-        resolveTurn(readObjectRecord(params.turn) ?? {});
+        if (!goalCommand) {
+          run.finished = true;
+          resolveTurn(readObjectRecord(params.turn) ?? {});
+        }
       }
     };
-    const offEvent = client.onNotification(handleEvent);
+    const offEvent = goalCommand ? () => {} : client.onNotification(handleEvent);
     const offDisconnect = client.onDisconnect(rejectTurn);
     const offRequest = client.onServerRequest((method, params, id) => {
       if (client.ownsProcess) {
@@ -387,11 +542,40 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
     try {
       if (run.aborted) return;
+      if (goalCommand) {
+        // One updatable status row per goal run, not a full objective appended
+        // for every usage notification in a long-running goal.
+        const goalStatusMessage = createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'task_notification', status: 'info',
+        });
+        run.goal = new CodexGoalRun(client, run.threadId!, {
+          onTurn: (id) => {
+            flush();
+            items.clear();
+            run.turnId = id;
+            send(writer, createNormalizedMessage({
+              provider: 'codex', sessionId, kind: 'status',
+              canSteer: Boolean(id), canInterrupt: true,
+            }));
+          },
+          onEvent: handleEvent,
+          onGoal: (goal) => send(writer, {
+            ...goalStatusMessage,
+            summary: formatCodexGoalResult(goal).message,
+          }),
+        });
+        const turn = await run.goal.start(goalCommand, turnSettings);
+        run.finished = true;
+        send(writer, createCompleteMessage({
+          provider: 'codex', sessionId, actualSessionId: run.threadId,
+          exitCode: turn.status === 'completed' ? 0 : 1,
+          aborted: run.aborted || turn.status === 'interrupted',
+        }));
+        return;
+      }
       const response = await client.request('turn/start', {
         threadId: run.threadId, input,
-        ...turnPermissions,
-        ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
+        ...turnSettings,
       });
       if (typeof response.turn?.id !== 'string') {
         throw new Error('Codex did not acknowledge a turn id. Check Codex app before retrying; no exec fallback was started.');

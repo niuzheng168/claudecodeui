@@ -29,6 +29,7 @@ async function fixture(t: TestContext, body: (f: {
   run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>;
   send: (overrides?: AnyRecord) => Promise<void>;
   runtime: {
+    abort: (provider: string, sessionId: string) => Promise<boolean>;
     canSteer: () => boolean;
     steer: (provider: string, sessionId: string, command: string, options: AnyRecord) => Promise<void>;
   };
@@ -91,6 +92,24 @@ test('accepted corrections use the same run and are echoed once to all subscribe
   });
 });
 
+test('a late goal Stop acknowledgement cannot complete the next queued run', async (t) => {
+  await fixture(t, async ({ runtime, run, observer, send }) => {
+    let successor: ReturnType<typeof chatRunRegistry.startRun> | undefined;
+    t.mock.method(runtime, 'abort', async () => {
+      chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
+      successor = chatRunRegistry.startRun({
+        appSessionId: 'session-a', provider: 'codex', providerSessionId: 'native-a',
+        connection: observer, userId: 1,
+      });
+      await nextTick();
+      return true;
+    });
+    await send({ type: 'chat.abort' });
+    assert.ok(successor);
+    assert.equal(chatRunRegistry.getRun('session-a'), successor);
+    assert.equal(successor.status, 'running');
+  });
+});
 test('only upload-store attachments reach steering; execution settings are ignored', async (t) => {
   await fixture(t, async ({ send, calls }) => {
     const image = { path: path.join(getGlobalImageAssetsDir(), 'correction.png'), name: 'correction.png' };

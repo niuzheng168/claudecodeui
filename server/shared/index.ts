@@ -12,8 +12,12 @@ export type {
   AnyRecord, CodexRpcRequestId, CodexRpcServerReply, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
   LLMProvider,
+  CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
 } from './types.js';
 export {
   createCompleteMessage, createNormalizedMessage, resolveCodexHomeDirectory,
 } from './utils.js';
 export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.js';
+// Commands resolves application metadata and parses local custom command frontmatter.
+export { findApplicationRoot, getModuleDirectory } from './utils.js';
+export { parseFrontMatter } from './frontmatter.js';

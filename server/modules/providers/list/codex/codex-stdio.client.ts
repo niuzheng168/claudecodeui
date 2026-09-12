@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import {
@@ -20,7 +21,8 @@ type Pending = {
 };
 
 /**
- * Used by CodexSharedRuntime on explicitly configured Windows nodes. The
+ * Used by CodexSharedRuntime on configured Windows nodes and for native
+ * goal/plan operations on CLI-only nodes. The
  * reviewed native CLI reads the real history format; no exec/JSONL fallback,
  * extra listener, desktop-process takeover, or retry of a submitted turn.
  * One connection owns one child and awaits its exit to release writer locks.
@@ -85,14 +87,14 @@ export class CodexStdioClient implements ICodexRpcClient {
   }
 
   static async connect(
-    options: { executable?: string; home?: string; timeoutMs?: number } = {},
+    options: { executable?: string; launcherArgs?: string[]; home?: string; timeoutMs?: number } = {},
   ): Promise<CodexStdioClient> {
     const executable = options.executable ?? process.env.CODEY_CODEX_EXECUTABLE;
     const home = options.home ?? resolveCodexHomeDirectory();
     const timeoutMs = options.timeoutMs ?? 30_000;
     if (!executable || !path.isAbsolute(executable) || !path.isAbsolute(home)
       || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
-      throw new AppError('Configure an absolute native Codex executable and home for the Windows runtime.', {
+      throw new AppError('Configure an absolute native Codex executable and home for the native runtime.', {
         code: 'CODEX_STDIO_UNAVAILABLE', statusCode: 503,
       });
     }
@@ -106,14 +108,14 @@ export class CodexStdioClient implements ICodexRpcClient {
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
       !['CODEX_THREAD_ID', 'CODEX_PARENT_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']
         .includes(name.toUpperCase())));
-    const child = spawn(executable, ['app-server', '--stdio'], {
+    const child = spawn(executable, [...(options.launcherArgs ?? []), 'app-server', '--stdio'], {
       cwd: home, env: { ...env, CODEX_HOME: home }, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const client = new CodexStdioClient(child, timeoutMs);
     try {
       await client.request('initialize', {
-        clientInfo: { name: 'cloudcli', title: 'Codey Windows', version: '1' },
+        clientInfo: { name: 'cloudcli', title: 'Codey', version: '1' },
         capabilities: { experimentalApi: true },
       });
       client.write({ method: 'initialized', params: {} });
@@ -122,6 +124,24 @@ export class CodexStdioClient implements ICodexRpcClient {
       await client.close();
       throw error;
     }
+  }
+
+  /**
+   * Used by the native command runtime only after the existing-owner check.
+   * Managed packages use their configured CLI; source installs can use the
+   * packaged launcher. Never chooses a different executable after an RPC fails.
+   */
+  static async connectInstalled(): Promise<CodexStdioClient> {
+    if (process.env.CODEY_CODEX_EXECUTABLE) return this.connect();
+    let launcher: string;
+    try {
+      launcher = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+    } catch {
+      throw new AppError('Native /goal and /plan require a configured Codex CLI. Update the node or configure CODEY_CODEX_EXECUTABLE.', {
+        code: 'CODEX_STDIO_UNAVAILABLE', statusCode: 503,
+      });
+    }
+    return this.connect({ executable: process.execPath, launcherArgs: [launcher] });
   }
 
   request(method: string, params: AnyRecord): Promise<AnyRecord> {
