@@ -615,7 +615,9 @@ async function handleChatAbort(
 
   const success = await dependencies.runtime.abort(run.provider, sessionId);
 
-  chatRunRegistry.completeRun(sessionId, {
+  // Native goal Stop may finish draining its process and admit a queued run
+  // before abort() returns. A late acknowledgement must only finish THIS run.
+  chatRunRegistry.completeRunIfCurrent(run, {
     exitCode: success ? 0 : 1,
     aborted: true,
   });

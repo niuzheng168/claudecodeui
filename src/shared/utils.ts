@@ -1,9 +1,15 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, ComposerHistoryMessage, LLMProvider, Project, ProjectSession } from '@/shared/types';
+import type { ChatMessage, ComposerHistoryMessage, LLMProvider, Project, ProjectSession, SlashCommand } from '@/shared/types';
 
 //----------------- COMPOSER INPUT HELPERS ------------
+
+/** Chat's command palette and submit path recognize only server-advertised built-ins, not custom frontmatter claiming native support. */
+export function isNativeCodexCommand(command: SlashCommand): boolean {
+  return command.namespace === 'builtin' && (command.name === '/goal' || command.name === '/plan')
+    && command.metadata?.type === 'native' && command.metadata.provider === 'codex';
+}
 
 /** Chat's canonical keyboard handler and input shell recognize the same explicit mode chord, excluding AltGr. */
 export function isComposerModeShortcut(event: {

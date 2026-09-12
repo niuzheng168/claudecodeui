@@ -16,7 +16,7 @@ import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { StoredQueuedMessage, SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
-import { isComposerModeShortcut } from '@/shared/utils';
+import { isComposerModeShortcut, isNativeCodexCommand } from '@/shared/utils';
 import {
   clearQueuedMessage,
   flushChatDraft,
@@ -40,6 +40,7 @@ type UseChatComposerStateArgs = {
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
+  selectPermissionMode?: (mode: PermissionMode) => void;
   resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
   /**
    * Model every send and command carries: the open session's model when there
@@ -183,6 +184,7 @@ export function useChatComposerState({
   provider,
   permissionMode,
   cyclePermissionMode,
+  selectPermissionMode,
   resolvePermissionModeForProvider,
   currentProviderModel,
   currentProviderEffort,
@@ -284,6 +286,8 @@ export function useChatComposerState({
   } | null>(null);
   // Synchronous lock prevents two clicks/Enter from sending or queueing the same draft before React commits.
   const steeringInFlightRef = useRef<string | null>(null);
+  // Reserve native submissions per draft/session while a control or new-session request is awaiting acknowledgement.
+  const nativeCommandsInFlightRef = useRef(new Set<string>());
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -388,6 +392,13 @@ export function useChatComposerState({
         return;
       }
 
+      if (isNativeCodexCommand(command)) {
+        // Exact native commands selected with Enter go through the same
+        // guarded submit path; the legacy custom-command executor is not used.
+        await handleSubmitRef.current?.(createFakeSubmitEvent());
+        return;
+      }
+
       try {
         const effectiveInput = rawInput ?? input;
         const commandMatch = effectiveInput.match(new RegExp(`${escapeRegExp(command.name)}\\s*(.*)`));
@@ -452,6 +463,7 @@ export function useChatComposerState({
       provider,
       selectedProject,
       selectedSession?.id,
+      setInput,
       addMessage,
       tokenBudget,
     ],
@@ -614,6 +626,7 @@ export function useChatComposerState({
       model: currentProviderModel,
       effort: currentProviderEffort,
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+      ...(provider === 'codex' ? { codexPlanMode: permissionMode === 'plan' } : {}),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
@@ -633,6 +646,8 @@ export function useChatComposerState({
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      let nativeCommandScope: string | null = null;
+      try {
       if (steeringInFlightRef.current === sessionKey && sessionKey) return;
       setSteeringState((current) => current?.scope === sessionKey ? null : current);
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
@@ -647,6 +662,103 @@ export function useChatComposerState({
         || !selectedProject
       ) {
         return;
+      }
+
+      const nativeCommand = currentInput.match(/^\/(goal|plan)(?:\s+([\s\S]*))?$/);
+      let nativeSendOptions: QueuedSendOptions = {};
+      if (nativeCommand) {
+        const name = `/${nativeCommand[1]}`;
+        const argumentsText = (nativeCommand[2] ?? '').trim();
+        if (provider !== 'codex' || !slashCommands.some((command) =>
+          command.name === name && isNativeCodexCommand(command))) {
+          addMessage({
+            type: 'error',
+            content: provider !== 'codex' ? `${name} is available only for Codex.`
+              : `This node has not advertised native ${name} support. Wait for commands to load, or update the node's Codey backend.`,
+            timestamp: new Date(),
+          });
+          return;
+        }
+        if (editingAnchorId) {
+          addMessage({ type: 'error', content: 'Use native commands in a new message, not while editing an earlier turn.', timestamp: new Date() });
+          return;
+        }
+        const scope = draftScopeRef.current!;
+        if (nativeCommandsInFlightRef.current.has(scope)) return;
+        nativeCommandsInFlightRef.current.add(scope);
+        nativeCommandScope = scope;
+
+        if (name === '/goal') {
+          if (currentAttachments.length || previouslyUploadedAttachments.length) {
+            addMessage({ type: 'error', content: 'Goal commands do not accept attachments. Refer to a project file in the objective instead.', timestamp: new Date() });
+            return;
+          }
+          const control = !argumentsText || /^(?:status|help|pause|clear|budget)(?:\s|$)/.test(argumentsText)
+            || argumentsText === 'edit';
+          if (control) {
+            try {
+              const response = await api.commands.goal(selectedSession?.id || currentSessionId || null, argumentsText);
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.error || `Goal command failed (${response.status})`);
+              if (draftScopeRef.current !== scope) return;
+              addMessage({ type: 'assistant', content: result.message, timestamp: new Date() });
+              if (inputValueRef.current === currentInput) {
+                const draft = typeof result.draft === 'string' ? result.draft : '';
+                setInput(draft);
+                inputValueRef.current = draft;
+                resetCommandMenuState();
+              }
+            } catch (error) {
+              if (draftScopeRef.current === scope) {
+                addMessage({ type: 'error', content: error instanceof Error ? error.message : 'Goal command failed.', timestamp: new Date() });
+              }
+            }
+            return;
+          }
+          if (permissionMode === 'plan') {
+            addMessage({ type: 'error', content: 'Use /plan off before starting or resuming an autonomous goal.', timestamp: new Date() });
+            return;
+          }
+        } else {
+          if (!selectPermissionMode) return;
+          if (resolvePermissionModeForProvider('codex', 'plan') !== 'plan') {
+            addMessage({
+              type: 'error',
+              content: 'Native Plan Mode is not available in this node capability snapshot. Wait for capabilities to load or update the node backend.',
+              timestamp: new Date(),
+            });
+            return;
+          }
+          const toggleOnly = !argumentsText || argumentsText === 'on' || argumentsText === 'off';
+          if (toggleOnly && (currentAttachments.length || previouslyUploadedAttachments.length)) {
+            addMessage({ type: 'error', content: 'Add a prompt after /plan to send attachments, or remove them before switching modes.', timestamp: new Date() });
+            return;
+          }
+          if (toggleOnly) {
+            // Leaving planning returns to normal approval mode, never silently
+            // restores a previous full-access grant.
+            const nextMode = argumentsText === 'off' || (!argumentsText && permissionMode === 'plan') ? 'default' : 'plan';
+            selectPermissionMode(nextMode);
+            addMessage({
+              type: 'assistant',
+              content: nextMode === 'plan'
+                ? 'Codex Plan Mode enabled for the next message. Use /plan off to return to normal mode.'
+                : 'Codex Plan Mode disabled. Normal approval mode will apply to the next message.',
+              timestamp: new Date(),
+            });
+            setInput('');
+            inputValueRef.current = '';
+            resetCommandMenuState();
+            return;
+          }
+          if (!isLoading) selectPermissionMode('plan');
+          // React may not render the new mode before the first send.
+          nativeSendOptions = { permissionMode: 'plan', codexPlanMode: true };
+        }
+        if (isLoading) {
+          addMessage({ type: 'error', content: 'Wait for the current run to finish before starting a native command. /goal pause and /goal clear remain available while it runs.', timestamp: new Date() });
+          return;
+        }
       }
 
       // A turn is already in flight: stash this message instead of sending it.
@@ -719,7 +831,7 @@ export function useChatComposerState({
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
       const commandInput = currentInput.trimEnd();
       const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
-      if (commandInput.startsWith('/') || isHelpAlias) {
+      if (!nativeCommand && (commandInput.startsWith('/') || isHelpAlias)) {
         const firstSpace = commandInput.indexOf(' ');
         const commandName = isHelpAlias
           ? '/help'
@@ -767,6 +879,7 @@ export function useChatComposerState({
         }
       }
 
+      if (nativeCommandScope && draftScopeRef.current !== nativeCommandScope) return;
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
@@ -816,6 +929,9 @@ export function useChatComposerState({
           return;
         }
 
+        // Navigation during session allocation must not start a goal in the
+        // background, route back to the old project, or clear the new draft.
+        if (nativeCommandScope && draftScopeRef.current !== nativeCommandScope) return;
         onSessionEstablished?.(targetSessionId, {
           provider,
           project: selectedProject,
@@ -861,6 +977,7 @@ export function useChatComposerState({
         content: messageContent,
         options: {
           ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          ...nativeSendOptions,
           attachments: uploadedAttachments,
         },
       });
@@ -880,6 +997,9 @@ export function useChatComposerState({
       if (draftScopeRef.current) {
         writeDraftText(draftScopeRef.current, '');
       }
+      } finally {
+        if (nativeCommandScope) nativeCommandsInFlightRef.current.delete(nativeCommandScope);
+      }
     },
     [
       selectedSession,
@@ -892,6 +1012,9 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      permissionMode,
+      selectPermissionMode,
+      resolvePermissionModeForProvider,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,

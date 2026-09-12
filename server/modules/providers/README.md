@@ -39,6 +39,34 @@ The services that consume them are:
 Live execution is consumed through `providerRuntimeService`, which resolves the
 provider-owned runtime through the same `providerRegistry` as every other facet.
 
+### Codex native goal and planning commands
+
+The command catalog advertises `/goal` and `/plan` only for Codex. Goal creation
+and resume use the ordinary session-allocated chat gateway, not a detached REST
+model call. `CodexGoalRun` follows `thread/goal/*` and multiple native turns until
+the goal is inactive and its current turn has drained. Stop pauses the scheduler
+before interrupting the tracked turn; failures never replay an activation.
+
+`codexCommandsService` exposes read/pause/clear/edit/budget controls through the
+Providers barrel. It resolves app session ids from the database before calling
+the runtime's owning connection. Controls do not resume a thread, and a separate
+client cannot take over an already-active goal by sending a new goal command.
+
+The composer represents Plan Mode using its existing mode selector and sends an
+explicit `codexPlanMode` boolean with Codex messages. Native execution translates
+this into `collaborationMode` with built-in instructions, plus a read-only sandbox
+for planning. Explicitly leaving Plan Mode also uses native RPC rather than
+silently relying on exec defaults. Owned stdio connections translate
+`item/tool/requestUserInput` into the existing web question UI with stable native
+question ids; desktop-owned interactions retain their existing owner.
+
+On CLI-only nodes, native commands/mode selections use a scoped app-server child
+from the configured CLI (or the installed npm launcher in source development).
+New CLI-only threads retain legacy history compatibility. Existing daemon and
+Windows transport selection, writer-conflict protection and no-retry behavior
+remain in force. The opt-in `codex-native-commands.integration.test.ts` verifies
+real CLI behavior using an isolated home and offline localhost model fixture.
+
 Current provider ids in this repo are:
 
 - `claude`
@@ -376,5 +404,4 @@ alongside the implementation.
 - Forgetting that Claude plugin skills are discovered differently from normal
   user/project skill folders.
 - Assuming one provider's MCP config file format works for the others.
-
 

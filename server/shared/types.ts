@@ -432,6 +432,43 @@ export type SubagentInfo = {
   activityCount?: number;
 };
 
+//----------------- CODEX GOAL COMMANDS ------------
+
+/**
+ * Native persisted goal returned by Codex app-server. Usage and status are
+ * authoritative; Codey must not invent a budget or implement its own retry loop.
+ * The native thread id stays inside the providers module.
+ */
+export type CodexGoal = {
+  threadId: string;
+  objective: string;
+  status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+};
+
+/**
+ * Parsed explicit /goal operation. Only set/resume may start work and must go
+ * through the chat run registry. Read/control operations never submit a prompt.
+ */
+export type CodexGoalCommand =
+  | { action: 'get' | 'help' | 'edit' | 'pause' | 'resume' | 'clear' }
+  | { action: 'set'; objective: string; tokenBudget?: number }
+  | { action: 'budget'; tokenBudget: number | null };
+
+/**
+ * Result of the authenticated goal-control endpoint, addressed by an app
+ * session id. An optional draft fills the composer without submitting work.
+ */
+export type CodexGoalCommandResult = {
+  goal: Omit<CodexGoal, 'threadId'> | null;
+  message: string;
+  draft?: string;
+};
+
+// ---------------------------
+
 /**
  * Output gateway shared by WebSocket and SSE provider runs.
  *

@@ -4,6 +4,7 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 import { api } from '@/shared/api';
 import { safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import type { LLMProvider, Project, SlashCommand } from '@/shared/types';
+import { isNativeCodexCommand } from '@/shared/utils';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -170,7 +171,7 @@ export function useSlashCommands({
 
       try {
         const workspacePath = selectedProject.fullPath || selectedProject.path || '';
-        const response = await api.commands.list(workspacePath || selectedProject.path);
+        const response = await api.commands.list(workspacePath || selectedProject.path, provider);
 
         if (!response.ok) {
           throw new Error('Failed to fetch commands');
@@ -268,8 +269,8 @@ export function useSlashCommands({
       const textBeforeCommand = input.slice(0, insertionStart);
       const textAfterCommandStart = input.slice(insertionStart);
       const spaceIndex = textAfterCommandStart.indexOf(' ');
-      const textAfterCommand = slashPosition >= 0 && spaceIndex !== -1
-        ? textAfterCommandStart.slice(spaceIndex).trimStart()
+      const textAfterCommand = slashPosition >= 0
+        ? (spaceIndex !== -1 ? textAfterCommandStart.slice(spaceIndex).trimStart() : '')
         : input.slice(currentTextarea?.selectionEnd ?? insertionStart);
       const separator = textBeforeCommand && !/\s$/.test(textBeforeCommand) ? ' ' : '';
       const newInput = `${textBeforeCommand}${separator}${command.name}${textAfterCommand ? ` ${textAfterCommand}` : ' '}`;
@@ -307,15 +308,19 @@ export function useSlashCommands({
   );
 
   const selectCommandFromKeyboard = useCallback(
-    (command: SlashCommand) => {
-      if (isSkillCommand(command)) {
+    (command: SlashCommand, executeNative = false) => {
+      if (isNativeCodexCommand(command) && executeNative && input.trimEnd() === command.name) {
+        executeNonSkillCommand(command);
+        return;
+      }
+      if (isSkillCommand(command) || isNativeCodexCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
 
       executeNonSkillCommand(command);
     },
-    [executeNonSkillCommand, insertCommandIntoInput],
+    [executeNonSkillCommand, input, insertCommandIntoInput],
   );
 
   const handleCommandSelect = useCallback(
@@ -330,7 +335,7 @@ export function useSlashCommands({
       }
 
       trackCommandUsage(command);
-      if (isSkillCommand(command)) {
+      if (isSkillCommand(command) || isNativeCodexCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
@@ -401,6 +406,17 @@ export function useSlashCommands({
       if (!showCommandMenu) {
         return false;
       }
+      if ((event.key === 'Enter' || event.key === 'Tab') && selectedCommandIndex < 0) {
+        // An exact native command must not select a different item while the
+        // search debounce still holds the previous query. Tab only completes.
+        const exact = slashCommands.find((command) =>
+          isNativeCodexCommand(command) && command.name === input.trimEnd());
+        if (exact) {
+          event.preventDefault();
+          selectCommandFromKeyboard(exact, event.key === 'Enter');
+          return true;
+        }
+      }
 
       if (!filteredCommands.length) {
         if (event.key === 'Escape') {
@@ -430,9 +446,9 @@ export function useSlashCommands({
       if (event.key === 'Tab' || event.key === 'Enter') {
         event.preventDefault();
         if (selectedCommandIndex >= 0) {
-          selectCommandFromKeyboard(filteredCommands[selectedCommandIndex]);
+          selectCommandFromKeyboard(filteredCommands[selectedCommandIndex], event.key === 'Enter');
         } else if (filteredCommands.length > 0) {
-          selectCommandFromKeyboard(filteredCommands[0]);
+          selectCommandFromKeyboard(filteredCommands[0], event.key === 'Enter');
         }
         return true;
       }
@@ -445,7 +461,7 @@ export function useSlashCommands({
 
       return false;
     },
-    [showCommandMenu, filteredCommands, resetCommandMenuState, selectCommandFromKeyboard, selectedCommandIndex],
+    [showCommandMenu, filteredCommands, input, slashCommands, resetCommandMenuState, selectCommandFromKeyboard, selectedCommandIndex],
   );
 
   useEffect(

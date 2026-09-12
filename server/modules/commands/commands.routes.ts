@@ -3,7 +3,7 @@ import path from "path";
 
 import express from "express";
 
-import { parseFrontMatter } from "../../shared/frontmatter.js";
+import { parseFrontMatter } from "@/shared/index.js";
 
 type CommandsRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
@@ -206,17 +206,35 @@ const builtInCommands = [
   },
 ];
 
+const codexCommands = [
+  {
+    name: "/goal",
+    description: "Set, view, pause or resume a persistent Codex goal",
+    namespace: "builtin",
+    metadata: { type: "native", provider: "codex" },
+  },
+  {
+    name: "/plan",
+    description: "Toggle Codex Plan Mode, or /plan <prompt> to plan a task",
+    namespace: "builtin",
+    metadata: { type: "native", provider: "codex" },
+  },
+];
+const commandsForProvider = (provider) =>
+  provider === "codex" ? [...builtInCommands, ...codexCommands] : builtInCommands;
+
 /**
  * Built-in command handlers
  * Each handler returns { type: 'builtin', action: string, data: any }
  */
 const builtInHandlers = {
   "/help": async (args, context) => {
-    const helpText = `# Claude Code Commands
+    const availableCommands = commandsForProvider(readModelProvider(context?.provider));
+    const helpText = `# ${MODEL_PROVIDER_LABELS[readModelProvider(context?.provider)]} Commands
 
 ## Built-in Commands
 
-${builtInCommands
+${availableCommands
   .map(
     (cmd) => `### ${cmd.name}
 ${cmd.description}
@@ -249,7 +267,7 @@ Custom commands can be created in:
       data: {
         content: helpText,
         format: "markdown",
-        commands: builtInCommands.map((command) => ({
+        commands: availableCommands.map((command) => ({
           name: command.name,
           description: command.description,
           namespace: command.namespace,
@@ -445,8 +463,9 @@ Custom commands can be created in:
  */
 router.post("/list", async (req, res) => {
   try {
-    const { projectPath } = req.body;
-    const allCommands = [...builtInCommands];
+    const { projectPath, provider } = req.body;
+    const availableCommands = commandsForProvider(readModelProvider(provider));
+    const allCommands = [...availableCommands];
 
     // Scan project-level commands (.claude/commands/)
     if (projectPath) {
@@ -478,7 +497,7 @@ router.post("/list", async (req, res) => {
     customCommands.sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({
-      builtIn: builtInCommands,
+      builtIn: availableCommands,
       custom: customCommands,
       count: allCommands.length,
     });

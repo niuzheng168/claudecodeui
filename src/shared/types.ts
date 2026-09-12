@@ -357,10 +357,15 @@ export type PendingPermissionRequest = {
 
 /** One question asked by the AskUserQuestion tool, with its answer options and whether more than one option may be selected. */
 export type Question = {
+  /** Native Codex answers are keyed by id; Claude questions retain their question-text key. */
+  id?: string;
   question: string;
   header?: string;
   options: QuestionOption[];
   multiSelect?: boolean;
+  /** Native question constraints; omitted keeps the existing Claude question UI. */
+  isSecret?: boolean;
+  allowOther?: boolean;
 };
 
 /** Options for a programmatic session navigation, currently only whether the route change should replace the current history entry instead of pushing a new one. */
