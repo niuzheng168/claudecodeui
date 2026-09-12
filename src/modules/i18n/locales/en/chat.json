@@ -1,4 +1,25 @@
 {
+  "goal": {
+    "title": "Goal",
+    "status": {
+      "active": "Running",
+      "paused": "Paused",
+      "blocked": "Blocked",
+      "usageLimited": "Usage limit reached",
+      "budgetLimited": "Token budget reached",
+      "complete": "Completed"
+    },
+    "tokens": "Tokens: {{used}} / {{budget}}",
+    "unlimited": "No limit",
+    "elapsed": "Elapsed: {{time}}",
+    "expand": "Expand full goal",
+    "collapse": "Collapse goal",
+    "refresh": "Refresh goal status",
+    "lastStatus": "Last status: {{status}}",
+    "stale": "Could not refresh. Showing the last confirmed goal.",
+    "unavailable": "Goal status is temporarily unavailable. Retry when the node is reachable.",
+    "unsupported": "Update this node's Codey backend to display native goals."
+  },
   "completion": {
     "title": "Inline completion",
     "on": "On",

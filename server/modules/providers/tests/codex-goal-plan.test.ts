@@ -109,6 +109,24 @@ test('goal parser preserves multiline objectives and only uses explicitly suppli
   assert.throws(() => readCodexGoal({ ...goal(), threadId: 'foreign' }, 'native'), { code: 'CODEX_GOAL_INVALID_RESPONSE' });
 });
 
+test('opening an externally running goal reads persisted native state without resuming or taking over the thread', async () => {
+  const f = fixture();
+  f.client.state = goal('active', 324672);
+  const service = createCodexCommandsService({
+    getSession: (id) => id === 'app' ? { provider: 'codex', provider_session_id: 'native' } : null,
+    controlGoal: (...args) => f.runtime.controlGoal(...args),
+  });
+  const result = await service.goal('app', 'status');
+  assert.equal(result.goal?.status, 'active');
+  assert.equal(result.goal?.tokensUsed, 324672);
+  assert.equal('threadId' in result.goal!, false);
+  assert.deepEqual(f.client.calls, [{ method: 'thread/goal/get', params: { threadId: 'native' } }]);
+  assert.equal(f.client.state.status, 'active');
+  assert.equal(f.messages.length, 0);
+  assert.equal(f.fallbackCalls(), 0);
+  assert.equal(f.client.closed, true, 'Only the reader connection is released');
+});
+
 test('goal run follows multiple native turns, ignoring foreign events and without submitting turn/start', async () => {
   const f = fixture();
   let done = false;

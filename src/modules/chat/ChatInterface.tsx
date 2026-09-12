@@ -19,7 +19,9 @@ import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { useChatSteering } from '@/modules/chat/hooks/useChatSteering';
+import { useSessionGoal } from '@/modules/chat/hooks/useSessionGoal';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { SessionGoalBanner } from '@/modules/chat/SessionGoalBanner';
 import {
   useProcessingSessions,
   useSessionProtectionActions,
@@ -182,6 +184,12 @@ function ChatInterface({
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
   const steering = useChatSteering(selectedSession?.id || currentSessionId || null);
+  // Selection is authoritative: local provider/session state can lag a render
+  // when opening a new draft or switching to another provider's conversation.
+  const goalSessionId = selectedProject && selectedSession
+    && (selectedSession.__provider ?? selectedSession.provider ?? provider) === 'codex'
+    ? selectedSession.id : null;
+  const sessionGoal = useSessionGoal(goalSessionId, isActive);
 
   const {
     input,
@@ -428,6 +436,13 @@ function ChatInterface({
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        <SessionGoalBanner
+          key={goalSessionId}
+          goal={sessionGoal.goal}
+          loading={sessionGoal.loading}
+          error={sessionGoal.error}
+          onRefresh={sessionGoal.refresh}
+        />
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           // Not redundant with the `scroll` listener. A first page is 20 rows,

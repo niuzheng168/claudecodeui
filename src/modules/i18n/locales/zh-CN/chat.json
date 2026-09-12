@@ -1,4 +1,25 @@
 {
+  "goal": {
+    "title": "Goal",
+    "status": {
+      "active": "执行中",
+      "paused": "已暂停",
+      "blocked": "受阻",
+      "usageLimited": "已达用量限制",
+      "budgetLimited": "已达 Token 预算",
+      "complete": "已完成"
+    },
+    "tokens": "Token：{{used}} / {{budget}}",
+    "unlimited": "不限",
+    "elapsed": "耗时：{{time}}",
+    "expand": "展开完整目标",
+    "collapse": "折叠目标",
+    "refresh": "刷新 Goal 状态",
+    "lastStatus": "上次状态：{{status}}",
+    "stale": "状态更新失败，显示上次确认的目标。",
+    "unavailable": "暂时无法读取 Goal 状态，节点恢复连接后可重试。",
+    "unsupported": "请更新此节点的 Codey 后端，以显示原生 Goal。"
+  },
   "completion": {
     "title": "自动补全",
     "on": "已开启",
