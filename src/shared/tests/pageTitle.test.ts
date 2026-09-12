@@ -17,6 +17,7 @@ const setWorkspace = (base: string): void => {
 
 afterEach(() => {
   Reflect.deleteProperty(window, '__CLOUDCLI_BASE_PATH__');
+  Reflect.deleteProperty(window, '__CLOUDCLI_NODE__');
   vi.unstubAllEnvs();
 });
 
@@ -48,12 +49,41 @@ test('falls back to the app title when no project or session is selected', () =>
   assert.equal(getPageTitle(null, null), 'CloudCLI UI');
 });
 
-test('uses each routed node ID rather than the generic app name or shared asset release', () => {
+test('falls back to each routed node ID on older portals without machine metadata', () => {
   vi.stubEnv('BASE_URL', '/cloudcli-ui/ui-shared/');
   for (const node of ['zhn-a100', 'jpe2', 'jpe3', 'westus2', 'local', 'n-aaaaaaaaaaaaaaaaaaaaaaaa']) {
     setWorkspace(`/cloudcli/${node}/`);
     assert.equal(getPageTitle(null, null), `cloudcli - ${node}`);
   }
+});
+
+test('uses the machine name rather than the opaque enrollment ID, preserving session context', () => {
+  const id = 'n-ed8b548e9f433021e91ede0e';
+  setWorkspace(`/cloudcli/${id}/`);
+  Object.defineProperty(window, '__CLOUDCLI_NODE__', {
+    value: { id, name: '  zhn-usw2-1  ' }, configurable: true,
+  });
+  assert.equal(getPageTitle(null, null), 'cloudcli - zhn-usw2-1');
+  assert.equal(getPageTitle(project, null), 'cloudcli - zhn-usw2-1 · My Project');
+  assert.equal(getPageTitle(project, {
+    id: 'session-1', summary: 'design', __provider: 'codex',
+  }), 'cloudcli - zhn-usw2-1 · design');
+});
+
+test('ignores foreign, empty or malformed machine metadata', () => {
+  setWorkspace('/cloudcli/node-a/');
+  for (const identity of [
+    { id: 'node-b', name: 'Wrong machine' }, { id: 'node-a', name: ' ' },
+    { id: 'node-a', name: 123 }, null,
+  ]) {
+    Object.defineProperty(window, '__CLOUDCLI_NODE__', { value: identity, configurable: true });
+    assert.equal(getPageTitle(null, null), 'cloudcli - node-a');
+  }
+  setWorkspace('/');
+  Object.defineProperty(window, '__CLOUDCLI_NODE__', {
+    value: { id: 'node-a', name: 'A machine' }, configurable: true,
+  });
+  assert.equal(getPageTitle(null, null), 'CloudCLI UI');
 });
 
 test('keeps node identity first when selecting a project or a session', () => {

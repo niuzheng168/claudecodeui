@@ -48,6 +48,26 @@ export type ProviderModelActions = {
 
 // ---------------------------
 
+//----------------- CODEX SESSION GOALS ------------
+
+/**
+ * Public native goal snapshot for the viewed Codex session. Status, token usage
+ * and elapsed time come from Codex, not the transcript or the browser's clock.
+ * A null budget means unlimited; provider-native thread IDs stay on the server.
+ */
+export type CodexSessionGoal = {
+  objective: string;
+  status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+};
+
+/** Distinguishes a failed goal refresh from a node without the native goal API. */
+export type CodexGoalReadError = 'unavailable' | 'unsupported';
+
+// ---------------------------
+
 //----------------- PROJECTS AND SESSIONS ------------
 
 /** Identifies the workspace pane the user is looking at; plugin panes are namespaced by plugin id. */

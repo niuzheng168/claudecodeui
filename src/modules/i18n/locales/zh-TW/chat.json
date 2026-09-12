@@ -1,4 +1,25 @@
 {
+  "goal": {
+    "title": "Goal",
+    "status": {
+      "active": "執行中",
+      "paused": "已暫停",
+      "blocked": "受阻",
+      "usageLimited": "已達用量限制",
+      "budgetLimited": "已達 Token 預算",
+      "complete": "已完成"
+    },
+    "tokens": "Token：{{used}} / {{budget}}",
+    "unlimited": "不限",
+    "elapsed": "耗時：{{time}}",
+    "expand": "展開完整目標",
+    "collapse": "摺疊目標",
+    "refresh": "重新整理 Goal 狀態",
+    "lastStatus": "上次狀態：{{status}}",
+    "stale": "狀態更新失敗，顯示上次確認的目標。",
+    "unavailable": "暫時無法讀取 Goal 狀態，節點恢復連線後可重試。",
+    "unsupported": "請更新此節點的 Codey 後端，以顯示原生 Goal。"
+  },
   "completion": {
     "title": "自動補全",
     "on": "已開啟",

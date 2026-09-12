@@ -23,6 +23,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   Reflect.deleteProperty(window, '__CLOUDCLI_BASE_PATH__');
+  Reflect.deleteProperty(window, '__CLOUDCLI_NODE__');
   document.title = '';
 });
 
@@ -34,6 +35,18 @@ test('background completion preserves the node prefix and selected session conte
   expect(document.title).toBe('[Done] cloudcli - zhn-a100 · Fix the settings page');
   vi.advanceTimersByTime(10000);
   expect(document.title).toBe('[Done] cloudcli - zhn-a100 · Fix the settings page');
+});
+
+test('completion and focus preserve the human-readable machine label from runtime metadata', () => {
+  Object.defineProperty(window, '__CLOUDCLI_NODE__', {
+    value: { id: 'zhn-a100', name: '我的 A100' }, configurable: true,
+  });
+  document.title = getPageTitle(null, { id: 's', summary: 'design', __provider: 'codex' });
+  showCompletionTitleIndicator();
+  expect(document.title).toBe('[Done] cloudcli - 我的 A100 · design');
+  returnToWorkspace();
+  vi.advanceTimersByTime(2000);
+  expect(document.title).toBe('cloudcli - 我的 A100 · design');
 });
 
 test('returning to the workspace removes only the completion marker, not its node identity', () => {

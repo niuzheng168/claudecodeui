@@ -398,8 +398,8 @@ export const api = {
     // the field entirely, which is what the server expects.
     list: (projectPath: string | undefined, provider?: string) => post('/api/commands/list', { projectPath, provider }),
     execute: (payload: unknown) => post('/api/commands/execute', payload),
-    goal: (sessionId: string | null, argumentsText: string) =>
-      post('/api/commands/goal', { sessionId, arguments: argumentsText }),
+    goal: (sessionId: string | null, argumentsText: string, options: ApiRequestOptions = {}) =>
+      post('/api/commands/goal', { sessionId, arguments: argumentsText }, options),
   },
 
   // Chat attachments, stored globally under ~/.cloudcli/assets
