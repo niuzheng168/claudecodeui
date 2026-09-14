@@ -1,5 +1,5 @@
-import type { AnyRecord } from '@/shared/types.js';
-import { readObjectRecord } from '@/shared/utils.js';
+import type { AnyRecord } from '@/shared/index.js';
+import { readObjectRecord } from '@/shared/index.js';
 
 /**
  * Used by the Codex daemon runtime and history reader. Projects app-server
@@ -22,6 +22,7 @@ export function projectCodexDaemonItem(
       return [{
         ...base,
         turnId,
+        ...(typeof item.clientId === 'string' && item.clientId.length > 0 ? { clientMessageId: item.clientId } : {}),
         message: { role: 'user', content: item.content },
         images: Array.isArray(item.content)
           ? item.content.filter((part: AnyRecord) => part?.type === 'localImage')

@@ -16,7 +16,7 @@ type QueueObserver = {
  * the most recent turn, or somebody else's completion notification.
  */
 export class CodexNativeQueueRun {
-  private readonly clientId = randomUUID();
+  private readonly clientId: string;
   private queuedId: string | null = null;
   private turnId: string | null = null;
   private cancelled = false;
@@ -31,11 +31,15 @@ export class CodexNativeQueueRun {
     private readonly threadId: string,
     private readonly observer: QueueObserver,
     private readonly options: {
+      /** Reuses the submitting browser's identity so its optimistic echo can reconcile with native history. */
+      clientMessageId?: string;
       sleep?: (ms: number) => Promise<void>;
       clock?: () => number;
       timeoutMs?: number;
     } = {},
-  ) {}
+  ) {
+    this.clientId = options.clientMessageId ?? randomUUID();
+  }
 
   async run(input: AnyRecord[]): Promise<{ turn: AnyRecord | null; cancelled: boolean }> {
     try {

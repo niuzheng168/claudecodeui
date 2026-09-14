@@ -1329,6 +1329,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
           type: 'user',
           timestamp,
           message: { role: 'user', content: payload.message },
+          ...(readNonEmptyString(payload.client_id) ? { clientMessageId: payload.client_id } : {}),
           images: extractCodexUserImages(payload),
           ...(isFirstPromptOfTurn ? { turnId } : {}),
         });
@@ -1938,6 +1939,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         kind: 'text',
         role: 'user',
         content: parsedFiles.text,
+        ...(readNonEmptyString(raw.clientMessageId) ? { clientMessageId: raw.clientMessageId } : {}),
         images: rawImages,
         files,
         // The enclosing turn, when the reader could name one. `baseId` is not

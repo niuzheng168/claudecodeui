@@ -14,10 +14,10 @@ import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.c
 import { CodexSessionSynchronizer, synchronizeCodexDaemonSessions } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 import { CodexSharedRuntime } from '@/modules/providers/list/codex/codex-shared-runtime.provider.js';
-import type { IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/types.js';
+import type { AnyRecord, IProviderRuntime, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 const THREAD_ID = 'desktop-thread';
+const DESKTOP_TURN_ID = 'desktop-active-turn';
 const APP_ID = 'app-session';
 const CREATED_AT = 1_788_695_682;
 let databaseTemplateDirectory: string | null = null;
@@ -46,6 +46,23 @@ function event(socket: WebSocket, method: string, params: AnyRecord): void {
   socket.send(JSON.stringify({ method, params: { threadId: THREAD_ID, turnId: 'turn-new', ...params } }));
 }
 
+function replyActiveDesktopThread(request: AnyRecord, socket: WebSocket): boolean {
+  if (request.method === 'thread/goal/get') {
+    reply(socket, request, { goal: null });
+    return true;
+  }
+  if (request.method === 'thread/turns/list') {
+    reply(socket, request, { data: [{
+      id: DESKTOP_TURN_ID, status: 'inProgress', completedAt: null,
+      items: [{ id: 'active-reply', type: 'agentMessage', text: 'Already ' }],
+    }], nextCursor: 'older-turns' });
+    return true;
+  }
+  if (request.method !== 'thread/resume' && request.method !== 'thread/read') return false;
+  reply(socket, request, { thread: { id: THREAD_ID, status: { type: 'active' } } });
+  return true;
+}
+
 async function withFixture(
   run: (fixture: { root: string; home: string; requests: AnyRecord[]; fallbackCalls: string[]; fallback: IProviderRuntime }) => Promise<void>,
   handle?: (request: AnyRecord, socket: WebSocket) => boolean,
@@ -71,6 +88,7 @@ async function withFixture(
     if (!databaseTemplateDirectory) {
       // These test sessions, not password hashing. Checkpoint a fully
       // initialized empty database once, then give every case its own copy.
+      await writeFile(process.env.DATABASE_PATH, '');
       await initializeDatabase();
       closeConnection();
       databaseTemplateDirectory = await mkdtemp(path.join(os.tmpdir(), 'codey-daemon-db-template-'));
@@ -151,6 +169,18 @@ function executionContext(): { messages: AnyRecord[]; writer: ProviderRuntimeWri
     },
   };
 }
+
+test('an ordinary native turn preserves the browser input identity without changing its provider item id', { concurrency: false }, async () => {
+  await withFixture(async ({ requests, fallback }) => {
+    const { messages, writer, context } = executionContext();
+    await new CodexSharedRuntime(fallback).run('One input', {
+      sessionId: APP_ID, clientMessageId: 'browser-input-one',
+    }, writer, context);
+    assert.equal(requests.find((request) => request.method === 'turn/start')?.params.clientUserMessageId,
+      'browser-input-one');
+    assert.equal(messages.at(-1)?.success, true);
+  });
+});
 
 test('native discovery indexes a desktop session without JSONL and coalesces concurrent scans', { concurrency: false }, async () => {
   await withFixture(async ({ requests }) => {
@@ -423,22 +453,224 @@ test('new sessions still support legacy CLI-only installations without a daemon'
   }, undefined, false);
 });
 
-test('a busy desktop turn is not interrupted or appended to by Codey', { concurrency: false }, async () => {
+test('an active desktop turn accepts same-turn input and buffers early output without taking ownership', { concurrency: false }, async () => {
   await withFixture(async ({ requests, fallback, fallbackCalls }) => {
     const { messages, writer, context } = executionContext();
-    await new CodexSharedRuntime(fallback).run('Wait for me', {
-      sessionId: APP_ID, permissionMode: 'bypassPermissions',
+    const runtime = new CodexSharedRuntime(fallback);
+    await runtime.run('Focus on the tests', {
+      sessionId: APP_ID, model: 'different-model', effort: 'high',
+      permissionMode: 'bypassPermissions', codexPlanMode: false,
     }, writer, context);
-    assert.equal(messages.at(-1)?.success, false);
-    assert.match(messages.find((message) => message.kind === 'error')?.content, /currently running in Codex app/);
-    assert.ok(!requests.some((request) => request.method === 'turn/start' || request.method === 'turn/interrupt'));
+    assert.deepEqual(requests.filter((request) => request.method === 'turn/steer').map((request) => request.params), [{
+      threadId: THREAD_ID, expectedTurnId: DESKTOP_TURN_ID,
+      input: [{ type: 'text', text: 'Focus on the tests' }],
+    }]);
+    assert.ok(!requests.some((request) => [
+      'turn/start', 'turn/interrupt', 'thread/start', 'thread/fork', 'thread/settings/update',
+    ].includes(request.method)));
     assert.deepEqual(requests.find((request) => request.method === 'thread/resume')?.params, {
       threadId: THREAD_ID, excludeTurns: true,
     });
+    assert.deepEqual(requests.find((request) => request.method === 'thread/read')?.params, {
+      threadId: THREAD_ID, includeTurns: false,
+    });
+    assert.deepEqual(requests.find((request) => request.method === 'thread/turns/list')?.params, {
+      threadId: THREAD_ID, limit: 1, sortDirection: 'desc', itemsView: 'full',
+    });
     assert.deepEqual(fallbackCalls, []);
+    assert.ok(messages.some((message) => message.id === 'active-reply' && message.content === 'Already continued.'));
+    assert.ok(!messages.some((message) => message.content === 'DO NOT SHOW' || message.role === 'user'));
+    assert.ok(messages.some((message) => message.kind === 'task_notification' && /stay unchanged/.test(message.summary)));
+    assert.ok(messages.some((message) => message.kind === 'status' && message.canInterrupt === false));
+    assert.ok(!messages.some((message) => message.canInterrupt === true || message.canSteer === true));
+    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+    assert.equal(messages.at(-1)?.success, true);
+    assert.equal(runtime.canSteer(APP_ID), false);
+  }, (request, socket) => {
+    if (request.method !== 'turn/steer') return replyActiveDesktopThread(request, socket);
+    event(socket, 'item/completed', {
+      threadId: 'other-thread', turnId: DESKTOP_TURN_ID,
+      item: { id: 'foreign-thread', type: 'agentMessage', text: 'DO NOT SHOW' },
+    });
+    event(socket, 'item/completed', { item: { id: 'foreign-turn', type: 'agentMessage', text: 'DO NOT SHOW' } });
+    event(socket, 'item/completed', {
+      turnId: null, item: { id: 'unverified-turn', type: 'agentMessage', text: 'DO NOT SHOW' },
+    });
+    event(socket, 'turn/completed', { turn: { id: 'turn-new', status: 'failed' } });
+    event(socket, 'item/completed', {
+      turnId: DESKTOP_TURN_ID,
+      item: { id: 'native-user-echo', type: 'userMessage', content: [{ type: 'text', text: 'Focus on the tests' }] },
+    });
+    event(socket, 'item/agentMessage/delta', { turnId: DESKTOP_TURN_ID, itemId: 'active-reply', delta: 'continued.' });
+    event(socket, 'turn/completed', { turnId: DESKTOP_TURN_ID, turn: { id: DESKTOP_TURN_ID, status: 'completed' } });
+    reply(socket, request, { turnId: DESKTOP_TURN_ID });
+    return true;
+  });
+});
+
+test('an attached desktop turn remains steerable but cannot be stopped or auto-approved by Codey', { concurrency: false }, async () => {
+  let ready!: () => void;
+  const accepted = new Promise<void>((resolve) => { ready = resolve; });
+  let steers = 0;
+  await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+    const { messages, writer, context } = executionContext();
+    const originalSend = writer.send;
+    writer.send = (message) => {
+      originalSend(message);
+      if ((message as AnyRecord).canSteer === true) ready();
+    };
+    const runtime = new CodexSharedRuntime(fallback);
+    const running = runtime.run('First correction', { sessionId: APP_ID }, writer, context);
+    await accepted;
+    assert.equal(runtime.canSteer(APP_ID), true);
+    assert.ok(messages.some((message) => message.canSteer === true && message.canInterrupt === false));
+    await assert.rejects(runtime.abort(APP_ID), { code: 'CODEX_DESKTOP_TURN_NOT_OWNED' });
+    assert.equal(runtime.canSteer(APP_ID), true);
+    assert.ok(!messages.some((message) => message.kind === 'complete'));
+    await runtime.steer(APP_ID, 'Also check the edge cases', {
+      threadId: 'wrong-thread', expectedTurnId: 'wrong-turn', permissionMode: 'bypassPermissions',
+    });
+    await running;
+    assert.deepEqual(fallbackCalls, []);
+    assert.equal(requests.filter((request) => request.method === 'turn/steer').length, 2);
+    assert.ok(requests.filter((request) => request.method === 'turn/steer')
+      .every((request) => request.params.expectedTurnId === DESKTOP_TURN_ID && request.params.threadId === THREAD_ID));
+    assert.ok(!requests.some((request) => request.method === 'turn/interrupt' || request.method === 'turn/start'));
+    assert.ok(!requests.some((request) => request.id === 'desktop-approval'));
+    assert.ok(messages.some((message) => message.kind === 'task_notification' && /Answer it in Codex app/.test(message.summary)));
+    assert.ok(messages.some((message) => message.content === 'Corrected output'));
+    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+    await assert.rejects(runtime.steer(APP_ID, 'Too late', {}), { code: 'STEER_UNAVAILABLE' });
+  }, (request, socket) => {
+    if (request.method !== 'turn/steer') return replyActiveDesktopThread(request, socket);
+    reply(socket, request, { turnId: DESKTOP_TURN_ID });
+    if (++steers === 1) {
+      socket.send(JSON.stringify({
+        id: 'desktop-approval', method: 'item/commandExecution/requestApproval',
+        params: { threadId: THREAD_ID, turnId: DESKTOP_TURN_ID },
+      }));
+    } else {
+      event(socket, 'item/completed', {
+        turnId: DESKTOP_TURN_ID, item: { id: 'active-reply', type: 'agentMessage', text: 'Corrected output' },
+      });
+      event(socket, 'turn/completed', { turnId: DESKTOP_TURN_ID, turn: { id: DESKTOP_TURN_ID, status: 'completed' } });
+    }
+    return true;
+  });
+});
+
+test('the initial desktop correction preserves images and file references in native input', { concurrency: false }, async () => {
+  await withFixture(async ({ root, requests, fallback }) => {
+    const { writer, context } = executionContext();
+    await new CodexSharedRuntime(fallback).run('Use these requirements', {
+      sessionId: APP_ID, cwd: root,
+      images: [{ path: 'screen.png' }],
+      files: [{ path: path.join(root, 'requirements.txt'), name: 'requirements.txt' }],
+    }, writer, context);
+    const input = requests.find((request) => request.method === 'turn/steer')?.params.input;
+    assert.match(input[0].text, /Use these requirements[\s\S]*<files_input>/);
+    assert.ok(input[0].text.includes(path.join(root, 'requirements.txt')));
+    assert.deepEqual(input[1], { type: 'localImage', path: path.join(root, 'screen.png') });
+  }, (request, socket) => {
+    if (request.method !== 'turn/steer') return replyActiveDesktopThread(request, socket);
+    reply(socket, request, { turnId: DESKTOP_TURN_ID });
+    event(socket, 'turn/completed', { turnId: DESKTOP_TURN_ID, turn: { id: DESKTOP_TURN_ID, status: 'completed' } });
+    return true;
+  });
+});
+
+for (const [name, thread] of Object.entries({
+  'missing active turn': { id: THREAD_ID, status: { type: 'active' }, turns: history },
+  'another thread': { id: 'foreign', status: { type: 'active' }, turns: [{ id: DESKTOP_TURN_ID, status: 'inProgress' }] },
+  'a turn that finished during attach': { id: THREAD_ID, status: { type: 'idle' }, turns: [{ id: DESKTOP_TURN_ID, status: 'completed' }] },
+  'multiple active turns': { id: THREAD_ID, status: { type: 'active' }, turns: [
+    { id: 'first', status: 'inProgress' }, { id: 'second', status: 'inProgress' },
+  ] },
+  'an empty turn id': { id: THREAD_ID, status: { type: 'active' }, turns: [{ id: '', status: 'inProgress' }] },
+  'a durably ended turn': { id: THREAD_ID, status: { type: 'active' }, turns: [{ id: DESKTOP_TURN_ID, status: 'inProgress', completedAt: CREATED_AT }] },
+})) {
+  test(`desktop steering fails closed for ${name}`, { concurrency: false }, async () => {
+    await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+      const { messages, writer, context } = executionContext();
+      await new CodexSharedRuntime(fallback).run('Do not guess the turn', { sessionId: APP_ID }, writer, context);
+      assert.deepEqual(fallbackCalls, []);
+      assert.ok(!requests.some((request) => ['turn/steer', 'turn/start', 'turn/interrupt', 'thread/fork'].includes(request.method)));
+      assert.match(messages.find((message) => message.kind === 'error')?.content, /active Codex turn.*No message was submitted/);
+      assert.equal(messages.at(-1)?.success, false);
+    }, (request, socket) => {
+      if (request.method === 'thread/turns/list') {
+        reply(socket, request, { data: thread.turns });
+        return true;
+      }
+      if (request.method !== 'thread/read') return replyActiveDesktopThread(request, socket);
+      reply(socket, request, { thread });
+      return true;
+    });
+  });
+}
+
+for (const failure of ['stale turn', 'wrong acknowledgement', 'missing acknowledgement', 'disconnect', 'timeout']) {
+  test(`desktop steering never retries after ${failure}`, { concurrency: false }, async () => {
+    await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+      const { messages, writer, context } = executionContext();
+      const runtime = new CodexSharedRuntime(fallback, () => CodexDaemonClient.connect({ timeoutMs: 200 }));
+      await runtime.run('Submit only once', { sessionId: APP_ID }, writer, context);
+      assert.equal(requests.filter((request) => request.method === 'turn/steer').length, 1);
+      assert.ok(!requests.some((request) => [
+        'turn/start', 'turn/interrupt', 'thread/start', 'thread/fork', 'thread/queue/add',
+      ].includes(request.method)));
+      assert.deepEqual(fallbackCalls, []);
+      assert.ok(messages.some((message) => message.kind === 'error'));
+      assert.equal(messages.at(-1)?.success, false);
+      assert.equal(runtime.canSteer(APP_ID), false);
+    }, (request, socket) => {
+      if (request.method !== 'turn/steer') return replyActiveDesktopThread(request, socket);
+      if (failure === 'stale turn') {
+        socket.send(JSON.stringify({ id: request.id, error: { code: -32600, message: 'expectedTurnId does not match the active turn' } }));
+      } else if (failure === 'wrong acknowledgement') {
+        reply(socket, request, { turnId: 'newer-desktop-turn' });
+      } else if (failure === 'missing acknowledgement') {
+        reply(socket, request, {});
+      } else if (failure === 'disconnect') {
+        reply(socket, request, { turnId: DESKTOP_TURN_ID });
+        socket.close();
+      }
+      return true; // timeout deliberately has no acknowledgement.
+    });
+  });
+}
+
+for (const command of ['/goal Finish the project', '/plan Plan a migration']) {
+  test(`a busy desktop turn does not treat ${command.split(' ')[0]} as a correction`, { concurrency: false }, async () => {
+    await withFixture(async ({ requests, fallback }) => {
+      const { messages, writer, context } = executionContext();
+      await new CodexSharedRuntime(fallback).run(command, { sessionId: APP_ID }, writer, context);
+      assert.ok(!requests.some((request) => [
+        'turn/steer', 'turn/start', 'turn/interrupt', 'thread/settings/update', 'thread/goal/set',
+      ].includes(request.method)));
+      assert.match(messages.find((message) => message.kind === 'error')?.content, /require an idle session/);
+      assert.equal(messages.at(-1)?.success, false);
+    }, replyActiveDesktopThread);
+  });
+}
+
+test('cancelling while attach is pending never submits to or interrupts the desktop turn', { concurrency: false }, async () => {
+  let resume!: () => void;
+  let ready!: () => void;
+  const pendingResume = new Promise<void>((resolve) => { ready = resolve; });
+  await withFixture(async ({ requests, fallback }) => {
+    const { writer, context } = executionContext();
+    const runtime = new CodexSharedRuntime(fallback);
+    const running = runtime.run('Cancelled before attach', { sessionId: APP_ID }, writer, context);
+    await pendingResume;
+    assert.equal(await runtime.abort(APP_ID), true);
+    resume();
+    await running;
+    assert.ok(!requests.some((request) => ['turn/steer', 'turn/start', 'turn/interrupt'].includes(request.method)));
   }, (request, socket) => {
     if (request.method !== 'thread/resume') return false;
-    reply(socket, request, { thread: { id: THREAD_ID, status: { type: 'active' } } });
+    resume = () => { replyActiveDesktopThread(request, socket); };
+    ready();
     return true;
   });
 });

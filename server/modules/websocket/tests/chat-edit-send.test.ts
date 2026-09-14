@@ -129,6 +129,18 @@ async function withGateway(
   }
 }
 
+test('ordinary Codex sends pass only the explicit client input identity to the runtime', async () => {
+  await withGateway('codex', async ({ socket, runs }) => {
+    socket.emit('message', JSON.stringify({
+      type: 'chat.send', sessionId: SESSION_ID, content: 'Same task',
+      clientMessageId: 'browser-input-one', options: { clientMessageId: 'not-the-wire-receipt' },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].options.clientMessageId, 'browser-input-one');
+  }, CODEX_TRANSCRIPT_ROWS);
+});
+
 /** The handler is async and the socket listener does not await it. */
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 30); });
 

@@ -21,7 +21,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
-import { readObjectRecord } from '@/shared/index.js';
+import { generateMessageId, readObjectRecord } from '@/shared/index.js';
 import type { QueuedSessionMessageRecord } from '@/shared/index.js';
 
 /**
@@ -289,13 +289,16 @@ async function performChatSteer(
         });
       }
     }
-    await dependencies.runtime.steer(run.provider, sessionId, command, { images, files });
+    // Distinct from the HTTP/WebSocket request id: every native submission has
+    // its own persisted identity, including intentionally repeated text.
+    const clientMessageId = generateMessageId('codey_user');
+    await dependencies.runtime.steer(run.provider, sessionId, command, { images, files, clientMessageId });
     // The daemon owns persistence. This accepted echo goes to every watching
     // Codey tab and is replayable without a duplicate optimistic client row.
     try {
       run.writer.send(createNormalizedMessage({
         id: `steer_${requestId}`, provider: run.provider, sessionId,
-        kind: 'text', role: 'user', content: command, images, files,
+        kind: 'text', role: 'user', content: command, images, files, clientMessageId,
       }));
     } catch (error) {
       // Acceptance already happened. A broken observer must not turn this
@@ -458,6 +461,10 @@ async function dispatchRun(
     attachments: uniqueAttachments,
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+    // Only the top-level send receipt reaches native input metadata. Do not
+    // trust a same-named field hidden inside arbitrary execution options.
+    clientMessageId: typeof data.clientMessageId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(data.clientMessageId)
+      ? data.clientMessageId : undefined,
     sessionId,
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,

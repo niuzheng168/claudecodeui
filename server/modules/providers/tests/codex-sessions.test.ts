@@ -64,6 +64,37 @@ const writeCodexTranscript = async (
   return filePath;
 };
 
+test('legacy Codex history retains client input identities for intentionally identical messages', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-user-receipts-'));
+  const workspace = path.join(root, 'workspace');
+  await mkdir(workspace);
+  const restoreHomeDir = patchHomeDir(root);
+  try {
+    const providerId = 'codex-input-receipts';
+    const transcript = await writeCodexTranscript(root, providerId, workspace);
+    const rows = [
+      { type: 'session_meta', payload: { id: providerId, cwd: workspace } },
+      ...['input-first', 'input-second'].map((client_id) => ({
+        type: 'event_msg', timestamp: '2026-09-14T06:30:46.000Z',
+        payload: { type: 'user_message', message: 'continue', client_id },
+      })),
+    ];
+    await writeFile(transcript, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-input-receipts', 'codex', workspace);
+      sessionsDb.assignProviderSessionId('app-input-receipts', providerId);
+      await new CodexSessionSynchronizer().synchronize();
+      const history = await new CodexSessionsProvider().fetchHistory('app-input-receipts');
+      const inputs = history.messages.filter((message) => message.role === 'user');
+      assert.deepEqual(inputs.map((message) => message.clientMessageId), ['input-first', 'input-second']);
+      assert.deepEqual(inputs.map((message) => message.content), ['continue', 'continue']);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Codex synchronizer preserves the title assigned when CloudCLI creates a session', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-app-'));
   const workspacePath = path.join(tempRoot, 'workspace');
