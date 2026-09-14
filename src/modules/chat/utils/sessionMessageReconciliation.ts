@@ -64,7 +64,11 @@ function findServerEchoForLocalUser(
 
   for (let index = firstEligibleIndex; index < serverMessages.length; index++) {
     const serverMessage = serverMessages[index];
-    if (claimedServerIds.has(serverMessage.id)) {
+    if (claimedServerIds.has(serverMessage.id)
+      || serverMessage.sessionId !== localMessage.sessionId
+      || serverMessage.provider !== localMessage.provider
+      || (serverMessage.clientMessageId && localMessage.clientMessageId
+        && serverMessage.clientMessageId !== localMessage.clientMessageId)) {
       continue;
     }
 
@@ -93,16 +97,33 @@ function findServerEchoForLocalUser(
 }
 
 /**
- * Removes local optimistic user rows once a corresponding persisted turn is
- * available. Matches are one-to-one so repeated sends cannot claim one row.
+ * Used by the session store to retire optimistic and accepted native input
+ * echoes. Exact send identities take precedence over legacy text/time matching,
+ * and matches remain one-to-one so repeated sends cannot claim one native row.
  */
 export function removeOptimisticUserEchoes(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): NormalizedMessage[] {
   const claimedServerIds = new Set<string>();
+  const matchedRealtime = new Set<NormalizedMessage>();
+
+  // Native history may timestamp every correction with the enclosing turn's
+  // start, even hours before the user typed it. The persisted clientId is the
+  // binding receipt; content, attachment representations and clock skew are not.
+  for (const message of realtimeMessages) {
+    if (message.kind !== 'text' || message.role !== 'user' || !message.clientMessageId) continue;
+    const serverEcho = serverMessages.slice(message.replacesAfterRowCount ?? 0).find((candidate) =>
+      candidate.kind === 'text' && candidate.role === 'user'
+      && candidate.sessionId === message.sessionId && candidate.provider === message.provider
+      && candidate.clientMessageId === message.clientMessageId && !claimedServerIds.has(candidate.id));
+    if (!serverEcho) continue;
+    matchedRealtime.add(message);
+    claimedServerIds.add(serverEcho.id);
+  }
 
   return realtimeMessages.filter((message) => {
+    if (matchedRealtime.has(message)) return false;
     if (!message.id.startsWith('local_')) {
       return true;
     }
