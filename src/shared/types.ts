@@ -298,6 +298,8 @@ export type SubagentInfo = {
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
   type: string;
+  /** Opaque identity allocated for one Codex send, shared by its optimistic echo and native input. Not an edit anchor or a retry token. */
+  clientMessageId?: string;
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;
@@ -422,6 +424,8 @@ type QuestionOption = {
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
   id: string;
+  /** Correlates one submitted user input with its native persisted copy, independently of text or the enclosing turn's timestamp. Scoped to this provider/session; not an edit anchor. */
+  clientMessageId?: string;
   /**
    * The provider's own id for the transcript row behind this message, when the
    * provider has stable per-row identity (today: Claude). Sent back as the

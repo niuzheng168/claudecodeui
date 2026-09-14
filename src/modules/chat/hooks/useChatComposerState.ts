@@ -940,8 +940,12 @@ export function useChatComposerState({
       }
 
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
+      // A native correction can be persisted under a turn that started long
+      // before this send. Correlate the echo by identity, not by its clock.
+      const clientMessageId = provider === 'codex' ? crypto.randomUUID() : undefined;
       const userMessage: ChatMessage = {
         type: 'user',
+        ...(clientMessageId ? { clientMessageId } : {}),
         content: currentInput,
         images: attachmentRecords.filter(isImageAttachment),
         files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
@@ -973,6 +977,7 @@ export function useChatComposerState({
         // report why it was refused.
         type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
         sessionId: targetSessionId,
+        ...(clientMessageId ? { clientMessageId } : {}),
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
         options: {

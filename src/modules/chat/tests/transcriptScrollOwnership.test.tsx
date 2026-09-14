@@ -133,6 +133,19 @@ afterEach(() => {
   vi.resetModules();
 });
 
+it('keeps a submitted input identity on the actual optimistic store row', async () => {
+  const store = createStore(new Map([[SESSION_A, []]]));
+  const { result } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+  act(() => {
+    result.current.addMessage({
+      type: 'user', content: 'One native input', timestamp: new Date(), clientMessageId: 'input-one',
+    });
+  });
+  expect(store.appendRealtime).toHaveBeenCalledWith(SESSION_A, expect.objectContaining({
+    kind: 'text', role: 'user', clientMessageId: 'input-one',
+  }));
+});
+
 describe('deferred scroll-to-bottom', () => {
   it('does not yank the view back down when the user scrolls up inside the delay', async () => {
     const messages = new Map<string, NormalizedMessage[]>([

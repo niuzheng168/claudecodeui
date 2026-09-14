@@ -42,6 +42,37 @@ beforeEach(() => {
   respondWith([]);
 });
 
+test('native history retires both send/steer echoes once and survives replay without swallowing repeated input', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  const first = row('local_first', {
+    role: 'user', content: '这条从codey发送', clientMessageId: 'first-input',
+    timestamp: '2026-09-14T06:31:29.000Z',
+  });
+  const second = row('steer_request', {
+    role: 'user', content: '测试追加 0111', clientMessageId: 'second-input',
+    timestamp: '2026-09-14T06:31:49.000Z',
+  });
+  act(() => {
+    result.current.appendRealtime('session-1', first);
+    result.current.appendRealtime('session-1', second);
+  });
+  const history = [first, second].map((message) => ({
+    ...message, id: `native_${message.id}`, timestamp: '2026-09-14T06:30:46.000Z',
+  }));
+  respondWith(history);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id), history.map((message) => message.id));
+  assert.equal(result.current.getSessionSlot('session-1')?.realtimeMessages.length, 0);
+  act(() => {
+    result.current.appendRealtime('session-1', second);
+    result.current.appendRealtime('session-1', { ...second, id: 'steer_repeat', clientMessageId: 'third-input' });
+  });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.clientMessageId),
+    ['first-input', 'second-input', 'third-input']);
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.equal(result.current.getMessages('session-1').length, 3);
+});
+
 test('cumulative Codex snapshots update one assistant bubble instead of appending prefixes', () => {
   const { result } = renderHook(() => useSessionStore());
   const snapshots = [

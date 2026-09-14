@@ -78,6 +78,23 @@ async function queue(view: ReturnType<typeof fixture>, content = 'Focus on tests
   return readQueuedMessage('a')!;
 }
 
+test('each ordinary Codex send binds its optimistic row to the wire input, including repeated text', async () => {
+  const view = fixture();
+  view.rerender({ sessionId: 'a', provider: 'codex', busy: false });
+  for (let index = 0; index < 2; index++) {
+    act(() => { view.result.current.setInput('Same intentional message'); });
+    await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  }
+  expect(view.send).toHaveBeenCalledTimes(2);
+  expect(view.echo).toHaveBeenCalledTimes(2);
+  const identities = view.send.mock.calls.map(([frame]) => frame.clientMessageId);
+  expect(new Set(identities).size).toBe(2);
+  identities.forEach((identity, index) => {
+    expect(identity).toMatch(/^[a-f0-9-]{36}$/);
+    expect(view.echo.mock.calls[index][0].clientMessageId).toBe(identity);
+  });
+});
+
 test('Send queues first; only the queued receipt is appended, without touching the next draft', async () => {
   let accept!: () => void;
   const request = new Promise<void>((resolve) => { accept = resolve; });
