@@ -24,6 +24,8 @@ type SharedRun = {
   /** Native Stop waits for an owned writer to be released before the gateway admits another run. */
   released: Promise<void>;
   desktopQueue?: CodexNativeQueueRun;
+  /** Attaching/steering does not transfer ownership of the desktop's active turn. */
+  observesDesktopTurn?: boolean;
   goal?: CodexGoalRun;
   localNative?: boolean;
 };
@@ -56,6 +58,25 @@ function send(writer: ProviderRuntimeWriter, message: unknown): void {
     // Match the SDK writer's behavior: a disconnected browser must not throw
     // out of a progress timer or kill work still owned by the Codex daemon.
     console.warn('[Codex] Cannot forward daemon output:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+function nativeInputIdentity(value: unknown): { clientUserMessageId?: string } {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    ? { clientUserMessageId: value } : {};
+}
+
+async function steerCodexTurn(
+  client: ICodexRpcClient, threadId: string, expectedTurnId: string, input: AnyRecord[], clientMessageId?: unknown,
+): Promise<void> {
+  // Never redirect a stale correction into a newer turn or retry an ambiguous acknowledgement.
+  const result = await client.request('turn/steer', {
+    threadId, expectedTurnId, input, ...nativeInputIdentity(clientMessageId),
+  });
+  if (result.turnId !== expectedTurnId) {
+    throw new AppError('Codex did not acknowledge the expected turn. Check the transcript before retrying; the instruction was not resubmitted.', {
+      code: 'STEER_UNCONFIRMED', statusCode: 409,
+    });
   }
 }
 
@@ -252,6 +273,13 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
   async abort(sessionId: string): Promise<boolean> {
     const run = this.runs.get(sessionId);
+    if (run?.observesDesktopTurn) {
+      // Reject rather than returning false: the gateway must keep following
+      // this run, not mark it complete while its desktop owner is still busy.
+      throw new AppError('This turn was started in Codex app. Stop it there; Codey has not interrupted it.', {
+        code: 'CODEX_DESKTOP_TURN_NOT_OWNED', statusCode: 409,
+      });
+    }
     if (run?.goal) {
       await run.goal.abort();
       run.aborted = true;
@@ -288,7 +316,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
         code: 'STEER_COMMAND_UNSUPPORTED', statusCode: 409,
       });
     }
-    // Capture the owned turn before any async work. A completion/new run must
+    // Capture the tracked turn before any async work. A completion/new run must
     // never redirect this prompt into another turn or another desktop client.
     const run = this.runs.get(sessionId);
     if (!run?.client || run.desktopQueue || !run.threadId || !run.turnId || run.aborted || run.finished) {
@@ -303,14 +331,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
     // Model, effort, permissions, cwd and thread selection belong to turn/start,
     // not an in-flight correction. Never retry a rejected/ambiguous steer.
-    const result = await run.client.request('turn/steer', {
-      threadId: run.threadId, expectedTurnId, input,
-    });
-    if (result.turnId !== expectedTurnId) {
-      throw new AppError('Codex did not acknowledge the expected turn. Check the transcript before retrying; the instruction was not resubmitted.', {
-        code: 'STEER_UNCONFIRMED', statusCode: 409,
-      });
-    }
+    await steerCodexTurn(run.client, run.threadId, expectedTurnId, input, options.clientMessageId);
   }
 
   private async runThroughDaemon(
@@ -363,6 +384,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
         },
       } : {}),
     };
+    let activeDesktopTurn: AnyRecord | null = null;
 
     if (!run.threadId) {
       // Creating with exec would make source=exec, hidden from the App's
@@ -415,7 +437,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
       }
       // Attach without changing permissions: the thread may still have an
       // active desktop turn. Apply Codey's selection only at turn/start,
-      // after the busy check, alongside the user's model/effort selection.
+      // if idle. Steering a desktop turn must retain its existing settings.
       let resumed: AnyRecord;
       try {
         resumed = await client.request('thread/resume', { threadId: run.threadId, excludeTurns: true });
@@ -436,15 +458,43 @@ export class CodexSharedRuntime implements IProviderRuntime {
       if (resumed.thread?.id !== run.threadId) {
         throw new Error('Codex did not attach the requested thread. No prompt was submitted.');
       }
+      if (run.aborted) return;
       if (resumed.thread?.status?.type === 'active') {
-        throw new AppError('This session is currently running in Codex app. Wait for that turn to finish before sending another message from Codey.', {
-          code: 'CODEX_THREAD_BUSY', statusCode: 409,
+        if (client.ownsProcess || goalCommand || planMode) {
+          throw new AppError('This session has an active Codex turn. Native commands and mode changes require an idle session; an ordinary message can be appended through its owning Codex app.', {
+            code: 'CODEX_THREAD_BUSY', statusCode: 409,
+          });
+        }
+        run.observesDesktopTurn = true;
+        send(writer, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'status', canSteer: false, canInterrupt: false,
+        }));
+        const snapshot = await client.request('thread/read', { threadId: run.threadId, includeTurns: false });
+        // Native paginated threads reject thread/read(includeTurns=true).
+        // Read only the newest turn, never an old unfinished history entry.
+        const page = await client.request('thread/turns/list', {
+          threadId: run.threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
         });
+        const activeTurns = Array.isArray(page.data) ? page.data : [];
+        if (snapshot.thread?.id !== run.threadId || snapshot.thread?.status?.type !== 'active'
+          || activeTurns.length !== 1 || activeTurns[0]?.status !== 'inProgress'
+          || typeof activeTurns[0].id !== 'string' || !activeTurns[0].id
+          || activeTurns[0].completedAt != null) {
+          throw new AppError('The active Codex turn changed or could not be verified. No message was submitted; refresh the session before sending again.', {
+            code: 'CODEX_ACTIVE_TURN_UNCONFIRMED', statusCode: 409,
+          });
+        }
+        activeDesktopTurn = activeTurns[0];
       }
     }
     if (run.aborted) return;
 
     const items = new Map<string, AnyRecord>();
+    // Seed in-flight items so a delta received after attaching does not replace
+    // an existing assistant message or command output with just its suffix.
+    for (const item of Array.isArray(activeDesktopTurn?.items) ? activeDesktopTurn.items : []) {
+      if (item && typeof item.id === 'string') items.set(item.id, { ...item });
+    }
     const dirtyItems = new Map<string, AnyRecord>();
     const earlyEvents: Array<[string, AnyRecord]> = [];
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -487,6 +537,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
       }
       const eventTurnId = params.turnId ?? params.turn?.id;
       if (eventTurnId && eventTurnId !== run.turnId) return;
+      if (run.observesDesktopTurn && eventTurnId !== run.turnId) return;
       if (method === 'item/started' || method === 'item/completed') {
         const item = readObjectRecord(params.item);
         if (!item || typeof item.id !== 'string') return;
@@ -573,22 +624,34 @@ export class CodexSharedRuntime implements IProviderRuntime {
         }));
         return;
       }
-      const response = await client.request('turn/start', {
-        threadId: run.threadId, input,
-        ...turnSettings,
-      });
-      if (typeof response.turn?.id !== 'string') {
-        throw new Error('Codex did not acknowledge a turn id. Check Codex app before retrying; no exec fallback was started.');
+      if (activeDesktopTurn) {
+        send(writer, createNormalizedMessage({
+          provider: 'codex', sessionId, kind: 'task_notification', status: 'info',
+          summary: 'Codex app is already running this turn. Appending your message to it without starting another turn. Its current model, permissions and mode stay unchanged; handle approvals and Stop in Codex app.',
+        }));
+        // Listeners are installed before submission; completion can precede
+        // the acknowledgement. Do not advertise steering until it is accepted.
+        await steerCodexTurn(client, run.threadId!, activeDesktopTurn.id, input, options.clientMessageId);
+        run.turnId = activeDesktopTurn.id;
+      } else {
+        const response = await client.request('turn/start', {
+          threadId: run.threadId, input,
+          ...nativeInputIdentity(options.clientMessageId),
+          ...turnSettings,
+        });
+        if (typeof response.turn?.id !== 'string') {
+          throw new Error('Codex did not acknowledge a turn id. Check Codex app before retrying; no exec fallback was started.');
+        }
+        run.turnId = response.turn.id;
       }
-      run.turnId = response.turn.id;
       for (const [method, params] of earlyEvents) handleEvent(method, params);
       earlyEvents.length = 0;
       if (this.canSteer(sessionId)) {
         send(writer, createNormalizedMessage({
-          provider: 'codex', sessionId, kind: 'status', canSteer: true, canInterrupt: true,
+          provider: 'codex', sessionId, kind: 'status', canSteer: true, canInterrupt: !run.observesDesktopTurn,
         }));
       }
-      if (run.aborted) {
+      if (run.aborted && !run.observesDesktopTurn) {
         await client.request('turn/interrupt', { threadId: run.threadId, turnId: run.turnId });
       }
       const turn = await completed;
@@ -636,7 +699,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
           for (const message of context.normalizeMessage(raw, run.threadId)) send(writer, message);
         }
       },
-    });
+    }, { clientMessageId: nativeInputIdentity(options.clientMessageId).clientUserMessageId });
     const result = await run.desktopQueue.run(input);
     run.finished = true;
     const turn = result.turn;

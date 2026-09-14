@@ -67,6 +67,22 @@ Windows transport selection, writer-conflict protection and no-retry behavior
 remain in force. The opt-in `codex-native-commands.integration.test.ts` verifies
 real CLI behavior using an isolated home and offline localhost model fixture.
 
+### Codex active desktop turns
+
+Ordinary messages sent while the shared daemon is running a desktop turn use
+`turn/steer`, not another `turn/start`. The adapter verifies the thread and
+newest active turn, pins `expectedTurnId`, and follows that turn's output with
+the existing model, permissions and mode. Further same-turn corrections are
+available, but Stop and approvals remain with the desktop owner. Lost/stale
+acknowledgements never cause a retry, fork, or exec fallback. Windows
+foreign-writer sessions retain their separate native queue path.
+
+Each browser send and accepted correction now carries its own input identity
+through native `clientUserMessageId`, history `clientId` (legacy `client_id`),
+and normalized `clientMessageId`. The browser reconciles by that receipt, not
+the desktop turn's start time or matching text. This requires both the backend
+and shared Workspace UI update; intentional identical messages remain separate.
+
 Current provider ids in this repo are:
 
 - `claude`
@@ -404,4 +420,3 @@ alongside the implementation.
 - Forgetting that Claude plugin skills are discovered differently from normal
   user/project skill folders.
 - Assuming one provider's MCP config file format works for the others.
-

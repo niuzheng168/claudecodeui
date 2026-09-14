@@ -78,11 +78,14 @@ test('accepted corrections use the same run and are echoed once to all subscribe
     await send();
     assert.equal(chatRunRegistry.getRun('session-a'), run);
     assert.equal(run.status, 'running');
-    assert.deepEqual(calls, [['steer', 'codex', 'session-a', 'Focus on the tests', { images: [], files: [] }]]);
+    const clientMessageId = (calls[0][4] as AnyRecord).clientMessageId;
+    assert.match(clientMessageId, /^codey_user_[a-f0-9-]{36}$/);
+    assert.deepEqual(calls, [['steer', 'codex', 'session-a', 'Focus on the tests', { images: [], files: [], clientMessageId }]]);
     for (const ws of [client, observer]) {
       assert.equal(ws.frames.filter((frame) => frame.role === 'user').length, 1);
       assert.equal(ws.frames[0].sessionId, 'session-a');
       assert.equal(ws.frames[0].seq, 1);
+      assert.equal(ws.frames[0].clientMessageId, clientMessageId);
       assert.equal(ws.frames.some((frame) => frame.kind === 'complete'), false);
     }
     assert.equal(client.frames.at(-1)?.kind, 'chat_steer_result');
@@ -122,7 +125,7 @@ test('only upload-store attachments reach steering; execution settings are ignor
       },
     });
     const options = calls[0][4] as AnyRecord;
-    assert.deepEqual(Object.keys(options), ['images', 'files']);
+    assert.deepEqual(Object.keys(options), ['images', 'files', 'clientMessageId']);
     assert.deepEqual(options.images.map((value: AnyRecord) => value.path), [image.path]);
     assert.deepEqual(options.files.map((value: AnyRecord) => value.path), [file.path]);
   });
@@ -245,7 +248,9 @@ test('HTTP promotion claims the queued receipt before awaiting native acceptance
     assert.equal(queue.read(), null);
     assert.equal(queue.claim.mock.callCount(), 1);
     assert.equal((await steerQueuedChatMessage(1, request, { runtime: runtime as never })).code, 'STEER_QUEUE_CHANGED');
-    assert.deepEqual(calls, [['steer', 'codex', 'session-a', 'Queued instructions', { images: [], files: [] }]]);
+    const clientMessageId = (calls[0][4] as AnyRecord).clientMessageId;
+    assert.match(clientMessageId, /^codey_user_[a-f0-9-]{36}$/);
+    assert.deepEqual(calls, [['steer', 'codex', 'session-a', 'Queued instructions', { images: [], files: [], clientMessageId }]]);
     accept();
     assert.equal((await pending).accepted, true);
     assert.equal(queue.restore.mock.callCount(), 0);
@@ -335,7 +340,7 @@ test('queued acceptance stays accepted when empty-row housekeeping fails', async
     assert.equal(queue.restore.mock.callCount(), 0);
     assert.deepEqual((calls[0][4] as AnyRecord).images, []);
     assert.equal((calls[0][4] as AnyRecord).files[0].path, file.path);
-    assert.deepEqual(Object.keys(calls[0][4] as AnyRecord), ['images', 'files']);
+    assert.deepEqual(Object.keys(calls[0][4] as AnyRecord), ['images', 'files', 'clientMessageId']);
   });
 });
 

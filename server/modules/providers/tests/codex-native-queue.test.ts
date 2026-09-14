@@ -4,7 +4,7 @@ import test from 'node:test';
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
 import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
 
-function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: boolean; loaded?: boolean; wrongItemTurn?: boolean; transientInterrupted?: boolean } = {}) {
+function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: boolean; loaded?: boolean; wrongItemTurn?: boolean; transientInterrupted?: boolean; clientMessageId?: string } = {}) {
   const calls: Array<{ method: string; params: AnyRecord }> = [];
   const items: AnyRecord[] = [];
   const started: string[] = [];
@@ -61,12 +61,20 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
   };
   const run = new CodexNativeQueueRun(client, 'desktop', {
     item: item => items.push(item), started: id => started.push(id),
-  }, { sleep: async () => {
+  }, { clientMessageId: options.clientMessageId, sleep: async () => {
     sleepEntered();
     await new Promise<void>(resolve => { sleeping = resolve; });
   } });
   return { run, calls, items, started, asleep, wake: () => { completed = true; sleeping?.(); } };
 }
+
+test('desktop queue preserves the browser input identity through its native receipt', async () => {
+  const f = fixture({ clientMessageId: 'browser-input-identity' });
+  const result = await f.run.run([{ type: 'text', text: 'continue' }]);
+  assert.equal(result.turn?.id, 'our-turn');
+  assert.equal(f.calls.find((call) => call.method === 'thread/queue/add')?.params.clientUserMessageId,
+    'browser-input-identity');
+});
 
 test('desktop queue preserves images and native identity without starting/resuming/forking a competing writer', async () => {
   const f = fixture();

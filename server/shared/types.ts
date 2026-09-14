@@ -284,6 +284,8 @@ export type SessionUpsertedEvent = {
  */
 export type NormalizedMessage = {
   id: string;
+  /** Opaque identity of one submitted user input, preserved from native clientId for exact live/history reconciliation. Scoped to this provider/session; grants no edit, retry or execution ownership. */
+  clientMessageId?: string;
   /**
    * The provider's own identifier for the transcript row this message came
    * from, when the provider has stable per-row identity (today: Claude's
