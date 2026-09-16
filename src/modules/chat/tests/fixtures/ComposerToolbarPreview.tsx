@@ -100,6 +100,9 @@ function ComposerToolbarPreview() {
               canUndo={Boolean(rewriteAllowed && rewriteSnapshot && input === rewriteSnapshot.rewritten && input !== rewriteSnapshot.original)}
               canRestore={Boolean(rewriteAllowed && rewriteSnapshot && input === rewriteSnapshot.original && input !== rewriteSnapshot.rewritten)}
               hasPreviousRewrite={rewriteSnapshot !== null} configured
+              originalText={rewriteSnapshot?.original}
+              notice={rewriteSnapshot ? ![rewriteSnapshot.original, rewriteSnapshot.rewritten].includes(input)
+                ? 'draftChanged' : input === rewriteSnapshot.original ? 'undone' : 'done' : undefined}
               onRewrite={() => {
                 record('rewrite');
                 const rewritten = locale === 'zh-CN' ? '请检查 westus2 的语音配置，不要重启服务。' : 'Check the voice settings without restarting.';

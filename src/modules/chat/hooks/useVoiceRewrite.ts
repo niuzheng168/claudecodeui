@@ -183,6 +183,7 @@ export function useVoiceRewrite(options: Options) {
       options.draft === active.lastRewrittenDraft && active.phase !== 'busy'),
     canRestore: Boolean(active?.lastRewrittenDraft && active.lastRewrittenDraft !== active.target.draft &&
       options.draft === active.target.draft && active.phase !== 'busy'),
+    needsAttention: active?.phase === 'review' || active?.phase === 'error',
     candidate: active?.phase === 'review' ? active.candidate : undefined,
     originalText: active?.target.transcript,
     canApply: Boolean(matches && active?.phase === 'review'),

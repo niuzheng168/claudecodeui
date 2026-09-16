@@ -12,7 +12,6 @@ type Props = {
   completionControl?: ReactNode;
   voiceControl?: ReactNode;
   rewriteControl?: ReactNode;
-  rewriteNotice?: ReactNode;
   modelControl: ReactNode;
   permissionControl: ReactNode;
   submitControl: ReactNode;
@@ -44,7 +43,7 @@ function revealFocusedTool({ currentTarget, target }: FocusEvent<HTMLDivElement>
 
 /** ChatComposer keeps primary actions on one line, with secondary status below and scrollable tools on narrow panes. */
 export function ComposerToolbar({
-  onAttachFiles, completionControl, voiceControl, rewriteControl, rewriteNotice, modelControl, permissionControl, submitControl,
+  onAttachFiles, completionControl, voiceControl, rewriteControl, modelControl, permissionControl, submitControl,
   tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
   canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError, collapseControl,
 }: Props) {
@@ -56,7 +55,6 @@ export function ComposerToolbar({
           {voiceError}
         </p>
       )}
-      {rewriteNotice}
       <div className="composer-primary flex min-w-0 flex-nowrap items-center gap-1" data-slot="composer-primary">
         {/* Only tools may scroll: model, permissions and send must stay visible without shrinking the icon buttons. */}
         <PromptInputTools onFocusCapture={revealFocusedTool}

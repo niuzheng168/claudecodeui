@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
@@ -69,6 +69,7 @@ test('manual rewrite only replaces the voice fragment and supports repeated loca
   });
   expect(hook.result.current.hasPreviousRewrite).toBe(true);
   expect(hook.result.current.canRestore).toBe(false);
+  expect(hook.result.current.needsAttention).toBe(false);
   for (let cycle = 0; cycle < 2; cycle += 1) {
     act(() => hook.result.current.undo());
     expect(hook.result.current.draft).toBe(input.draft);
@@ -218,12 +219,14 @@ test('ambiguous candidates require explicit review and applying one is still und
   await act(async () => hook.result.current.rewrite());
   expect(hook.result.current.draft).toBe(input.draft);
   expect(hook.result.current.candidate?.text).toBe(improved);
+  expect(hook.result.current.needsAttention).toBe(true);
   expect(hook.result.current.hasPreviousRewrite).toBe(false);
   expect(hook.result.current.canRestore).toBe(false);
   act(() => hook.result.current.restore());
   expect(hook.result.current.draft).toBe(input.draft);
   act(() => hook.result.current.applyCandidate());
   expect(hook.result.current.draft).toBe(input.prefix + improved);
+  expect(hook.result.current.needsAttention).toBe(false);
   act(() => hook.result.current.undo());
   expect(hook.result.current.draft).toBe(input.draft);
   act(() => hook.result.current.restore());
@@ -295,6 +298,7 @@ test('failure or invalid model output keeps the original draft and does not auto
   vi.mocked(api.voice.codeyRewrite).mockImplementation(async () => new Response(JSON.stringify({ code: 'VOICE_REWRITE_TIMEOUT' }), { status: 504 }));
   await act(async () => hook.result.current.rewrite());
   expect(hook.result.current.notice).toBe('VOICE_REWRITE_TIMEOUT');
+  expect(hook.result.current.needsAttention).toBe(true);
   expect(hook.result.current.draft).toBe(input.draft);
   expect(api.voice.codeyRewrite).toHaveBeenCalledOnce();
   vi.mocked(api.voice.codeyRewrite).mockImplementation(async () => answer(''));
@@ -392,6 +396,131 @@ test('a rewrite already displayed disables restore in the menu but still offers 
   fireEvent.click(screen.getByRole('button', { name: 'voice.rewrite.action' }));
   expect(screen.getByRole('menuitem', { name: /^voice\.rewrite\.restore / }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByRole('menuitem', { name: /^voice\.rewrite\.regenerate / }).hasAttribute('disabled')).toBe(false);
+});
+
+test.each([false, true])('edited voice details stay hidden but remain readable without allowing replacement (previous rewrite: %s)', async (hasPreviousRewrite) => {
+  const rewrite = vi.fn(), restore = vi.fn(), send = vi.fn();
+  const ui = render(
+    <form onSubmit={send}>
+      <VoiceRewriteControl busy={false} canRewrite={false} canUndo={false} canRestore={false}
+        hasPreviousRewrite={hasPreviousRewrite} configured={false} originalText={input.transcript} notice="draftChanged"
+        onRewrite={rewrite} onCancel={vi.fn()} onUndo={vi.fn()} onRestore={restore} />
+    </form>,
+  );
+  const trigger = screen.getByRole('button', { name: 'voice.rewrite.action' });
+  expect(trigger.hasAttribute('disabled')).toBe(false);
+  expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByText('voice.rewrite.original')).toBeNull();
+  expect(screen.queryByText(input.transcript)).toBeNull();
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe('voice.rewrite.draftChanged');
+  expect(status.classList.contains('sr-only')).toBe(true);
+  expect(trigger.getAttribute('aria-describedby')).toBe(status.id);
+
+  fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: 'voice.rewrite.options' });
+  expect(ui.container.contains(dialog)).toBe(false);
+  expect(dialog.classList.contains('fixed')).toBe(true);
+  expect(within(dialog).getByText('voice.rewrite.draftChanged')).toBeTruthy();
+  const original = within(dialog).getByText('voice.rewrite.original');
+  const disclosure = original.closest('details')!;
+  expect(disclosure.open).toBe(false);
+  fireEvent.click(original);
+  expect(disclosure.open).toBe(true);
+  expect(within(disclosure).getByText(input.transcript)).toBeTruthy();
+  const action = within(dialog).getByRole('button', { name: hasPreviousRewrite
+    ? /^voice\.rewrite\.regenerate / : /^voice\.rewrite\.action / });
+  expect(action.hasAttribute('disabled')).toBe(true);
+  fireEvent.click(action);
+  if (hasPreviousRewrite) {
+    const restoreItem = within(dialog).getByRole('button', { name: /^voice\.rewrite\.restore / });
+    expect(restoreItem.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(restoreItem);
+  }
+  expect(rewrite).not.toHaveBeenCalled();
+  expect(restore).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+
+  const close = within(dialog).getByRole('button', { name: 'voice.rewrite.close' });
+  await waitFor(() => expect(document.activeElement).toBe(close));
+  fireEvent.keyDown(close, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  expect(screen.getByText('voice.rewrite.original').closest('details')!.open).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'voice.rewrite.close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('a fresh voice fragment can be inspected without calling AI; rewriting remains an explicit action', () => {
+  const rewrite = vi.fn(), send = vi.fn();
+  render(
+    <form onSubmit={send}>
+      <VoiceRewriteControl busy={false} canRewrite canUndo={false} canRestore={false} hasPreviousRewrite={false}
+        configured originalText={input.transcript}
+        onRewrite={rewrite} onCancel={vi.fn()} onUndo={vi.fn()} onRestore={vi.fn()} />
+    </form>,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'voice.rewrite.action' }));
+  expect(rewrite).not.toHaveBeenCalled();
+  const dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByText('voice.rewrite.original')).toBeTruthy();
+  expect(within(dialog).queryByRole('button', { name: /^voice\.rewrite\.restore / })).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: /^voice\.rewrite\.action / }));
+  expect(rewrite).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(send).not.toHaveBeenCalled();
+});
+
+test.each([true, false])('review suggestions use a compact attention marker and never bypass draft protection (can apply: %s)', (canApply) => {
+  const apply = vi.fn(), send = vi.fn();
+  const ui = render(
+    <form onSubmit={send}>
+      <VoiceRewriteControl busy={false} canRewrite={canApply} canUndo={false} canRestore={false}
+        hasPreviousRewrite={false} configured originalText={input.transcript}
+        notice={canApply ? 'needsReview' : 'draftChanged'} needsAttention
+        candidate={{ text: improved, ambiguities: ['检查'] }} canApply={canApply} onApply={apply}
+        onRewrite={vi.fn()} onCancel={vi.fn()} onUndo={vi.fn()} onRestore={vi.fn()} />
+    </form>,
+  );
+  expect(ui.container.querySelector('[data-slot="voice-rewrite-attention"]')).toBeTruthy();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'voice.rewrite.suggestion' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'voice.rewrite.action' }));
+  const dialog = screen.getByRole('dialog');
+  const suggestion = within(dialog).getByRole('textbox', { name: 'voice.rewrite.suggestion' }) as HTMLTextAreaElement;
+  expect(suggestion.value).toBe(improved);
+  expect(suggestion.readOnly).toBe(true);
+  expect(apply).not.toHaveBeenCalled();
+  if (canApply) {
+    fireEvent.click(within(dialog).getByRole('button', { name: 'voice.rewrite.apply' }));
+    expect(apply).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  } else {
+    expect(within(dialog).queryByRole('button', { name: 'voice.rewrite.apply' })).toBeNull();
+    expect(within(dialog).getByText('voice.rewrite.copySuggestion')).toBeTruthy();
+  }
+  expect(send).not.toHaveBeenCalled();
+});
+
+test('a failed rewrite exposes its error on demand without expanding the input or retrying automatically', () => {
+  const rewrite = vi.fn();
+  const ui = render(<VoiceRewriteControl busy={false} canRewrite canUndo={false} canRestore={false}
+    hasPreviousRewrite={false} configured originalText={input.transcript}
+    notice="VOICE_REWRITE_TIMEOUT" needsAttention
+    onRewrite={rewrite} onCancel={vi.fn()} onUndo={vi.fn()} onRestore={vi.fn()} />);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(ui.container.querySelector('[data-slot="voice-rewrite-attention"]')).toBeTruthy();
+  expect(screen.getByRole('status').classList.contains('sr-only')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'voice.rewrite.action' }));
+  expect(within(screen.getByRole('dialog')).getByText('voice.rewrite.VOICE_REWRITE_TIMEOUT')).toBeTruthy();
+  expect(rewrite).not.toHaveBeenCalled();
 });
 
 test('a stalled browser request times out, aborts and leaves the original draft recoverable', async () => {
