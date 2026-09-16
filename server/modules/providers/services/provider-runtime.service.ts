@@ -7,6 +7,8 @@ import type {
   AnyRecord,
   LLMProvider,
   ProviderPermissionDecision,
+  ProviderAbortOptions,
+  ProviderRuntimeObservation,
   ProviderRunFunction,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
@@ -88,8 +90,18 @@ export function createProviderRuntimeService(
       return (command, options, writer) => run(provider, command, options, writer);
     },
 
-    async abort(providerName: LLMProvider, sessionId: string): Promise<boolean> {
-      return Boolean(await dependencies.resolveProvider(providerName).runtime.abort(sessionId));
+    async abort(providerName: LLMProvider, sessionId: string, options?: ProviderAbortOptions): Promise<boolean> {
+      const runtime = dependencies.resolveProvider(providerName).runtime;
+      return Boolean(await (options ? runtime.abort(sessionId, options) : runtime.abort(sessionId)));
+    },
+
+    canInterrupt(providerName: LLMProvider, sessionId: string): boolean {
+      return dependencies.resolveProvider(providerName).runtime.canInterrupt?.(sessionId) ?? true;
+    },
+
+    async prepareObservation(providerName: LLMProvider, sessionId: string): Promise<ProviderRuntimeObservation | null> {
+      const provider = dependencies.resolveProvider(providerName);
+      return provider.runtime.prepareObservation?.(sessionId, createRuntimeContext(provider)) ?? null;
     },
 
     canSteer(providerName: LLMProvider, sessionId: string): boolean {

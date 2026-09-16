@@ -259,6 +259,7 @@ function ChatInterface({
     isLoading: isProcessing,
     processingSessions,
     canAbortSession,
+    activeRunId: steering.runId,
     tokenBudget,
     sendMessage,
     steerMessage: steering.steerMessage,

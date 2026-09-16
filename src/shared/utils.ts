@@ -1,7 +1,29 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, ComposerHistoryMessage, LLMProvider, Project, ProjectSession, SlashCommand } from '@/shared/types';
+import type { ChatMessage, ComposerHistoryMessage, LLMProvider, NativeTranscriptPosition, NormalizedMessage, Project, ProjectSession, SlashCommand } from '@/shared/types';
+
+//----------------- NATIVE TRANSCRIPT ORDER ------------
+
+/** Chat ordering and pagination accept only complete native positions; legacy/malformed metadata retains the timestamp compatibility path. */
+export function nativeTranscriptPositionOf(message: NormalizedMessage): NativeTranscriptPosition | null {
+  const position = message.nativePosition;
+  return position && typeof position.turnId === 'string' && position.turnId
+    && Number.isSafeInteger(position.itemIndex) && position.itemIndex >= 0
+    && Number.isFinite(Date.parse(position.turnStartedAt)) ? position : null;
+}
+
+/** Chat's history bridge and older-page guards compare canonical item positions before clocks. Returns null when the two positions cannot establish an order, never comparing different sessions/providers. */
+export function compareNativeTranscriptPositions(left: NormalizedMessage, right: NormalizedMessage): number | null {
+  if (left.provider !== right.provider || left.sessionId !== right.sessionId) return null;
+  const a = nativeTranscriptPositionOf(left), b = nativeTranscriptPositionOf(right);
+  if (!a || !b) return null;
+  if (a.turnId === b.turnId) return a.itemIndex - b.itemIndex;
+  const difference = Date.parse(a.turnStartedAt) - Date.parse(b.turnStartedAt);
+  return difference || null;
+}
+
+// ---------------------------
 
 //----------------- COMPOSER INPUT HELPERS ------------
 

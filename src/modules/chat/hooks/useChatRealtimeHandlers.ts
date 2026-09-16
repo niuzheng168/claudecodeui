@@ -134,7 +134,9 @@ export function useChatRealtimeHandlers({
           if (!sid) return;
 
           if (msg.isProcessing) {
-            onSessionProcessing?.(sid);
+            onSessionProcessing?.(sid, {
+              canInterrupt: typeof msg.canInterrupt === 'boolean' ? msg.canInterrupt : undefined,
+            });
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.
@@ -159,12 +161,13 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        case 'chat_abort_result':
         case 'protocol_error': {
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.
-            onSessionIdle?.(sid);
+            if (msg.kind !== 'chat_abort_result') onSessionIdle?.(sid);
             sessionStore.appendRealtime(sid, {
               id: `protocol_error_${Date.now()}`,
               sessionId: sid,
@@ -262,8 +265,11 @@ export function useChatRealtimeHandlers({
           }
 
           if (msg.aborted) {
-            // Abort was requested — the complete event confirms it. No
-            // further UI action is needed beyond clearing the entry above.
+            // Stop can finalize persisted tool/input rows after the last
+            // live snapshot. Reconcile them without playing a success sound.
+            if (sid && sid === activeViewSessionId) {
+              void requestLatestMessages(sid, isActiveRef.current);
+            }
             break;
           }
 
@@ -338,10 +344,10 @@ export function useChatRealtimeHandlers({
             if (sid === activeViewSessionId) {
               setTokenBudget(msg.tokenBudget as Record<string, unknown>);
             }
-          } else if (msg.text && sid) {
+          } else if (sid && (msg.text || typeof msg.canInterrupt === 'boolean')) {
             onSessionProcessing?.(sid, {
-              statusText: msg.text as string,
-              canInterrupt: msg.canInterrupt !== false,
+              ...(typeof msg.text === 'string' ? { statusText: msg.text } : {}),
+              canInterrupt: typeof msg.canInterrupt === 'boolean' ? msg.canInterrupt : undefined,
             });
           }
           break;

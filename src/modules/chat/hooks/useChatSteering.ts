@@ -183,6 +183,7 @@ export function useChatSteering(sessionId: string | null) {
   const unavailableReason = canSteer ? null : t(!isConnected ? 'input.steer.disconnected'
     : `input.steer.${capability?.unavailableReason ?? 'checking'}`);
   return {
+    runId: capability?.runId ?? null,
     canSteer,
     unavailableReason,
     canSteerQueued: canSteer && capability?.queued === true,

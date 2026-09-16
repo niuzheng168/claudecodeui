@@ -1,4 +1,5 @@
 import type { NormalizedMessage } from '@/shared/types';
+import { compareNativeTranscriptPositions, nativeTranscriptPositionOf } from '@/shared/utils';
 
 export const SESSION_MESSAGES_PAGE_SIZE = 20;
 
@@ -60,6 +61,10 @@ export function messagesRepresentSamePersistedRow(
   ) {
     return false;
   }
+  const firstPosition = nativeTranscriptPositionOf(first), secondPosition = nativeTranscriptPositionOf(second);
+  if (firstPosition && secondPosition
+    && (firstPosition.turnId !== secondPosition.turnId || firstPosition.itemIndex !== secondPosition.itemIndex)) return false;
+  if (first.clientMessageId && second.clientMessageId && first.clientMessageId !== second.clientMessageId) return false;
 
   if (first.toolId || second.toolId) return first.toolId === second.toolId;
   if (first.rowid !== undefined || second.rowid !== undefined) return first.rowid === second.rowid;
@@ -144,6 +149,8 @@ export function hasReachedCachedTailTimeBoundary(
   const cachedNewest = cachedMessages[cachedMessages.length - 1];
   const fetchedOldest = fetchedMessages[0];
   if (!cachedNewest || !fetchedOldest) return false;
+  const nativeOrder = compareNativeTranscriptPositions(fetchedOldest, cachedNewest);
+  if (nativeOrder !== null) return nativeOrder <= 0;
 
   const cachedNewestTime = Date.parse(cachedNewest.timestamp);
   const fetchedOldestTime = Date.parse(fetchedOldest.timestamp);

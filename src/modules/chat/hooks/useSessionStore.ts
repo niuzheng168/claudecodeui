@@ -11,7 +11,9 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types';
+import { compareNativeTranscriptPositions } from '@/shared/utils';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
+import { orderNativeTranscriptMessages } from '@/modules/chat/utils/nativeTranscriptOrder';
 import {
   hasReachedCachedTailTimeBoundary,
   mergeLatestServerPage,
@@ -230,6 +232,9 @@ function isAssistantTextEchoedInSameTurnOnServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): boolean {
+  // Native identities already reconcile exact copies. Two distinct native
+  // items may intentionally contain the same answer, so do not guess by text.
+  if (message.nativePosition && serverMessages.some((candidate) => candidate.nativePosition)) return false;
   const assistantText = (message.content || '').trim();
   if (!assistantText) {
     return false;
@@ -262,6 +267,10 @@ function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[]): NormalizedM
   for (const m of merged) {
     const prev = out[out.length - 1];
     if (prev) {
+      if (prev.nativePosition && m.nativePosition && prev.id !== m.id) {
+        out.push(m);
+        continue;
+      }
       if (prev.kind === 'stream_delta' && m.kind === 'text' && m.role === 'assistant') {
         const ps = (prev.content || '').trim();
         const ms = (m.content || '').trim();
@@ -287,6 +296,19 @@ function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[]): NormalizedM
   return out;
 }
 
+function isNativeSnapshotAhead(live: NormalizedMessage, stored: NormalizedMessage): boolean {
+  if (!live.nativePosition || !stored.nativePosition || live.id !== stored.id
+    || live.sessionId !== stored.sessionId || live.provider !== stored.provider || live.kind !== stored.kind) return false;
+  // Native snapshots are cumulative. A history read can race a live delta:
+  // matching identity alone must not freeze the bubble at its older prefix.
+  if (live.kind === 'text' || live.kind === 'thinking') {
+    const previous = stored.content ?? '', current = live.content ?? '';
+    return current.length > previous.length && current.startsWith(previous);
+  }
+  return live.kind === 'tool_use' && stored.status === 'in_progress'
+    && (live.status === 'completed' || live.status === 'failed');
+}
+
 /**
  * After a server refresh, drop only the realtime rows the persisted transcript
  * already owns. Anything not yet on disk (common right after `complete`, while
@@ -301,12 +323,13 @@ function pruneRealtimeSupersededByServer(
     return realtimeMessages;
   }
 
-  const serverIds = new Set(serverMessages.map((message) => message.id));
+  const serverById = new Map(serverMessages.map((message) => [message.id, message]));
   const reconciledRealtimeMessages = removeOptimisticUserEchoes(serverMessages, realtimeMessages);
 
   return reconciledRealtimeMessages.filter((message) => {
-    if (serverIds.has(message.id)) {
-      return false;
+    const stored = serverById.get(message.id);
+    if (stored) {
+      return isNativeSnapshotAhead(message, stored);
     }
 
     if (message.kind === 'stream_delta' || message.id === `__streaming_${message.sessionId}`) {
@@ -342,9 +365,17 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
     return dedupeAdjacentAssistantEchoes(server);
   }
   if (server.length === 0) {
-    return dedupeAdjacentAssistantEchoes(realtime);
+    return dedupeAdjacentAssistantEchoes(orderNativeTranscriptMessages(
+      realtime, server, realtime, (message) => readSortTime(message, 0),
+    ));
   }
 
+  const realtimeById = new Map(realtime.map((message) => [message.id, message]));
+  server = server.map((stored) => {
+    const live = realtimeById.get(stored.id);
+    return live && isNativeSnapshotAhead(live, stored)
+      ? { ...live, timestamp: stored.timestamp, nativePosition: stored.nativePosition } : stored;
+  });
   const serverIds = new Set(server.map((message) => message.id));
   const reconciledRealtime = removeOptimisticUserEchoes(server, realtime);
   const extra = reconciledRealtime.filter((message) => {
@@ -367,8 +398,11 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
     0,
   );
   return dedupeAdjacentAssistantEchoes(
-    [...server, ...extra].sort(
-      (a, b) => readSortTime(a, newestServerTime) - readSortTime(b, newestServerTime),
+    orderNativeTranscriptMessages(
+      [...server, ...extra].sort(
+        (a, b) => readSortTime(a, newestServerTime) - readSortTime(b, newestServerTime),
+      ),
+      server, realtime, (message) => readSortTime(message, newestServerTime),
     ),
   );
 }
@@ -408,6 +442,8 @@ function olderPagePrecedesCachedHistory(
   const olderNewest = olderMessages[olderMessages.length - 1];
   const cachedOldest = cachedMessages[0];
   if (!olderNewest || !cachedOldest) return true;
+  const nativeOrder = compareNativeTranscriptPositions(olderNewest, cachedOldest);
+  if (nativeOrder !== null) return nativeOrder <= 0;
 
   const olderTime = readMessageTime(olderNewest);
   const cachedTime = readMessageTime(cachedOldest);
@@ -755,17 +791,24 @@ export function useSessionStore() {
         ? msg
         : { ...msg, sessionId };
     const existingIndex = slot.realtimeMessages.findIndex(
-      (message) => message.id === normalizedMessage.id,
+      (message) => message.id === normalizedMessage.id
+        || (normalizedMessage.kind === 'text' && normalizedMessage.role === 'user'
+          && normalizedMessage.clientMessageId && message.kind === 'text' && message.role === 'user'
+          && message.provider === normalizedMessage.provider && message.sessionId === normalizedMessage.sessionId
+          && message.clientMessageId === normalizedMessage.clientMessageId),
     );
     let updated = [...slot.realtimeMessages];
     if (existingIndex >= 0) {
       // Codex sends cumulative text/tool snapshots, not new rows per tick.
       // Preserve the first timestamp so an update cannot move the row past
       // later messages when realtime is chronologically merged with history.
-      updated[existingIndex] = {
-        ...normalizedMessage,
-        timestamp: updated[existingIndex].timestamp,
-      };
+      const existing = updated[existingIndex];
+      // A native receipt may precede the gateway acknowledgement. Never let
+      // that later echo replace the native identity/order or create a second row.
+      updated[existingIndex] = existing.nativePosition && !normalizedMessage.nativePosition
+        && existing.clientMessageId && existing.clientMessageId === normalizedMessage.clientMessageId
+        ? existing
+        : { ...normalizedMessage, timestamp: existing.timestamp };
     } else {
       updated.push(normalizedMessage);
     }

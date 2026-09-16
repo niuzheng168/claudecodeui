@@ -18,6 +18,8 @@ import type {
   AuthenticatedWebSocketRequest,
   LLMProvider,
   ProviderPermissionDecision,
+  ProviderAbortOptions,
+  ProviderRuntimeObservation,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
@@ -75,7 +77,9 @@ export type ProviderRuntimeGateway = {
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
-  abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
+  abort(provider: LLMProvider, sessionId: string, options?: ProviderAbortOptions): Promise<boolean>;
+  canInterrupt?(provider: LLMProvider, sessionId: string): boolean;
+  prepareObservation?(provider: LLMProvider, sessionId: string): Promise<ProviderRuntimeObservation | null>;
   canSteer?(provider: LLMProvider, sessionId: string): boolean;
   steer?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
@@ -605,6 +609,7 @@ async function handleChatEditSend(
  */
 async function handleChatAbort(
   ws: WebSocket,
+  userId: string | number | null,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): Promise<void> {
@@ -620,29 +625,83 @@ async function handleChatAbort(
     return;
   }
 
-  const success = await dependencies.runtime.abort(run.provider, sessionId);
+  try {
+    if (String(run.writer.userId ?? '') !== String(userId ?? '')) {
+      throw new AppError('You cannot stop a run owned by another user.', { code: 'ABORT_FORBIDDEN', statusCode: 403 });
+    }
+    if (data.expectedRunId !== undefined && data.expectedRunId !== run.id) {
+      throw new AppError('The running turn changed. Review the current session before stopping it.', {
+        code: 'ABORT_STALE_RUN', statusCode: 409,
+      });
+    }
+    const success = await dependencies.runtime.abort(run.provider, sessionId, {
+      allowExternalTurn: data.expectedRunId === run.id,
+    });
+    if (!success) {
+      throw new AppError('The provider has not confirmed stopping this turn. Its running state has been preserved.', {
+        code: 'ABORT_UNCONFIRMED', statusCode: 409,
+      });
+    }
+    // A late Stop acknowledgement must only finish THIS run, not a successor.
+    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
+  } catch (error) {
+    // A refusal/timeout is not a completion signal and must not flush the queue.
+    sendJson(ws, {
+      kind: 'chat_abort_result', sessionId, accepted: false,
+      code: error instanceof AppError ? error.code : 'ABORT_FAILED',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
-  // Native goal Stop may finish draining its process and admit a queued run
-  // before abort() returns. A late acknowledgement must only finish THIS run.
-  chatRunRegistry.completeRunIfCurrent(run, {
-    exitCode: success ? 0 : 1,
-    aborted: true,
-  });
+// Coalesces concurrent phone/tab subscriptions without reserving an idle
+// session while its native status is being probed.
+const pendingObservations = new Map<string, Promise<void>>();
+
+async function attachExternalRun(
+  sessionId: string, userId: string | number | null, dependencies: ChatWebSocketDependencies,
+): Promise<void> {
+  if (!dependencies.runtime.prepareObservation || chatRunRegistry.isProcessing(sessionId)) return;
+  const pending = pendingObservations.get(sessionId);
+  if (pending) return pending;
+  const attaching = (async () => {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) return;
+    const observation = await dependencies.runtime.prepareObservation!(session.provider as LLMProvider, sessionId);
+    if (!observation) return;
+    const run = chatRunRegistry.startRun({
+      appSessionId: sessionId, provider: session.provider as LLMProvider,
+      providerSessionId: session.provider_session_id, connection: null, userId,
+    });
+    if (!run) {
+      await observation.dispose();
+      return;
+    }
+    // Keep following after the phone disconnects, so its durable queue waits
+    // for the actual native completion rather than a browser lifecycle event.
+    void observation.start(run.writer)
+      .catch((error: unknown) => console.warn('[Chat] Desktop observation ended:', error instanceof Error ? error.message : String(error)))
+      .finally(() => chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 }));
+  })();
+  pendingObservations.set(sessionId, attaching);
+  try {
+    await attaching;
+  } finally {
+    if (pendingObservations.get(sessionId) === attaching) pendingObservations.delete(sessionId);
+  }
 }
 
 /**
- * Handles `chat.subscribe`: for each requested session, reports whether a run
- * is processing, re-attaches the live stream to this socket, replays missed
- * events (seq > lastSeq), and includes pending permission requests.
- *
- * This single message replaces the old `check-session-status`,
- * `get-pending-permissions`, and Claude-only writer reconnect flows.
+ * Handles `chat.subscribe`: joins a verified external turn when needed,
+ * reports capabilities, replays missed events and restores pending approvals.
+ * No prompt is required to expose queue/steer/Stop after changing devices.
  */
-function handleChatSubscribe(
+async function handleChatSubscribe(
   ws: WebSocket,
+  userId: string | number | null,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
-): void {
+): Promise<void> {
   const targets = Array.isArray(data.sessions) ? data.sessions : [];
 
   for (const target of targets) {
@@ -655,6 +714,11 @@ function handleChatSubscribe(
       : '';
     if (!sessionId) {
       continue;
+    }
+    try {
+      await attachExternalRun(sessionId, userId, dependencies);
+    } catch (error) {
+      console.warn('[Chat] Could not observe native activity:', error instanceof Error ? error.message : String(error));
     }
 
     const lastSeqRaw = (target as AnyRecord).lastSeq;
@@ -680,6 +744,7 @@ function handleChatSubscribe(
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
+      canInterrupt: isProcessing && Boolean(run && (dependencies.runtime.canInterrupt?.(run.provider, sessionId) ?? true)),
       canSteer,
       canSteerQueued: canSteer,
       runId: isProcessing ? run?.id : undefined,
@@ -829,10 +894,10 @@ export function handleChatConnection(
           await handleChatSend(ws, userId, data, dependencies);
           return;
         case 'chat.abort':
-          await handleChatAbort(ws, data, dependencies);
+          await handleChatAbort(ws, userId, data, dependencies);
           return;
         case 'chat.subscribe':
-          handleChatSubscribe(ws, data, dependencies);
+          await handleChatSubscribe(ws, userId, data, dependencies);
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);

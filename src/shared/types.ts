@@ -421,11 +421,20 @@ type QuestionOption = {
 
 //----------------- CHAT SESSION STORE ------------
 
+/** Provider/session-scoped position in a native turn. Counts every native item, not just visible rows, and is never an edit or mutation handle. */
+export type NativeTranscriptPosition = {
+  turnId: string;
+  turnStartedAt: string;
+  itemIndex: number;
+};
+
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
   id: string;
   /** Correlates one submitted user input with its native persisted copy, independently of text or the enclosing turn's timestamp. Scoped to this provider/session; not an edit anchor. */
   clientMessageId?: string;
+  /** Canonical native item order; unlike display timestamps, remains comparable across history and websocket replay. */
+  nativePosition?: NativeTranscriptPosition;
   /**
    * The provider's own id for the transcript row behind this message, when the
    * provider has stable per-row identity (today: Claude). Sent back as the

@@ -49,12 +49,14 @@ test('steering is advertised per live session and disappears on completion/disco
   expect(view.result.current.canSteer).toBe(false);
   emit({ kind: 'status', sessionId: 'a', canSteer: true, runId: 'run-a' });
   expect(view.result.current.canSteer).toBe(true);
+  expect(view.result.current.runId).toBe('run-a');
   view.rerender({ sessionId: 'b' });
   expect(view.result.current.canSteer).toBe(false);
   emit({ kind: 'chat_subscribed', sessionId: 'b', isProcessing: true, canSteer: true, runId: 'run-b' });
   expect(view.result.current.canSteer).toBe(true);
   emit({ kind: 'complete', sessionId: 'b' });
   expect(view.result.current.canSteer).toBe(false);
+  expect(view.result.current.runId).toBeNull();
   view.rerender({ sessionId: 'a' });
   expect(view.result.current.canSteer).toBe(true);
   mocks.connected = false;
@@ -202,6 +204,36 @@ test('steering acknowledgements never end/restart the activity indicator or appe
   expect(idle).not.toHaveBeenCalled();
   expect(processing).not.toHaveBeenCalled();
   expect(append).not.toHaveBeenCalled();
+});
+
+test('desktop subscription restores Stop capability and a rejected Stop keeps the activity and queue intact', () => {
+  let listener!: (event: ServerEvent) => void;
+  const idle = vi.fn(), processing = vi.fn(), append = vi.fn(), refresh = vi.fn();
+  renderHook(() => useChatRealtimeHandlers({
+    isActive: true, subscribe: (fn) => { listener = fn; return () => {}; },
+    provider: 'codex', selectedSession: { id: 'a' }, currentSessionId: 'a',
+    setTokenBudget: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
+    streamTimerRef: { current: null }, accumulatedStreamRef: { current: '' },
+    lastSeqRef: { current: new Map() }, statusCheckSentAtRef: { current: new Map() },
+    onSessionIdle: idle, onSessionProcessing: processing, requestLatestMessages: refresh,
+    sessionStore: { appendRealtime: append } as unknown as SessionStore,
+  }));
+  act(() => {
+    listener({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, canInterrupt: false });
+    listener({ kind: 'status', sessionId: 'a', canSteer: true, canInterrupt: true });
+    listener({ kind: 'status', sessionId: 'a', canSteer: false, canInterrupt: false });
+    listener({ kind: 'chat_subscribed', sessionId: 'a', isProcessing: true, canInterrupt: true });
+    listener({ kind: 'chat_abort_result', sessionId: 'a', accepted: false, code: 'ABORT_UNCONFIRMED', error: 'Keep following this turn' });
+  });
+  expect(processing.mock.calls).toEqual([
+    ['a', { canInterrupt: false }], ['a', { canInterrupt: true }],
+    ['a', { canInterrupt: false }], ['a', { canInterrupt: true }],
+  ]);
+  expect(idle).not.toHaveBeenCalled();
+  expect(append).toHaveBeenCalledWith('a', expect.objectContaining({ kind: 'error', content: 'Keep following this turn' }));
+  act(() => { listener({ kind: 'complete', sessionId: 'a', aborted: true }); });
+  expect(idle).toHaveBeenCalledOnce();
+  expect(refresh).toHaveBeenCalledWith('a', true);
 });
 
 test('uploads keep the original run token even if a newer turn starts before submission', async () => {

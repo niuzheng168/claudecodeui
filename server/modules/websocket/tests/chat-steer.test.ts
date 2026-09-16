@@ -12,7 +12,7 @@ import { connectedClients } from '@/modules/websocket/services/websocket-state.s
 import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError } from '@/shared/index.js';
-import type { QueuedSessionMessageRecord } from '@/shared/index.js';
+import type { ProviderAbortOptions, ProviderRuntimeObservation, QueuedSessionMessageRecord } from '@/shared/index.js';
 
 function socket() {
   return Object.assign(new EventEmitter(), {
@@ -29,7 +29,9 @@ async function fixture(t: TestContext, body: (f: {
   run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>;
   send: (overrides?: AnyRecord) => Promise<void>;
   runtime: {
-    abort: (provider: string, sessionId: string) => Promise<boolean>;
+    abort: (provider: string, sessionId: string, options?: ProviderAbortOptions) => Promise<boolean>;
+    canInterrupt?: () => boolean;
+    prepareObservation?: (provider: string, sessionId: string) => Promise<ProviderRuntimeObservation | null>;
     canSteer: () => boolean;
     steer: (provider: string, sessionId: string, command: string, options: AnyRecord) => Promise<void>;
   };
@@ -113,6 +115,120 @@ test('a late goal Stop acknowledgement cannot complete the next queued run', asy
     assert.equal(successor.status, 'running');
   });
 });
+
+test('only an explicit Stop bound to the current user/run can interrupt a desktop observation', async (t) => {
+  await fixture(t, async ({ runtime, run, client, calls, send }) => {
+    runtime.abort = async (...args) => { calls.push(['abort', ...args]); return true; };
+    await send({ type: 'chat.abort', expectedRunId: 'older-run' });
+    assert.equal(client.frames.at(-1)?.code, 'ABORT_STALE_RUN');
+    assert.equal(run.status, 'running');
+    run.writer.userId = 2;
+    await send({ type: 'chat.abort' });
+    assert.equal(client.frames.at(-1)?.code, 'ABORT_FORBIDDEN');
+    assert.equal(calls.length, 0);
+    run.writer.userId = 1;
+    await send({ type: 'chat.abort' });
+    assert.deepEqual(calls, [['abort', 'codex', 'session-a', { allowExternalTurn: true }]]);
+    assert.equal(run.status, 'completed');
+  });
+});
+
+test('a refused or unconfirmed Stop does not complete the run or release its queue', async (t) => {
+  await fixture(t, async ({ runtime, run, client, observer, send }) => {
+    runtime.abort = async () => { throw new Error('Native interrupt acknowledgement was lost'); };
+    await send({ type: 'chat.abort' });
+    assert.equal(client.frames.at(-1)?.kind, 'chat_abort_result');
+    assert.equal(client.frames.at(-1)?.accepted, false);
+    assert.equal(run.status, 'running');
+    assert.equal(observer.frames.length, 0);
+    runtime.abort = async () => false;
+    await send({ type: 'chat.abort' });
+    assert.equal(client.frames.at(-1)?.code, 'ABORT_UNCONFIRMED');
+    assert.equal(run.status, 'running');
+    assert.equal(observer.frames.length, 0);
+  });
+});
+
+test('an older Stop request without a run receipt never grants desktop interruption', async (t) => {
+  await fixture(t, async ({ runtime, calls, send }) => {
+    runtime.abort = async (...args) => { calls.push(['abort', ...args]); return true; };
+    await send({ type: 'chat.abort', expectedRunId: undefined });
+    assert.deepEqual(calls, [['abort', 'codex', 'session-a', { allowExternalTurn: false }]]);
+  });
+});
+
+test('opening a desktop session registers observation and enables queue promotion before the first send', async (t) => {
+  await fixture(t, async ({ runtime, client, calls, send }) => {
+    chatRunRegistry.clearAll();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    runtime.prepareObservation = async (provider, sessionId) => {
+      calls.push(['prepare', provider, sessionId]);
+      return {
+        start: async (writer) => {
+          calls.push(['observe']);
+          writer.send({ kind: 'status', provider: 'codex', sessionId: 'native-a', canSteer: true, canInterrupt: true });
+          await finished;
+          writer.send({ kind: 'complete', provider: 'codex', sessionId: 'native-a', exitCode: 0 });
+        },
+        dispose: () => { calls.push(['dispose']); },
+      };
+    };
+    runtime.canInterrupt = () => true;
+    await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
+    const run = chatRunRegistry.getRun('session-a');
+    assert.ok(run);
+    assert.equal(run.status, 'running');
+    assert.deepEqual(calls, [['prepare', 'codex', 'session-a'], ['observe']]);
+    assert.equal(client.frames[0].kind, 'chat_subscribed');
+    assert.equal(client.frames[0].isProcessing, true);
+    assert.equal(client.frames[0].canSteerQueued, true);
+    assert.equal(client.frames[0].canInterrupt, true);
+    assert.equal(client.frames[0].runId, run.id);
+    await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a', lastSeq: run.lastSeq }] });
+    assert.equal(calls.filter(([method]) => method === 'prepare').length, 1);
+    await send({ expectedRunId: run.id });
+    assert.equal(calls.filter(([method]) => method === 'steer').length, 1);
+    assert.equal(calls.filter(([method]) => method === 'run' || method === 'abort').length, 0);
+    finish();
+    await nextTick();
+    assert.equal(run.status, 'completed');
+  });
+});
+
+test('an idle native probe leaves the session available without a phantom run or completion', async (t) => {
+  await fixture(t, async ({ runtime, client, send }) => {
+    chatRunRegistry.clearAll();
+    runtime.prepareObservation = async () => null;
+    await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
+    assert.equal(chatRunRegistry.getRun('session-a'), undefined);
+    assert.equal(client.frames.length, 1);
+    assert.equal(client.frames[0].isProcessing, false);
+    assert.equal(client.frames[0].canInterrupt, false);
+  });
+});
+
+test('a concurrent send wins observation admission without losing its run or leaking the prepared connection', async (t) => {
+  await fixture(t, async ({ runtime, observer, calls, send }) => {
+    chatRunRegistry.clearAll();
+    let prepared!: (observation: ProviderRuntimeObservation) => void;
+    runtime.prepareObservation = () => new Promise((resolve) => { prepared = resolve; });
+    await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
+    const sent = chatRunRegistry.startRun({
+      appSessionId: 'session-a', provider: 'codex', providerSessionId: 'native-a',
+      connection: observer, userId: 1,
+    });
+    prepared({
+      start: async () => { calls.push(['observe']); },
+      dispose: () => { calls.push(['dispose']); },
+    });
+    await nextTick();
+    assert.deepEqual(calls, [['dispose']]);
+    assert.equal(chatRunRegistry.getRun('session-a'), sent);
+    assert.equal(sent?.status, 'running');
+  });
+});
+
 test('only upload-store attachments reach steering; execution settings are ignored', async (t) => {
   await fixture(t, async ({ send, calls }) => {
     const image = { path: path.join(getGlobalImageAssetsDir(), 'correction.png'), name: 'correction.png' };
@@ -190,10 +306,12 @@ test('reconnecting clients receive native steering capability only for supported
     await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
     assert.equal(client.frames.at(-1)?.canSteer, true);
     assert.equal(client.frames.at(-1)?.canSteerQueued, true);
+    runtime.canInterrupt = () => false;
     runtime.canSteer = () => false;
     await send({ type: 'chat.subscribe', sessions: [{ sessionId: 'session-a' }] });
     assert.equal(client.frames.at(-1)?.canSteer, false);
     assert.equal(client.frames.at(-1)?.canSteerQueued, false);
+    assert.equal(client.frames.at(-1)?.canInterrupt, false);
   });
 });
 
