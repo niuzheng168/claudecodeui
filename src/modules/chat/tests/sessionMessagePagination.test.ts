@@ -125,6 +125,24 @@ test('bridge discovery stops after crossing the cached tail time boundary', () =
   assert.equal(hasReachedCachedTailTimeBoundary(cached, range(95, 114)), true);
 });
 
+test('native page boundaries and overlaps use item positions when every message has the same turn timestamp', () => {
+  const native = (itemIndex: number) => message(itemIndex, {
+    provider: 'codex', timestamp: '2026-09-15T15:25:47.000Z', role: 'assistant', content: 'Done',
+    nativePosition: { turnId: 'long-turn', turnStartedAt: '2026-09-15T15:25:47.000Z', itemIndex },
+  });
+  const cached = [native(80), native(90)];
+  assert.equal(hasReachedCachedTailTimeBoundary(cached, [native(100)]), false);
+  assert.equal(hasReachedCachedTailTimeBoundary(cached, [native(85)]), true);
+  assert.equal(findLatestPageOverlapLength(cached, [native(100)]), 0);
+  assert.equal(findLatestPageOverlapLength(cached, [native(90), native(100)]), 1);
+});
+
+test('distinct persisted user receipts cannot create a text-only page overlap', () => {
+  const earlier = message(1, { role: 'user', clientMessageId: 'first', content: 'continue' });
+  const later = { ...earlier, id: 'different-item', clientMessageId: 'second' };
+  assert.equal(findLatestPageOverlapLength([earlier], [later]), 0);
+});
+
 test('older-page reconciliation removes overlap caused by tail growth', () => {
   const cached = range(81, 100);
   const shiftedOlderPage = range(66, 85);

@@ -286,6 +286,8 @@ export type NormalizedMessage = {
   id: string;
   /** Opaque identity of one submitted user input, preserved from native clientId for exact live/history reconciliation. Scoped to this provider/session; grants no edit, retry or execution ownership. */
   clientMessageId?: string;
+  /** Native transcript position, independent of websocket arrival time and synthetic history timestamps. Not an edit anchor. */
+  nativePosition?: NativeTranscriptPosition;
   /**
    * The provider's own identifier for the transcript row this message came
    * from, when the provider has stable per-row identity (today: Claude's
@@ -364,6 +366,20 @@ export type NormalizedMessage = {
   sequence?: number;
   rowid?: number;
   [key: string]: unknown;
+};
+
+/**
+ * Codex's canonical item order within one native turn, shared by its history
+ * reader and live observer. `itemIndex` counts all native items, including
+ * those not rendered. `turnStartedAt` is an ISO timestamp used only to order
+ * different turns; same-turn items must never be ordered by their display
+ * timestamps. The position is scoped to one provider/session and grants no
+ * mutation or execution ownership.
+ */
+export type NativeTranscriptPosition = {
+  turnId: string;
+  turnStartedAt: string;
+  itemIndex: number;
 };
 
 /**
@@ -512,6 +528,28 @@ export type ProviderRuntimeContext = {
   getProviderModels(): Promise<ProviderModelsDefinition>;
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   isProviderInstalled(): Promise<boolean>;
+};
+
+/**
+ * Interruption intent supplied by the authenticated gateway, never copied
+ * from arbitrary run options. External desktop turns may be stopped only by
+ * an explicit user action bound to the current gateway run; automatic queue
+ * dispatch and cleanup must leave them running.
+ */
+export type ProviderAbortOptions = {
+  allowExternalTurn?: boolean;
+};
+
+/**
+ * A read-only, verified external run prepared by a provider for the websocket
+ * gateway. Preparation must not submit input, start/resume an idle task or
+ * change settings. The gateway atomically reserves its app-session run before
+ * calling `start`; if another run wins, it must call `dispose` instead.
+ * `start` follows only the verified turn and owns connection cleanup.
+ */
+export type ProviderRuntimeObservation = {
+  start(writer: ProviderRuntimeWriter): Promise<void>;
+  dispose(): void | Promise<void>;
 };
 
 export type ProviderRunFunction = (

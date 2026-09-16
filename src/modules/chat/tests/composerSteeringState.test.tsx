@@ -63,6 +63,7 @@ function fixture(steerMessage: SteerChatMessage = vi.fn(async (scope) => consume
       provider, permissionMode: 'default', cyclePermissionMode: noop,
       resolvePermissionModeForProvider: resolvePermissionMode, currentProviderModel: 'test-model',
       currentProviderEffort: 'high', isLoading: busy, canAbortSession: busy, tokenBudget: null,
+      activeRunId: busy ? `run-${sessionId}` : null,
       sendMessage: send, steerMessage, onSessionProcessing: processing,
       scrollToBottom: noop, addMessage: echo, setIsUserScrolledUp: noop,
       setPendingPermissionRequests: noop,
@@ -71,6 +72,18 @@ function fixture(steerMessage: SteerChatMessage = vi.fn(async (scope) => consume
   );
   return { ...view, send, echo, processing, steerMessage };
 }
+
+test('Stop carries only the run receipt for the currently viewed session', () => {
+  const view = fixture();
+  act(() => { view.result.current.handleAbortSession(); });
+  expect(view.send).toHaveBeenLastCalledWith({ type: 'chat.abort', sessionId: 'a', expectedRunId: 'run-a' });
+  view.rerender({ sessionId: 'b', provider: 'codex', busy: true });
+  act(() => { view.result.current.handleAbortSession(); });
+  expect(view.send).toHaveBeenLastCalledWith({ type: 'chat.abort', sessionId: 'b', expectedRunId: 'run-b' });
+  view.rerender({ sessionId: 'b', provider: 'codex', busy: false });
+  act(() => { view.result.current.handleAbortSession(); });
+  expect(view.send).toHaveBeenCalledTimes(2);
+});
 
 async function queue(view: ReturnType<typeof fixture>, content = 'Focus on tests', files: File[] = []) {
   act(() => { view.result.current.setInput(content); view.result.current.setAttachedFiles(files); });

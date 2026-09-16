@@ -42,6 +42,159 @@ beforeEach(() => {
   respondWith([]);
 });
 
+function nativeRow(id: string, itemIndex: number, overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
+  return row(id, {
+    nativePosition: { turnId: 'desktop-turn', turnStartedAt: '2026-09-15T15:25:47.000Z', itemIndex },
+    timestamp: '2026-09-15T15:25:47.000Z',
+    ...overrides,
+  });
+}
+
+test('a late join orders replayed desktop output before the newer native history tail, not after it', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  respondWith([
+    nativeRow('latest-question', 120, { role: 'user' }),
+    nativeRow('latest-answer', 121),
+  ]);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('earlier-answer', 90, {
+      timestamp: '2026-09-15T16:13:11.000Z',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('new-answer', 125, {
+      timestamp: '2026-09-15T16:56:00.000Z',
+    }));
+  });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['earlier-answer', 'latest-question', 'latest-answer', 'new-answer']);
+});
+
+test('native steering receipts precede their answers even when the accepted gateway echo arrives last', () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('native-question', 10, {
+      role: 'user', clientMessageId: 'correction-one', timestamp: '2026-09-15T16:12:00.000Z',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('answer', 11, {
+      timestamp: '2026-09-15T16:12:01.000Z',
+    }));
+    result.current.appendRealtime('session-1', row('steer_ack', {
+      role: 'user', clientMessageId: 'correction-one', timestamp: '2026-09-15T16:12:02.000Z',
+    }));
+  });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['native-question', 'answer']);
+  assert.equal(result.current.getSessionSlot('session-1')?.realtimeMessages.length, 2);
+});
+
+test('a native input replaces its optimistic echo without moving past later output or swallowing another send', () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', row('local_question', {
+      role: 'user', content: 'continue', clientMessageId: 'one', timestamp: '2026-09-15T16:12:00.000Z',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('answer', 11));
+    result.current.appendRealtime('session-1', nativeRow('native-question', 10, {
+      role: 'user', content: 'continue', clientMessageId: 'one',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('repeat-question', 12, {
+      role: 'user', content: 'continue', clientMessageId: 'two',
+    }));
+  });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['native-question', 'answer', 'repeat-question']);
+});
+
+test('native positions survive a history refresh whose turn-start timestamps precede every live arrival', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('question', 100, {
+      role: 'user', clientMessageId: 'input', timestamp: '2026-09-15T16:12:00.000Z',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('answer', 102, {
+      timestamp: '2026-09-15T16:13:00.000Z',
+    }));
+  });
+  respondWith([
+    nativeRow('question', 100, { role: 'user', clientMessageId: 'input' }),
+    nativeRow('tool', 101, { kind: 'tool_use', toolId: 'tool' }),
+  ]);
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['question', 'tool', 'answer']);
+  respondWith([
+    nativeRow('question', 100, { role: 'user', clientMessageId: 'input' }),
+    nativeRow('tool', 101, { kind: 'tool_use', toolId: 'tool' }),
+    nativeRow('answer', 102),
+  ]);
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['question', 'tool', 'answer']);
+});
+
+test('joining a partially streamed native item keeps receiving updates across stale history reads', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  const prompt = nativeRow('question', 0, { role: 'user' });
+  respondWith([prompt, nativeRow('answer', 1, { content: 'I will' })]);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('answer', 1, {
+      content: 'I will check the tests', timestamp: '2026-09-15T16:12:01.000Z',
+    }));
+  });
+  assert.equal(result.current.getMessages('session-1')[1].content, 'I will check the tests');
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.equal(result.current.getMessages('session-1')[1].content, 'I will check the tests');
+  assert.equal(result.current.getSessionSlot('session-1')?.realtimeMessages.length, 1);
+  respondWith([prompt, nativeRow('answer', 1, { content: 'I will check the tests and report back.' })]);
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.equal(result.current.getMessages('session-1')[1].content, 'I will check the tests and report back.');
+  assert.equal(result.current.getSessionSlot('session-1')?.realtimeMessages.length, 0);
+});
+
+test('distinct native items with identical text are not mistaken for synthetic assistant echoes', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  respondWith([
+    nativeRow('question', 0, { role: 'user' }),
+    nativeRow('first-answer', 1, { content: 'Done' }),
+  ]);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('second-answer', 2, { content: 'Done' }));
+  });
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    ['question', 'first-answer', 'second-answer']);
+});
+
+test('a long native turn bridges disjoint latest pages even though their timestamps all equal turn start', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  const history = Array.from({ length: 100 }, (_, index) => nativeRow(`item-${index}`, index * 3));
+  let total = 70;
+  sessionMessages.mockImplementation(async (_id, options) => {
+    const end = Math.max(0, total - options.offset);
+    const start = Math.max(0, end - options.limit);
+    return {
+      ok: true,
+      json: async () => ({ data: { messages: history.slice(start, end), total, hasMore: start > 0 } }),
+    };
+  });
+  await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20, offset: 0 }); });
+  total = 100;
+  await act(async () => {
+    const refresh = await result.current.refreshLatestFromServer('session-1', { limit: 20 });
+    assert.equal(refresh.applied, true);
+  });
+  assert.deepEqual(sessionMessages.mock.calls.map(([, options]) => options), [
+    { limit: 20, offset: 0 }, { limit: 20, offset: 0 }, { limit: 11, offset: 20 },
+  ]);
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    history.slice(50).map((message) => message.id));
+  await act(async () => { await result.current.fetchMore('session-1', { limit: 20 }); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    history.slice(30).map((message) => message.id));
+});
+
 test('native history retires both send/steer echoes once and survives replay without swallowing repeated input', async () => {
   const { result } = renderHook(() => useSessionStore());
   const first = row('local_first', {

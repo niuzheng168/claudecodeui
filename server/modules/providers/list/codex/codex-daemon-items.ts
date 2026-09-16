@@ -1,4 +1,4 @@
-import type { AnyRecord } from '@/shared/index.js';
+import type { AnyRecord, NativeTranscriptPosition } from '@/shared/index.js';
 import { readObjectRecord } from '@/shared/index.js';
 
 /**
@@ -10,10 +10,11 @@ export function projectCodexDaemonItem(
   value: unknown,
   turnId: string,
   timestamp: string,
+  nativePosition?: NativeTranscriptPosition,
 ): AnyRecord[] {
   const item = readObjectRecord(value);
   if (!item || typeof item.id !== 'string') return [];
-  const base = { uuid: item.id, itemId: item.id, timestamp };
+  const base = { uuid: item.id, itemId: item.id, timestamp, ...(nativePosition ? { nativePosition } : {}) };
   const status = item.status === 'inProgress' ? 'in_progress' : item.status;
   const live = { ...base, type: 'item', status };
 

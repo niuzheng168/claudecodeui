@@ -2010,6 +2010,14 @@ export class CodexSessionsProvider implements IProviderSessions {
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
+    const messages = this.normalizeEntry(rawMessage, sessionId);
+    return raw?.nativePosition
+      ? messages.map((message) => ({ ...message, nativePosition: raw.nativePosition }))
+      : messages;
+  }
+
+  private normalizeEntry(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
+    const raw = readObjectRecord(rawMessage);
     if (!raw) {
       return [];
     }
@@ -2255,10 +2263,13 @@ export class CodexSessionsProvider implements IProviderSessions {
           const messages: AnyRecord[] = [];
           for (const turn of thread.turns) {
             const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
-            for (const item of Array.isArray(turn.items) ? turn.items : []) {
+            for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
               // The existing edit/fork adapter relies on a legacy rollout.
               // Do not advertise edit anchors for native-only histories.
-              messages.push(...projectCodexDaemonItem(item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp));
+              messages.push(...projectCodexDaemonItem(
+                item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
+                { turnId: turn.id, turnStartedAt: timestamp, itemIndex },
+              ));
             }
           }
           result = { messages };
@@ -2281,9 +2292,7 @@ export class CodexSessionsProvider implements IProviderSessions {
 
     const normalized: NormalizedMessage[] = [];
     for (const raw of result.messages) {
-      normalized.push(...(raw.type === 'item'
-        ? this.normalizeMessage(raw, sessionId)
-        : this.normalizeHistoryEntry(raw, sessionId)));
+      normalized.push(...this.normalizeMessage(raw, sessionId));
     }
 
     const toolResultMap = new Map<string, NormalizedMessage>();

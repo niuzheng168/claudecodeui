@@ -16,6 +16,8 @@ import type {
   ProviderSkillCreateInput,
   ProviderSkillRemoveInput,
   ProviderRuntimeContext,
+  ProviderAbortOptions,
+  ProviderRuntimeObservation,
   ProviderRuntimePermissionGateway,
   ProviderRuntimeWriter,
   UpsertProviderMcpServerInput,
@@ -53,7 +55,11 @@ export interface IProviderRuntime {
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
-  abort(sessionId: string): boolean | Promise<boolean>;
+  abort(sessionId: string, options?: ProviderAbortOptions): boolean | Promise<boolean>;
+  /** Whether an explicit user Stop can interrupt the currently tracked turn. */
+  canInterrupt?(sessionId: string): boolean;
+  /** Prepare observation of an already-running external turn without submitting a prompt. */
+  prepareObservation?(sessionId: string, context: ProviderRuntimeContext): Promise<ProviderRuntimeObservation | null>;
   /** True while this adapter tracks a running turn that accepts extra input; this does not grant interruption ownership. */
   canSteer?(sessionId: string): boolean;
   /** Append input to the current turn; never interrupt, restart, or queue it. */

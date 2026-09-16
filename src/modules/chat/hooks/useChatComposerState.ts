@@ -51,6 +51,7 @@ type UseChatComposerStateArgs = {
   isLoading: boolean;
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
+  activeRunId?: string | null;
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
   steerMessage?: SteerChatMessage;
@@ -190,6 +191,7 @@ export function useChatComposerState({
   currentProviderEffort,
   isLoading,
   canAbortSession,
+  activeRunId,
   tokenBudget,
   sendMessage,
   steerMessage,
@@ -1329,8 +1331,9 @@ export function useChatComposerState({
     sendMessage({
       type: 'chat.abort',
       sessionId: targetSessionId,
+      ...(activeRunId ? { expectedRunId: activeRunId } : {}),
     });
-  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
+  }, [activeRunId, canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {

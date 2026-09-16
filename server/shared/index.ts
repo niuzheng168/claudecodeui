@@ -13,7 +13,7 @@ export type { ICodexRpcClient, IProviderRuntime } from './interfaces.js';
 export type {
   AnyRecord, CodexRpcRequestId, CodexRpcServerReply, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
-  LLMProvider,
+  LLMProvider, NativeTranscriptPosition, ProviderAbortOptions, ProviderRuntimeObservation,
   CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
 } from './types.js';
 export {
