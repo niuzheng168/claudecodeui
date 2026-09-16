@@ -1,6 +1,6 @@
 import { createRef } from 'react';
 import type { ComponentProps } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
@@ -9,7 +9,10 @@ import type { VoiceInputState } from '@/shared/types';
 
 const mocks = vi.hoisted(() => ({
   voiceState: 'idle' as VoiceInputState,
+  voiceEnabled: false,
   rewriteBusy: false,
+  rewriteNotice: undefined as string | undefined,
+  rewriteOriginalText: undefined as string | undefined,
   invalidate: vi.fn(),
 }));
 
@@ -27,13 +30,16 @@ vi.mock('react-i18next', () => ({
         'input.steer.sending': 'Sending correction…',
         'input.steer.voiceBusy': 'Finish or cancel voice input before appending the queued message.',
         'input.steer.rewriteBusy': 'Finish or cancel voice rewriting before appending the queued message.',
+        'voice.rewrite.action': 'Rewrite voice text',
+        'voice.rewrite.original': 'View original voice text',
+        'voice.rewrite.draftChanged': 'The draft changed. The old snapshot will not overwrite your edits.',
       };
       return labels[key] || options.defaultValue || key;
     },
   }),
 }));
 vi.mock('@/shared/context/UiPreferencesContext', () => ({
-  useUiPreferences: () => ({ voiceEnabled: false }),
+  useUiPreferences: () => ({ voiceEnabled: mocks.voiceEnabled }),
 }));
 vi.mock('@/shared/hooks/useCodeyVoice', () => ({
   useCodeyVoice: () => ({ preferences: { provider: 'azure-speech', language: 'auto' }, config: null }),
@@ -45,7 +51,9 @@ vi.mock('@/modules/chat/hooks/useVoiceInput', () => ({
   useVoiceInput: () => ({ state: mocks.voiceState }),
 }));
 vi.mock('@/modules/chat/hooks/useVoiceRewrite', () => ({
-  useVoiceRewrite: () => ({ busy: mocks.rewriteBusy }),
+  useVoiceRewrite: () => ({
+    busy: mocks.rewriteBusy, notice: mocks.rewriteNotice, originalText: mocks.rewriteOriginalText,
+  }),
 }));
 vi.mock('@/modules/chat/hooks/useInlineCompletion', () => ({
   useInlineCompletion: vi.fn(() => ({
@@ -73,7 +81,10 @@ function resizeViewport(width: number) {
 
 beforeEach(() => {
   mocks.voiceState = 'idle';
+  mocks.voiceEnabled = false;
   mocks.rewriteBusy = false;
+  mocks.rewriteNotice = undefined;
+  mocks.rewriteOriginalText = undefined;
   vi.clearAllMocks();
   resizeViewport(390);
 });
@@ -455,6 +466,40 @@ test('managed completion lives in the toolbar and its popup closes when the mobi
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.getByRole('button', { name: 'completion.title · completion.on' })).toBeTruthy();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
+});
+
+test.each([320, 390, 1024])('voice rewrite details at %ipx occupy no input row and open only from the rewrite tool', (width) => {
+  resizeViewport(width);
+  vi.stubEnv('VITE_CODEY_PORTAL_SSO', 'true');
+  mocks.voiceEnabled = true;
+  mocks.rewriteNotice = 'draftChanged';
+  mocks.rewriteOriginalText = 'A recorded voice fragment';
+  const f = fixture({ voiceContextKey: 'session-a' });
+  const trigger = screen.getByRole('button', { name: 'Rewrite voice text' });
+  const notice = screen.getByText('The draft changed. The old snapshot will not overwrite your edits.');
+  expect(notice.classList.contains('sr-only')).toBe(true);
+  expect(f.container.querySelector('[data-slot="composer-primary"]')?.contains(notice)).toBe(true);
+  expect(screen.queryByText('View original voice text')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+
+  fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: 'voice.rewrite.options' });
+  expect(within(dialog).getByText('View original voice text')).toBeTruthy();
+  expect(f.container.contains(dialog)).toBe(false);
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+  expect(f.props.onClearInput).not.toHaveBeenCalled();
+
+  // A new session must not inherit an open details popup from the previous draft.
+  f.rerender(<ChatComposer {...f.props} voiceContextKey="session-b" />);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  if (width < 768) {
+    fireEvent.click(screen.getByRole('button', { name: 'Rewrite voice text' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand input' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  }
 });
 
 test('the processing status and Stop action remain accessible while folded', () => {

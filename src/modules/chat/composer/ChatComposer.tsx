@@ -645,33 +645,13 @@ export default function ChatComposer({
               } : undefined} />
           ) : null}
           rewriteControl={managedVoice && voiceVisible ? (
-            <VoiceRewriteControl busy={rewrite.busy} canRewrite={rewrite.canRewrite && voiceState === 'idle'}
+            <VoiceRewriteControl key={voiceContextKey} busy={rewrite.busy} canRewrite={rewrite.canRewrite && voiceState === 'idle'}
               canUndo={rewrite.canUndo && voiceState === 'idle'} configured={rewriteConfigured}
               canRestore={rewrite.canRestore && voiceState === 'idle'} hasPreviousRewrite={rewrite.hasPreviousRewrite}
+              originalText={rewrite.originalText} notice={rewrite.notice} candidate={rewrite.candidate}
+              canApply={rewrite.canApply && voiceState === 'idle'} needsAttention={rewrite.needsAttention}
+              onApply={rewrite.applyCandidate}
               onRewrite={rewrite.rewrite} onCancel={rewrite.cancel} onUndo={rewrite.undo} onRestore={rewrite.restore} />
-          ) : null}
-          rewriteNotice={managedVoice && voiceVisible && (rewrite.busy || rewrite.notice || rewrite.candidate) ? (
-            <div role="status" className="mb-2 space-y-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-              <p>{rewrite.busy ? t('voice.rewrite.busy') : t(`voice.rewrite.${rewrite.notice}`, {
-                defaultValue: t('voice.rewrite.failed'),
-              })}</p>
-              {rewrite.originalText && (
-                <details>
-                  <summary className="cursor-pointer">{t('voice.rewrite.original')}</summary>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-foreground">{rewrite.originalText}</p>
-                </details>
-              )}
-              {rewrite.candidate && (
-                <>
-                  <textarea readOnly aria-label={t('voice.rewrite.suggestion')} value={rewrite.candidate.text}
-                    className="w-full resize-y rounded border border-border bg-background p-2 text-foreground" rows={3} />
-                  {rewrite.canApply ? (
-                    <button type="button" className="rounded border border-border px-2 py-1 text-foreground"
-                      onClick={rewrite.applyCandidate}>{t('voice.rewrite.apply')}</button>
-                  ) : <p>{t('voice.rewrite.copySuggestion')}</p>}
-                </>
-              )}
-            </div>
           ) : null}
           modelControl={<ComposerModelMenu
               effort={effort}
