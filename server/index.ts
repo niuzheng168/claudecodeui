@@ -32,7 +32,7 @@ import {
 import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
-import { createSystemModule } from './modules/system/index.js';
+import { createSystemModule, readRunningPackage } from './modules/system/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -70,13 +70,7 @@ const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
 // while this long-lived process still runs the OLD code. The frontend bundle is
 // rebuilt on update, so a mismatch between this value and the frontend's
 // build-time version means the server was updated but not restarted.
-const RUNNING_VERSION = (() => {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || null;
-    } catch {
-        return null;
-    }
-})();
+const RUNNING_PACKAGE = readRunningPackage(APP_ROOT);
 const systemRoutes = createSystemModule({
     appRoot: APP_ROOT,
     installMode,
@@ -153,11 +147,13 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        version: RUNNING_VERSION
+        version: RUNNING_PACKAGE.version,
+        ...(RUNNING_PACKAGE.codey ? { codey: RUNNING_PACKAGE.codey } : {}),
     });
 });
 
