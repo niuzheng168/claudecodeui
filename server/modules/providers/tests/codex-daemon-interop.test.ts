@@ -117,6 +117,8 @@ async function withFixture(
             });
           } else if (request.method === 'thread/read') {
             reply(socket, request, { thread: { id: THREAD_ID, createdAt: CREATED_AT, turns: history } });
+          } else if (request.method === 'thread/turns/list') {
+            reply(socket, request, { data: history, nextCursor: null });
           } else if (request.method === 'thread/start' || request.method === 'thread/resume') {
             reply(socket, request, { thread: { id: THREAD_ID, status: { type: 'idle' } } });
           } else if (request.method === 'turn/start') {
@@ -280,12 +282,12 @@ test('native history bypasses the legacy JSONL cache when the export does not ch
     assert.ok(first.messages.some((message) => message.content === 'Revision 1'));
     assert.ok(second.messages.some((message) => message.content === 'Revision 2'));
   }, (request, socket) => {
-    if (request.method !== 'thread/read') return false;
+    if (request.method !== 'thread/turns/list') return false;
     reads++;
-    reply(socket, request, { thread: {
-      id: THREAD_ID, createdAt: CREATED_AT,
-      turns: [{ id: 'turn-old', startedAt: CREATED_AT, items: [{ id: 'reply-old', type: 'agentMessage', text: `Revision ${reads}` }] }],
-    } });
+    reply(socket, request, {
+      data: [{ id: 'turn-old', startedAt: CREATED_AT, items: [{ id: 'reply-old', type: 'agentMessage', text: `Revision ${reads}` }] }],
+      nextCursor: null,
+    });
     return true;
   });
 });
@@ -876,6 +878,44 @@ test('paginated sessions fail safely without a daemon, while legacy SDK sessions
   }, undefined, false);
 });
 
+test('a reachable daemon relays an exact writer refusal to the original desktop queue, not another runtime', { concurrency: false }, async () => {
+  let clientId = '';
+  await withFixture(async ({ requests, fallback, fallbackCalls }) => {
+    const { messages, writer, context } = executionContext();
+    await new CodexSharedRuntime(fallback).run('Continue with the actual owner', { sessionId: APP_ID }, writer, context);
+    assert.equal(messages.at(-1)?.success, true);
+    assert.ok(messages.some(message => message.content === 'Reply from the original owner'));
+    assert.equal(requests.filter(request => request.method === 'thread/queue/add').length, 1);
+    assert.equal(requests.filter(request => request.method === 'thread/resume').length, 1);
+    assert.ok(!requests.some(request => ['thread/start', 'thread/fork', 'turn/start'].includes(request.method)));
+    assert.deepEqual(fallbackCalls, []);
+  }, (request, socket) => {
+    if (request.method === 'thread/resume') {
+      socket.send(JSON.stringify({ id: request.id, error: {
+        code: -32600, message: `thread ${THREAD_ID} already has an active writer`,
+      } }));
+    } else if (request.method === 'thread/read') {
+      reply(socket, request, { thread: { id: THREAD_ID, source: 'vscode' } });
+    } else if (request.method === 'thread/turns/list') {
+      reply(socket, request, { data: clientId ? [{
+        id: 'queued-turn', status: 'completed', completedAt: CREATED_AT + 1,
+        items: [
+          { id: 'queued-user', type: 'userMessage', clientId },
+          { id: 'queued-reply', type: 'agentMessage', text: 'Reply from the original owner' },
+        ],
+      }] : history, nextCursor: null });
+    } else if (request.method === 'thread/queue/list') {
+      reply(socket, request, { data: [], nextCursor: null });
+    } else if (request.method === 'thread/loaded/list') {
+      reply(socket, request, { data: ['unrelated-daemon-thread'] });
+    } else if (request.method === 'thread/queue/add') {
+      clientId = request.params.clientUserMessageId;
+      reply(socket, request, { queuedSubmission: { id: 'queued-input', clientUserMessageId: clientId } });
+    } else return false;
+    return true;
+  });
+});
+
 test('an existing legacy lock file is not treated as proof of an active writer', { concurrency: false }, async () => {
   await withFixture(async ({ home, fallback, fallbackCalls }) => {
     await mkdir(path.join(home, 'thread-writer-locks'));
@@ -886,7 +926,7 @@ test('an existing legacy lock file is not treated as proof of an active writer',
   }, undefined, false);
 });
 
-test('non-Windows partial paginated JSONL is never presented as complete history when the daemon is absent', { concurrency: false }, async () => {
+test('partial paginated JSONL is never presented as complete history without a native backend', { concurrency: false }, async () => {
   await withFixture(async ({ home }) => {
     const db = new Database(path.join(home, 'state_5.sqlite'));
     db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, history_mode TEXT);');
@@ -895,7 +935,7 @@ test('non-Windows partial paginated JSONL is never presented as complete history
     const partial = path.join(home, 'partial.jsonl');
     await writeFile(partial, JSON.stringify({ type: 'session_meta', payload: { id: THREAD_ID, cwd: '/workspace/demo' } }) + '\n');
     sessionsDb.createSession(THREAD_ID, 'codex', '/workspace/demo', 'Native session', undefined, undefined, partial);
-    await assert.rejects(new CodexSessionsProvider('linux').fetchHistory(THREAD_ID), /Connect its local daemon/);
+    await assert.rejects(new CodexSessionsProvider().fetchHistory(THREAD_ID), /Connect its local daemon/);
   }, undefined, false);
 });
 

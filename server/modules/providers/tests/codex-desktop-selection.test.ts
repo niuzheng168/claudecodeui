@@ -31,6 +31,16 @@ test('native queue never silently changes the desktop model or widens explicit p
       '{"type":"workspace-write","writable_roots":[],"network_access":false}', 'untrusted', 'desktop',
     );
     await assertCodexDesktopSelection('desktop', { permissionMode: 'default', cwd: home });
+    if (process.platform !== 'win32') {
+      database.prepare('UPDATE threads SET sandbox_policy=? WHERE id=?').run(
+        JSON.stringify({ type: 'workspace-write', writable_roots: [path.join(home, 'Workspace')], network_access: false }),
+        'desktop',
+      );
+      await assertCodexDesktopSelection('desktop', { permissionMode: 'default', cwd: path.join(home, 'Workspace') });
+      await assert.rejects(assertCodexDesktopSelection('desktop', {
+        permissionMode: 'default', cwd: path.join(home, 'workspace'),
+      }), { code: 'CODEX_DESKTOP_SETTINGS_MISMATCH' });
+    }
   } finally {
     database.close();
     if (before === undefined) delete process.env.CODEX_HOME;

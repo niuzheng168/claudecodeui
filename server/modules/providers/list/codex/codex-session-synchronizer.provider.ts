@@ -2,7 +2,7 @@ import path from 'node:path';
 import { access, readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import {
   buildLookupMap,
@@ -11,8 +11,8 @@ import {
   normalizeSessionName,
   readFileTimestamps,
   resolveCodexHomeDirectory,
-} from '@/shared/utils.js';
-import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+} from '@/shared/index.js';
+import type { IProviderSessionSynchronizer } from '@/shared/index.js';
 
 type ParsedSession = {
   sessionId: string;
@@ -25,7 +25,8 @@ let daemonSyncInFlight: Promise<{ known: Set<string>; changed: string[] }> | nul
 /**
  * Used by the Codex synchronizer and the provider watcher. Desktop threads may
  * exist in paginated storage before any JSONL is exported, so discover them
- * through the owning daemon as well as the legacy filesystem scan.
+ * through the owning daemon or a native read-only stdio connection as well as
+ * the legacy filesystem scan. All platforms use the same discovery path.
  */
 export async function synchronizeCodexDaemonSessions(): Promise<{ known: Set<string>; changed: string[] }> {
   if (daemonSyncInFlight) return daemonSyncInFlight;
@@ -36,7 +37,7 @@ export async function synchronizeCodexDaemonSessions(): Promise<{ known: Set<str
 async function synchronizeDaemonIndex(): Promise<{ known: Set<string>; changed: string[] }> {
   const known = new Set<string>();
   const changed: string[] = [];
-  const client = await CodexDaemonClient.connect();
+  const client = await connectCodexNativeClient();
   if (!client) return { known, changed };
   try {
     let cursor: string | undefined;
@@ -83,9 +84,15 @@ async function synchronizeDaemonIndex(): Promise<{ known: Set<string>; changed: 
       if (cursor && seenCursors.has(cursor)) throw new Error('Codex repeated a thread-list cursor.');
       if (cursor) seenCursors.add(cursor);
     } while (cursor);
+    if (client.ownsProcess) {
+      const loaded = await client.request('thread/loaded/list', {});
+      if (!Array.isArray(loaded.data) || loaded.data.length !== 0) {
+        throw new Error('The native Codex index reader unexpectedly loaded a thread.');
+      }
+    }
     return { known, changed };
   } finally {
-    client.close();
+    await client.close();
   }
 }
 

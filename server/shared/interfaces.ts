@@ -25,7 +25,7 @@ import type {
 
 //----------------- CODEX RPC TRANSPORT INTERFACE ------------
 /**
- * Provider-owned RPC connection used by Codex's Unix-daemon and Windows-stdio
+ * Provider-owned RPC connection used by Codex's shared-daemon and native-stdio
  * adapters. Closing a daemon connection never stops the desktop owner. An
  * owned stdio connection must await its own child exit before a queued turn
  * can resume the same thread. Only that owned connection may answer approvals.

@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
-import type { AnyRecord } from '@/shared/types.js';
+import type { AnyRecord } from '@/shared/index.js';
 
 const THREAD_ID = 'native-desktop-thread';
 const SECRET_SENTINEL = 'private-rpc-diagnostic-never-return';
@@ -28,7 +28,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   if (request.method === 'thread/loaded/list') {
     return reply(request.id, {data: behavior === 'loaded' ? ['${THREAD_ID}'] : []});
   }
-  if (request.method !== 'thread/read') {
+  if (!['thread/read', 'thread/turns/list'].includes(request.method)) {
     throw new Error('Unexpected mutation attempted by history reader');
   }
   if (behavior === 'hang') return;
@@ -47,7 +47,20 @@ readline.createInterface({input: process.stdin}).on('line', line => {
       ],
     }],
   };
-  if (behavior === 'missing-turns') delete thread.turns;
+  if (request.method === 'thread/turns/list') {
+    if (behavior === 'legacy') {
+      return console.log(JSON.stringify({id: request.id, error: {code: -32601, message: 'Method not found'}}));
+    }
+    if (behavior === 'missing-turns') return reply(request.id, {});
+    if (behavior === 'missing-items') delete thread.turns[0].items;
+    if (behavior === 'paged') {
+      if (!request.params.cursor) return reply(request.id, {data: thread.turns, nextCursor: 'page-2'});
+      thread.turns[0].id = 'second-turn';
+      thread.turns[0].items = [{id: 'second-reply', type: 'agentMessage', text: 'Second page reply'}];
+    }
+    return reply(request.id, {data: thread.turns, nextCursor: behavior === 'repeated-cursor' ? 'repeated' : null});
+  }
+  if (!request.params.includeTurns) thread.turns = [];
   reply(request.id, {thread});
 });
 `;
@@ -64,6 +77,7 @@ async function withReaderFixture(
   const values: Record<string, string> = {
     CODEX_HOME: home,
     CODEY_CODEX_DAEMON_SOCKET: '',
+    CODEY_CODEX_RUNTIME_TRANSPORT: '',
     // Node runs the fixture's extensionless "app-server" entrypoint, not Codex.
     CODEY_CODEX_EXECUTABLE: process.execPath,
     DATABASE_PATH: path.join(root, 'auth.db'),
@@ -110,9 +124,12 @@ test('desktop history uses only snapshot RPCs and leaves no loaded thread', { co
     assert.equal(snapshot.turns[0].items[1].text, 'Original native reply');
     const requests = await requestsAt(log);
     assert.deepEqual(requests.map(request => request.method), [
-      'initialize', 'initialized', 'thread/read', 'thread/loaded/list',
+      'initialize', 'initialized', 'thread/read', 'thread/turns/list', 'thread/loaded/list',
     ]);
-    assert.deepEqual(requests[2].params, { threadId: THREAD_ID, includeTurns: true });
+    assert.deepEqual(requests[2].params, { threadId: THREAD_ID, includeTurns: false });
+    assert.deepEqual(requests[3].params, {
+      threadId: THREAD_ID, cursor: null, limit: 100, sortDirection: 'asc', itemsView: 'full',
+    });
     assert.equal(requests[0].params.capabilities.experimentalApi, true);
   });
 });
@@ -129,13 +146,13 @@ test('native reader requires an explicit absolute CLI and never searches PATH', 
   });
 });
 
-for (const behavior of ['wrong-thread', 'missing-turns', 'loaded', 'rpc-error']) {
+for (const behavior of ['wrong-thread', 'missing-turns', 'missing-items', 'repeated-cursor', 'loaded', 'rpc-error']) {
   test(`native snapshot rejects ${behavior} instead of leaking or displaying partial history`, { concurrency: false }, async () => {
     await withReaderFixture(async ({ log }) => {
       await assert.rejects(codexAppServer.readThreadSnapshot(THREAD_ID), historyUnavailable);
       const requests = await requestsAt(log);
       assert.ok(requests.every(request => [
-        'initialize', 'initialized', 'thread/read', 'thread/loaded/list',
+        'initialize', 'initialized', 'thread/read', 'thread/turns/list', 'thread/loaded/list',
       ].includes(request.method)));
     }, behavior);
   });
@@ -156,8 +173,7 @@ test('a hung read is bounded and terminates only its temporary reader', { concur
   }, 'hang');
 });
 
-for (const historyPlatform of ['win32', 'darwin'] as const) {
-test(`${historyPlatform} displays native history without trusting its partial export or exposing edit anchors`, { concurrency: false }, async () => {
+test('every platform displays native history without trusting its partial export or exposing edit anchors', { concurrency: false }, async () => {
   await withReaderFixture(async ({ home, log }) => {
     closeConnection();
     await initializeDatabase();
@@ -174,7 +190,7 @@ test(`${historyPlatform} displays native history without trusting its partial ex
     }) + '\n');
     sessionsDb.createSession(THREAD_ID, 'codex', home, 'Native session', undefined, undefined, partial);
     const stateHash = createHash('sha256').update(await readFile(statePath)).digest('hex');
-    const provider = new CodexSessionsProvider(historyPlatform);
+    const provider = new CodexSessionsProvider();
     const history = await provider.fetchHistory(THREAD_ID);
     assert.equal(history.total, 2);
     assert.ok(history.messages.some(message => message.content === 'Original native reply'));
@@ -195,10 +211,10 @@ test(`${historyPlatform} displays native history without trusting its partial ex
     await assert.rejects(provider.fetchHistory(THREAD_ID), historyUnavailable);
   });
 });
-}
 
-test('Linux native history still requires its owning daemon', { concurrency: false }, async () => {
+test('native history without either backend fails closed on every platform', { concurrency: false }, async () => {
   await withReaderFixture(async ({ home, log }) => {
+    delete process.env.CODEY_CODEX_EXECUTABLE;
     closeConnection();
     await initializeDatabase();
     const state = new Database(path.join(home, 'state_5.sqlite'));
@@ -206,8 +222,30 @@ test('Linux native history still requires its owning daemon', { concurrency: fal
     state.prepare('INSERT INTO threads VALUES (?, ?)').run(THREAD_ID, 'paginated');
     state.close();
     sessionsDb.createSession(THREAD_ID, 'codex', home, 'Native session');
-    await assert.rejects(new CodexSessionsProvider('linux').fetchHistory(THREAD_ID),
+    await assert.rejects(new CodexSessionsProvider().fetchHistory(THREAD_ID),
       (error: unknown) => (error as { code?: string }).code === 'CODEX_DAEMON_REQUIRED');
     await assert.rejects(readFile(log), { code: 'ENOENT' });
   });
+});
+
+test('native history reads all pages in order without loading a writer', { concurrency: false }, async () => {
+  await withReaderFixture(async ({ log }) => {
+    const snapshot = await codexAppServer.readThreadSnapshot(THREAD_ID);
+    assert.deepEqual(snapshot.turns.map((turn: AnyRecord) => turn.id), ['original-turn', 'second-turn']);
+    assert.equal(snapshot.turns[1].items[0].text, 'Second page reply');
+    assert.deepEqual((await requestsAt(log)).filter(request => request.method === 'thread/turns/list')
+      .map(request => request.params.cursor), [null, 'page-2']);
+  }, 'paged');
+});
+
+test('older native readers use inclusive history only after an explicit unsupported-method response', { concurrency: false }, async t => {
+  await withReaderFixture(async ({ log }) => {
+    let snapshot: AnyRecord;
+    try { snapshot = await codexAppServer.readThreadSnapshot(THREAD_ID); }
+    catch (error) { t.diagnostic(JSON.stringify(await requestsAt(log))); throw error; }
+    assert.equal(snapshot.turns[0].items[1].text, 'Original native reply');
+    assert.deepEqual((await requestsAt(log)).map(request => request.method), [
+      'initialize', 'initialized', 'thread/read', 'thread/turns/list', 'thread/read', 'thread/loaded/list',
+    ]);
+  }, 'legacy');
 });

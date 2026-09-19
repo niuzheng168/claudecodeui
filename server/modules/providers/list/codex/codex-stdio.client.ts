@@ -21,9 +21,9 @@ type Pending = {
 };
 
 /**
- * Used by CodexSharedRuntime on configured Windows nodes and for native
- * goal/plan operations on CLI-only nodes. The
- * reviewed native CLI reads the real history format; no exec/JSONL fallback,
+ * Used by the native Codex connector on all platforms and by the local
+ * goal/plan runtime. The configured native CLI reads the real history format;
+ * no exec/JSONL fallback,
  * extra listener, desktop-process takeover, or retry of a submitted turn.
  * One connection owns one child and awaits its exit to release writer locks.
  */

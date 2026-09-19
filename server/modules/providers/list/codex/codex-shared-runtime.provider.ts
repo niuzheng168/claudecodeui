@@ -1,5 +1,5 @@
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
@@ -29,19 +29,6 @@ type SharedRun = {
   goal?: CodexGoalRun;
   localNative?: boolean;
 };
-
-async function connectRuntimeClient(): Promise<ICodexRpcClient | null> {
-  const transport = process.env.CODEY_CODEX_RUNTIME_TRANSPORT;
-  if (transport !== undefined && transport !== '') {
-    if (transport !== 'stdio' || process.platform !== 'win32' || process.env.CODEY_CODEX_DAEMON_SOCKET) {
-      throw new AppError('The configured Codex execution transport is invalid or ambiguous; no alternate runtime was started.', {
-        code: 'CODEX_RUNTIME_TRANSPORT_INVALID', statusCode: 503,
-      });
-    }
-    return CodexStdioClient.connect();
-  }
-  return CodexDaemonClient.connect();
-}
 
 function describeResumeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -101,9 +88,9 @@ async function readActiveDesktopTurn(
 }
 
 /**
- * Used by CodexProvider to run through the existing Unix owner, or the reviewed
- * Windows stdio runtime. Writer conflicts fail closed; no desktop process or
- * lock is stopped/removed. Once native RPC is selected, there is no exec fallback.
+ * Used by CodexProvider to run through the existing owner, or the configured
+ * native stdio runtime on any platform. Writer conflicts fail closed; no desktop
+ * process or lock is stopped/removed. Once native RPC is selected, there is no exec fallback.
  */
 export class CodexSharedRuntime implements IProviderRuntime {
   private readonly runs = new Map<string, SharedRun>();
@@ -112,7 +99,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
 
   constructor(
     private readonly fallback: IProviderRuntime = sdkRuntime,
-    private readonly connect: () => Promise<ICodexRpcClient | null> = connectRuntimeClient,
+    private readonly connect: () => Promise<ICodexRpcClient | null> = connectCodexNativeClient,
     private readonly connectLocalNative: () => Promise<ICodexRpcClient> = () => CodexStdioClient.connectInstalled(),
   ) {}
 
@@ -237,7 +224,7 @@ export class CodexSharedRuntime implements IProviderRuntime {
       if (!run.client) {
         const historyMode = threadId ? await readCodexHistoryMode(threadId) : null;
         if (historyMode && historyMode !== 'legacy') {
-          throw new AppError('This desktop session uses paginated history. Keep its Codex app daemon available to continue it in Codey; it cannot safely be resumed by the bundled exec SDK.', {
+          throw new AppError('This desktop session uses paginated history. Connect its Codex app backend or configure CODEY_CODEX_EXECUTABLE to continue it with the native runtime; it cannot safely be resumed by the exec SDK.', {
             code: 'CODEX_DAEMON_REQUIRED', statusCode: 409,
           });
         }
@@ -517,9 +504,8 @@ export class CodexSharedRuntime implements IProviderRuntime {
         const record = readObjectRecord(error);
         // Only the exact native refusal proves that this prompt has not been
         // submitted. Never queue after an ambiguous turn/start/network failure.
-        if (process.platform === 'win32' && client.ownsProcess
+        if (['CODEX_STDIO_RPC_ERROR', 'CODEX_DAEMON_RPC_ERROR'].includes(record?.code)
           && !goalCommand && !planMode
-          && record?.code === 'CODEX_STDIO_RPC_ERROR'
           && error instanceof Error
           && error.message === `thread ${run.threadId} already has an active writer`) {
           if (!run.aborted) await this.runThroughDesktopQueue(run, input, options, writer, context);
