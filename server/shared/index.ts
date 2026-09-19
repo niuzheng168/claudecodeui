@@ -23,3 +23,16 @@ export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.j
 // Commands resolves application metadata and parses local custom command frontmatter.
 export { findApplicationRoot, getModuleDirectory } from './utils.js';
 export { parseFrontMatter } from './frontmatter.js';
+// Providers use the shared session/history contracts and projections through this barrel.
+export type { IProviderSessions, IProviderSessionSynchronizer } from './interfaces.js';
+export type {
+  FetchHistoryOptions, FetchHistoryResult, MemoryCitation, NormalizedMessage,
+  SubagentActivity, SubagentInfo,
+} from './types.js';
+export {
+  buildLookupMap, extractFirstValidJsonlData, findFilesRecursivelyCreatedAfter,
+  normalizeSessionName, readFileTimestamps, sliceTailPage,
+  truncateSubagentActivity,
+} from './utils.js';
+export { parseFilesInputTag, toImageAttachments } from './image-attachments.js';
+export { prepareTranscriptMessages } from './message-unification.js';

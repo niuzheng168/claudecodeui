@@ -9,7 +9,8 @@ type QueueObserver = {
 };
 
 /**
- * Used by CodexSharedRuntime when the Windows desktop already owns a thread.
+ * Used by CodexSharedRuntime when another desktop process already owns a thread,
+ * regardless of operating system.
  * Queue RPCs operate without acquiring its writer. The original owner executes
  * the submission, including localImage inputs, with its own model/permissions.
  * Correlate persisted output by the native user-message clientId, never by text,
@@ -51,6 +52,7 @@ export class CodexNativeQueueRun {
       this.baselineTurnId = baseline.data[0]?.id ?? null;
       // Probe support before submitting anything. An older CLI must fail closed.
       await this.queuePage(null);
+      await this.assertReaderOnly();
       if (this.cancelRequested) {
         this.cancelled = true;
         return { turn: null, cancelled: true };
@@ -86,7 +88,7 @@ export class CodexNativeQueueRun {
           this.turnId = turn.id;
           this.observer.started(turn.id);
         }
-        await this.emitItems(turn.id);
+        this.emitItems(turn);
         // A read-only app-server reports another process's unfinished turn as
         // "interrupted". Only its durable end timestamp proves completion.
         if (['completed', 'failed', 'interrupted'].includes(turn.status) && Number.isFinite(turn.completedAt)) {
@@ -127,9 +129,16 @@ export class CodexNativeQueueRun {
 
   private async turns(cursor: string | null, limit = 20): Promise<AnyRecord> {
     const result = await this.client.request('thread/turns/list', {
-      threadId: this.threadId, cursor, limit, sortDirection: 'desc', itemsView: 'summary',
+      threadId: this.threadId, cursor, limit, sortDirection: 'desc', itemsView: 'full',
     });
-    if (!Array.isArray(result.data)) throw this.error('Codex returned an invalid turn page.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
+    // Full turn pages work for both legacy and paginated histories. In
+    // particular, legacy owners may not implement thread/items/list at all.
+    // Verify this read capability before enqueueing, not after sending input.
+    if (!Array.isArray(result.data) || result.data.some((turn: AnyRecord) =>
+      typeof turn?.id !== 'string' || !turn.id || !Array.isArray(turn.items)
+      || (turn.itemsView != null && turn.itemsView !== 'full'))) {
+      throw this.error('Codex returned an incomplete native turn page.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
+    }
     return result;
   }
 
@@ -142,11 +151,7 @@ export class CodexNativeQueueRun {
         if (typeof turn?.id !== 'string') throw this.error('Codex returned an invalid turn identity.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
         if (turn.id === this.turnId) return turn;
         if (turn.id === this.baselineTurnId) return null;
-        // Some versions omit the user item in the summary view.
-        const summary = Array.isArray(turn.items) ? turn.items : [];
-        const user = summary.find((item: AnyRecord) => item.type === 'userMessage');
-        const items = user ? summary : await this.itemPage(turn.id, null, 10);
-        if (items.some((item: AnyRecord) => item.type === 'userMessage' && item.clientId === this.clientId)) return turn;
+        if (turn.items.some((item: AnyRecord) => item.type === 'userMessage' && item.clientId === this.clientId)) return turn;
       }
       cursor = this.nextCursor(response, seen);
       if (!cursor) return null;
@@ -154,35 +159,17 @@ export class CodexNativeQueueRun {
     throw this.error('The desktop turn could not be correlated within the bounded history window. No other turn was used.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
   }
 
-  private async itemPage(turnId: string, cursor: string | null, limit: number, pageResult?: AnyRecord): Promise<AnyRecord[]> {
-    const response = await this.client.request('thread/items/list', {
-      threadId: this.threadId, turnId, cursor, limit, sortDirection: 'asc',
-    });
-    if (!Array.isArray(response.data) || response.data.some((entry: AnyRecord) =>
-      entry?.turnId !== turnId || !readObjectRecord(entry.item) || typeof entry.item.id !== 'string')) {
-      throw this.error('Codex returned items for an unverified turn.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
-    }
-    if (pageResult) Object.assign(pageResult, response);
-    return response.data.map((entry: AnyRecord) => entry.item);
-  }
-
-  private async emitItems(turnId: string): Promise<void> {
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (let page = 0; page < 200; page++) {
-      const response: AnyRecord = {};
-      const items = await this.itemPage(turnId, cursor, 100, response);
-      for (const item of items) {
-        if (item.type === 'userMessage') continue; // Already echoed by the Codey gateway.
-        const signature = createHash('sha256').update(JSON.stringify(item)).digest('hex');
-        if (this.emitted.get(item.id) === signature) continue;
-        this.emitted.set(item.id, signature);
-        this.observer.item(item, turnId);
+  private emitItems(turn: AnyRecord): void {
+    for (const item of turn.items) {
+      if (!readObjectRecord(item) || typeof item.id !== 'string' || !item.id) {
+        throw this.error('Codex returned an invalid native item.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
       }
-      cursor = this.nextCursor(response, seen);
-      if (!cursor) return;
+      if (item.type === 'userMessage') continue; // Already echoed by the Codey gateway.
+      const signature = createHash('sha256').update(JSON.stringify(item)).digest('hex');
+      if (this.emitted.get(item.id) === signature) continue;
+      this.emitted.set(item.id, signature);
+      this.observer.item(item, turn.id);
     }
-    throw this.error('The native turn exceeds the bounded item window. Its persisted history remains in Codex.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
   }
 
   private async queuePage(cursor: string | null): Promise<AnyRecord> {
@@ -193,8 +180,11 @@ export class CodexNativeQueueRun {
 
   private async assertReaderOnly(): Promise<void> {
     const response = await this.client.request('thread/loaded/list', {});
-    if (!Array.isArray(response.data) || response.data.length !== 0) {
-      throw this.error('The queue helper unexpectedly loaded a thread. It will be closed without taking over the desktop runtime.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
+    // A shared daemon may legitimately host unrelated threads. Our private
+    // child must load nothing; a shared connection must not own this target.
+    if (!Array.isArray(response.data) || (this.client.ownsProcess
+      ? response.data.length !== 0 : response.data.includes(this.threadId))) {
+      throw this.error('The queue helper unexpectedly loaded the target thread. Its connection will be closed without taking over the desktop runtime.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
     }
   }
 

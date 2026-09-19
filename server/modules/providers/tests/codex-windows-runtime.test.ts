@@ -4,10 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import Database from 'better-sqlite3';
+
+import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { CodexSharedRuntime } from '@/modules/providers/list/codex/codex-shared-runtime.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
+import { synchronizeCodexDaemonSessions } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import type { AnyRecord, ICodexRpcClient, IProviderRuntime, ProviderRuntimeContext } from '@/shared/index.js';
 
 // A Node fixture, never a real Codex process or model. The persistent marker
@@ -19,6 +23,7 @@ log({started:true,args:process.argv.slice(2),home:process.env.CODEX_HOME,
   inheritedThread:Boolean(process.env.CODEX_THREAD_ID),inheritedOrigin:Boolean(process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE)});
 const reply=(id,result)=>console.log(JSON.stringify({id,result}));
 const nativeId='fixture-native-paginated';
+let queuedClientId='';
 const emit=(method,params)=>console.log(JSON.stringify({method,params:{threadId:nativeId,turnId:'owned-turn',...params}}));
 rl.on('line',line=>{
  const r=JSON.parse(line); log(r); if(!r.method)return;
@@ -36,10 +41,31 @@ rl.on('line',line=>{
   return reply(r.id,{thread:{id:nativeId,status:{type:'idle'}}});
  }
  if(r.method==='thread/resume'){
+  if(process.env.CODEY_STDIO_TEST_MODE.startsWith('desktop'))return console.log(JSON.stringify({id:r.id,error:{code:-32000,message:'thread '+nativeId+' already has an active writer'}}));
   if(process.env.CODEY_STDIO_TEST_MODE==='conflict')return console.log(JSON.stringify({id:r.id,error:{code:-32000,message:'thread-store conflict: thread already has an active writer'}}));
   return reply(r.id,{thread:{id:nativeId,status:{type:process.env.CODEY_STDIO_TEST_MODE==='busy'?'active':'idle'}}});
  }
+ if(r.method==='thread/list')return reply(r.id,{data:[{id:nativeId,cwd:process.env.CODEX_HOME,
+  source:'vscode',name:'Native desktop fixture',createdAt:1700000000,updatedAt:1700000001}],nextCursor:null});
+ if(r.method==='thread/read')return reply(r.id,{thread:{id:nativeId,source:'vscode',createdAt:1700000000,turns:[]}});
+ if(r.method==='thread/loaded/list')return reply(r.id,{data:[]});
+ if(r.method==='thread/queue/list'){
+  if(process.env.CODEY_STDIO_TEST_MODE==='desktop-unsupported')return console.log(JSON.stringify({id:r.id,error:{code:-32601,message:'unsupported queue'}}));
+  return reply(r.id,{data:[],nextCursor:null});
+ }
+ if(r.method==='thread/queue/add'){
+  queuedClientId=r.params.clientUserMessageId;
+  if(process.env.CODEY_STDIO_TEST_MODE==='desktop-lost-ack')return console.log(JSON.stringify({id:r.id,error:{code:-32000,message:'acknowledgement lost'}}));
+  return reply(r.id,{queuedSubmission:{id:'our-queue',clientUserMessageId:queuedClientId}});
+ }
+ if(r.method==='thread/turns/list')return reply(r.id,{data:queuedClientId
+  ? [{id:'queued-turn',status:'completed',completedAt:1700000002,items:[
+    {id:'queued-user',type:'userMessage',clientId:queuedClientId},
+    {id:'queued-answer',type:'agentMessage',text:'Original desktop owner replied'}
+  ]}]
+  : [{id:'old-turn',status:'completed',completedAt:1700000001,items:[]}],nextCursor:null});
  if(r.method==='turn/start'){
+  if(process.env.CODEY_STDIO_TEST_MODE==='start-conflict')return console.log(JSON.stringify({id:r.id,error:{code:-32000,message:'thread '+nativeId+' already has an active writer'}}));
   // Notifications may precede the acknowledgement on a fast local transport.
   emit('item/started',{item:{id:'answer',type:'agentMessage',text:''}});
   emit('item/agentMessage/delta',{itemId:'answer',delta:'Windows continuation fixture'});
@@ -59,6 +85,8 @@ async function fixture(body: (f: { home: string; log: string; connect: () => Pro
   const log = path.join(root, 'rpc.jsonl');
   const values: Record<string, string> = {
     CODEY_STDIO_TEST_LOG: log, CODEY_STDIO_TEST_MODE: '',
+    CODEX_HOME: home, DATABASE_PATH: path.join(root, 'auth.db'),
+    CODEY_CODEX_EXECUTABLE: process.execPath, CODEY_CODEX_DAEMON_SOCKET: '', CODEY_CODEX_RUNTIME_TRANSPORT: '',
     CODEX_THREAD_ID: 'do-not-inherit', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'do-not-spoof-desktop',
   };
   const before = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
@@ -66,12 +94,19 @@ async function fixture(body: (f: { home: string; log: string; connect: () => Pro
     await mkdir(home);
     await writeFile(path.join(home, 'package.json'), '{"type":"commonjs"}');
     await writeFile(path.join(home, 'app-server'), server);
+    await writeFile(values.DATABASE_PATH, '');
+    const state = new Database(path.join(home, 'state_5.sqlite'));
+    state.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, history_mode TEXT, model TEXT);');
+    state.prepare('INSERT INTO threads VALUES (?, ?, ?)').run('fixture-native-paginated', 'paginated', 'fixture-model');
+    state.close();
     Object.assign(process.env, values);
+    closeConnection();
     await body({
       home, log,
       connect: () => CodexStdioClient.connect({ executable: process.execPath, home, timeoutMs: 1500 }),
     });
   } finally {
+    closeConnection();
     for (const [key, value] of Object.entries(before)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
@@ -139,7 +174,7 @@ test('a hung/crashed owned child fails without retrying or exporting stderr', { 
   });
 });
 
-test('two Windows turns reuse one native ID, never fork/exec, and release the writer before completion', { concurrency: false }, async () => {
+test('two native turns reuse one ID, never fork/exec, and release the writer before completion', { concurrency: false }, async () => {
   await fixture(async f => {
     let nativeId: string | null = null;
     const messages: AnyRecord[] = [];
@@ -183,6 +218,86 @@ test('two Windows turns reuse one native ID, never fork/exec, and release the wr
       assert.equal(messages.at(-1)?.success, false);
     }
     assert.equal((await records(f.log)).filter(row => row.method === 'turn/start').length, 2);
+  });
+});
+
+test('automatic native continuation queues an owned desktop thread without a platform gate or a second writer', { concurrency: false }, async () => {
+  await fixture(async f => {
+    process.env.CODEY_STDIO_TEST_MODE = 'desktop';
+    const messages: AnyRecord[] = [];
+    const provider = new CodexSessionsProvider();
+    const runtime = new CodexSharedRuntime({
+      run: async () => assert.fail('Native desktop histories must not use exec'), abort: () => false,
+    });
+    await runtime.run('Continue the original desktop session', {
+      sessionId: 'app', cwd: f.home, model: 'fixture-model',
+    }, {
+      isWebSocketWriter: true, send: value => messages.push(value as AnyRecord),
+    }, {
+      resolveProviderSessionId: () => 'fixture-native-paginated',
+      resolveResumeModel: async () => 'fixture-model',
+      getProviderModels: async () => ({ DEFAULT: 'fixture-model', OPTIONS: [] }),
+      normalizeMessage: (raw, id) => provider.normalizeMessage(raw, id),
+      isProviderInstalled: async () => true,
+    });
+    assert.deepEqual(messages.filter(message => message.kind === 'error'), []);
+    assert.equal(messages.at(-1)?.success, true);
+    assert.ok(messages.some(message => message.content === 'Original desktop owner replied'));
+    const log = await records(f.log);
+    assert.equal(log.filter(row => row.method === 'thread/resume').length, 1);
+    assert.equal(log.filter(row => row.method === 'thread/queue/add').length, 1);
+    assert.ok(!log.some(row => ['thread/start', 'thread/fork', 'turn/start'].includes(row.method)));
+    assert.equal(log.at(-1)?.exited, true);
+  });
+});
+
+for (const mode of ['desktop-unsupported', 'desktop-lost-ack', 'desktop-settings-mismatch', 'start-conflict']) {
+  test(`native ${mode} fails without resubmitting or switching runtimes`, { concurrency: false }, async () => {
+    await fixture(async f => {
+      process.env.CODEY_STDIO_TEST_MODE = mode;
+      const messages: AnyRecord[] = [];
+      await new CodexSharedRuntime({
+        run: async () => assert.fail('No exec fallback after native selection'), abort: () => false,
+      }).run('Submit at most once', {
+        sessionId: 'app', cwd: f.home,
+        ...(mode === 'desktop-settings-mismatch' ? { model: 'another-model' } : {}),
+      }, {
+        isWebSocketWriter: true, send: value => messages.push(value as AnyRecord),
+      }, {
+        resolveProviderSessionId: () => 'fixture-native-paginated',
+        resolveResumeModel: async () => 'fixture-model',
+        getProviderModels: async () => ({ DEFAULT: 'fixture-model', OPTIONS: [] }),
+        normalizeMessage: () => [], isProviderInstalled: async () => true,
+      });
+      assert.equal(messages.at(-1)?.success, false);
+      const log = await records(f.log);
+      assert.equal(log.filter(row => row.method === 'thread/queue/add').length, mode === 'desktop-lost-ack' ? 1 : 0);
+      assert.equal(log.filter(row => row.method === 'turn/start').length, mode === 'start-conflict' ? 1 : 0);
+      assert.ok(!log.some(row => ['thread/start', 'thread/fork'].includes(row.method)));
+      assert.equal(log.at(-1)?.exited, true);
+    });
+  });
+}
+
+test('native-only desktop sessions are discovered without a daemon or JSONL and keep their Codey mapping', { concurrency: false }, async () => {
+  await fixture(async f => {
+    await initializeDatabase();
+    const nativeId = 'fixture-native-paginated';
+    const first = await synchronizeCodexDaemonSessions();
+    assert.ok(first.known.has(nativeId));
+    assert.equal(sessionsDb.getSessionByProviderSessionId(nativeId)?.jsonl_path, null);
+    assert.deepEqual((await synchronizeCodexDaemonSessions()).changed, []);
+    sessionsDb.updateSessionCustomName(nativeId, 'Keep my name');
+    await synchronizeCodexDaemonSessions();
+    assert.equal(sessionsDb.getSessionByProviderSessionId(nativeId)?.custom_name, 'Keep my name');
+    sessionsDb.updateSessionIsArchived(nativeId, true);
+    await synchronizeCodexDaemonSessions();
+    assert.equal(sessionsDb.getSessionByProviderSessionId(nativeId)?.isArchived, 1);
+    const log = await records(f.log);
+    assert.ok(log.filter(row => row.method).every(row => [
+      'initialize', 'initialized', 'thread/list', 'thread/loaded/list',
+    ].includes(row.method)));
+    assert.equal(log.at(-1)?.exited, true);
   });
 });
 

@@ -40,7 +40,7 @@ export async function readCodexHistoryMode(threadId: string): Promise<string | n
 }
 
 /**
- * Used by the Windows desktop queue runtime before enqueueing. Native queued
+ * Used by the desktop queue runtime on every platform before enqueueing. Native queued
  * inputs inherit the owner's settings: reject incompatible explicit selections
  * instead of silently changing models, widening permissions, or modifying the
  * other client's configuration. This reads only the requested metadata row.
@@ -64,8 +64,15 @@ export async function assertCodexDesktopSelection(threadId: string, options: Any
   try { sandbox = readObjectRecord(JSON.parse(row.sandbox_policy)); } catch { /* Unknown policies fail closed. */ }
   const roots = sandbox?.writable_roots ?? sandbox?.writableRoots ?? [];
   const cwd = typeof options.cwd === 'string' ? path.resolve(options.cwd) : null;
-  const onlyCwd = Array.isArray(roots) && roots.every(root =>
-    typeof root === 'string' && cwd && path.resolve(root).toLowerCase() === cwd.toLowerCase());
+  const onlyCwd = Array.isArray(roots) && roots.every(root => {
+    if (typeof root !== 'string' || !cwd) return false;
+    const resolved = path.resolve(root);
+    // The former Windows-only queue normalized case. On Unix, distinct
+    // case-sensitive roots must not pass an explicit workspace restriction.
+    return process.platform === 'win32'
+      ? resolved.toLowerCase() === cwd.toLowerCase()
+      : resolved === cwd;
+  });
   const boundedSandbox = ['workspace-write', 'workspaceWrite', 'read-only', 'readOnly'].includes(sandbox?.type)
     && sandbox?.network_access !== true && sandbox?.networkAccess !== true && onlyCwd;
   const boundedApproval = mode === 'default'

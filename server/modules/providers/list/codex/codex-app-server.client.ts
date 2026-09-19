@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import type { AnyRecord } from '@/shared/types.js';
-import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/utils.js';
+import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
+import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/index.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 
 /**
@@ -19,7 +19,7 @@ import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-threa
  * primitive, `thread/fork`, which is what the Codex IDE clients build their
  * own "fork" and "edit an earlier message" on top of.
  *
- * Legacy forks use the packaged CLI. Windows/macOS native history may instead use
+ * Legacy forks use the packaged CLI. Native history on every platform may instead use
  * the explicitly configured desktop CLI for a strictly read-only snapshot.
  * Neither path substitutes for the desktop owner when running native turns;
  * native paginated forks must still stay in Codex app.
@@ -27,7 +27,7 @@ import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-threa
 
 /** How long a single request may take before the child is killed. */
 const REQUEST_TIMEOUT_MS = 30_000;
-const READ_ONLY_METHODS = new Set(['initialize', 'thread/read', 'thread/loaded/list']);
+const READ_ONLY_METHODS = new Set(['initialize', 'thread/read', 'thread/turns/list', 'thread/loaded/list']);
 
 type AppServerMode =
   | { kind: 'legacy-fork' }
@@ -228,18 +228,85 @@ async function withAppServer<T>(
   }
 }
 
+async function readNativeSnapshot(
+  call: (method: string, params: AnyRecord) => Promise<unknown>,
+  threadId: string,
+  readerOnly: boolean,
+): Promise<AnyRecord> {
+  const snapshot = readObjectRecord(await call('thread/read', { threadId, includeTurns: false }));
+  const thread = readObjectRecord(snapshot?.thread);
+  if (!thread || thread.id !== threadId) throw new Error('invalid snapshot identity');
+
+  let turns: AnyRecord[] = [];
+  let cursor: string | null = null;
+  const cursors = new Set<string>();
+  const turnIds = new Set<string>();
+  for (let page = 0; ; page++) {
+    if (page >= 200) throw new Error('native history exceeds the bounded page window');
+    let result: AnyRecord | null;
+    try {
+      result = readObjectRecord(await call('thread/turns/list', {
+        threadId, cursor, limit: 100, sortDirection: 'asc', itemsView: 'full',
+      }));
+    } catch (error) {
+      // Older backends may only implement inclusive thread/read. This is a
+      // read-only capability fallback, never a retry of a submitted prompt.
+      const details = readObjectRecord(readObjectRecord(error)?.details);
+      if (page !== 0 || details?.rpcCode !== -32601) throw error;
+      const legacy = readObjectRecord(await call('thread/read', { threadId, includeTurns: true }));
+      if (legacy?.thread?.id !== threadId || !Array.isArray(legacy.thread.turns)) {
+        throw new Error('invalid legacy snapshot');
+      }
+      turns = legacy.thread.turns;
+      break;
+    }
+    if (!result || !Array.isArray(result.data)) throw new Error('invalid native turn page');
+    for (const turn of result.data) {
+      if (typeof turn?.id !== 'string' || !turn.id || !Array.isArray(turn.items) || turnIds.has(turn.id)
+        || (turn.itemsView != null && turn.itemsView !== 'full')) {
+        throw new Error('invalid or repeated native turn');
+      }
+      turnIds.add(turn.id);
+      turns.push(turn);
+    }
+    if (result.nextCursor == null) break;
+    if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) {
+      throw new Error('invalid native history cursor');
+    }
+    cursor = result.nextCursor;
+    cursors.add(cursor);
+  }
+  if (readerOnly) {
+    const loaded = readObjectRecord(await call('thread/loaded/list', {}));
+    if (!loaded || !Array.isArray(loaded.data) || loaded.data.length !== 0) {
+      throw new Error('reader acquired a thread');
+    }
+  }
+  return { ...thread, turns };
+}
+
+// Used by CodexSessionsProvider for native history and legacy fork/edit operations.
 export const codexAppServer = {
   /**
-   * Used by CodexSessionsProvider on Windows/macOS when the owning desktop
-   * control socket is unavailable. Reads through the explicitly configured
-   * desktop CLI, never a CLI found in the project/PATH or a guessed JSONL export.
+   * Used by CodexSessionsProvider with the selected native connection on every
+   * platform. Without a connection, reads through the explicitly configured
+   * CLI, never one found in the project/PATH or a guessed JSONL export.
    * No resume/start/fork RPC is permitted and the temporary process must retain
    * an empty loaded-thread list before its snapshot is returned.
    */
   async readThreadSnapshot(
     threadId: string,
-    { timeoutMs = 10_000 }: { timeoutMs?: number } = {},
+    { timeoutMs = 10_000, client }: { timeoutMs?: number; client?: ICodexRpcClient } = {},
   ): Promise<AnyRecord> {
+    if (client) {
+      try {
+        return await readNativeSnapshot((method, params) => client.request(method, params), threadId, Boolean(client.ownsProcess));
+      } catch {
+        throw new AppError('Could not read complete native Codex history with the selected backend.', {
+          code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
+        });
+      }
+    }
     const executable = process.env.CODEY_CODEX_EXECUTABLE;
     if (!executable || !path.isAbsolute(executable)) {
       throw new AppError('The native Codex history reader has no configured desktop executable.', {
@@ -255,18 +322,9 @@ export const codexAppServer = {
     }
     try {
       if (!(await stat(executable)).isFile()) throw new Error('missing executable');
-      return await withAppServer(async (call) => {
-        const response = readObjectRecord(await call('thread/read', { threadId, includeTurns: true }));
-        const thread = readObjectRecord(response?.thread);
-        if (!thread || thread.id !== threadId || !Array.isArray(thread.turns)) {
-          throw new Error('invalid snapshot');
-        }
-        const loaded = readObjectRecord(await call('thread/loaded/list', {}));
-        if (!loaded || !Array.isArray(loaded.data) || loaded.data.length !== 0) {
-          throw new Error('reader acquired a thread');
-        }
-        return thread;
-      }, { kind: 'read-only', executable, home: resolveCodexHomeDirectory(), timeoutMs });
+      return await withAppServer(call => readNativeSnapshot(call, threadId, true), {
+        kind: 'read-only', executable, home: resolveCodexHomeDirectory(), timeoutMs,
+      });
     } catch {
       // RPC/stderr text can contain private transcript or provider details.
       // Unsupported native formats fail explicitly, never as an empty export.

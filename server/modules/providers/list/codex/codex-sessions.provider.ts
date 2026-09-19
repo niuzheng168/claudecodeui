@@ -5,12 +5,9 @@ import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
-import { CodexDaemonClient } from '@/modules/providers/list/codex/codex-daemon.client.js';
+import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
-import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
-import type { IProviderSessions } from '@/shared/interfaces.js';
-import { prepareTranscriptMessages } from '@/shared/message-unification.js';
 import type {
   AnyRecord,
   FetchHistoryOptions,
@@ -19,7 +16,8 @@ import type {
   NormalizedMessage,
   SubagentActivity,
   SubagentInfo,
-} from '@/shared/types.js';
+  IProviderSessions,
+} from '@/shared/index.js';
 import {
   AppError,
   createNormalizedMessage,
@@ -27,7 +25,10 @@ import {
   readObjectRecord,
   sliceTailPage,
   truncateSubagentActivity,
-} from '@/shared/utils.js';
+  parseFilesInputTag,
+  toImageAttachments,
+  prepareTranscriptMessages,
+} from '@/shared/index.js';
 
 const PROVIDER = 'codex';
 
@@ -1795,8 +1796,6 @@ async function attachCodexSubagentTranscripts(
 
 export class CodexSessionsProvider implements IProviderSessions {
   // Selects only the history transport; never changes who owns/runs a turn.
-  constructor(private readonly historyPlatform: NodeJS.Platform = process.platform) {}
-
   /**
    * Resolves the last turn to keep when the turn `anchorId` names is replaced.
    *
@@ -2226,7 +2225,7 @@ export class CodexSessionsProvider implements IProviderSessions {
 
   /**
    * Keeps the rich legacy JSONL reader, but reads native paginated histories
-   * from their daemon (or a read-only desktop CLI on Windows/macOS) instead of
+   * from their native backend on every platform instead of
    * treating a partial/missing export as complete.
    */
   async fetchHistory(
@@ -2244,17 +2243,15 @@ export class CodexSessionsProvider implements IProviderSessions {
       if (!requiresDaemon && session?.jsonl_path) {
         result = await getCodexSessionMessages(sessionId);
       } else {
-        const client = await CodexDaemonClient.connect();
-        if (!client && !(requiresDaemon && (this.historyPlatform === 'win32' || this.historyPlatform === 'darwin'))) {
+        const client = await connectCodexNativeClient();
+        if (!client) {
           if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
-          throw new AppError('This session is stored by Codex app. Connect its local daemon to read the history.', {
+          throw new AppError('This session is stored by Codex app. Connect its local daemon or configure CODEY_CODEX_EXECUTABLE to read the native history.', {
             code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
           });
         }
         try {
-          const thread = client
-            ? readObjectRecord((await client.request('thread/read', { threadId: providerSessionId, includeTurns: true })).thread)
-            : await codexAppServer.readThreadSnapshot(providerSessionId);
+          const thread = await codexAppServer.readThreadSnapshot(providerSessionId, { client });
           if (!thread || !Array.isArray(thread.turns)) {
             throw new AppError('Codex daemon did not return complete thread history.', {
               code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
@@ -2280,7 +2277,7 @@ export class CodexSessionsProvider implements IProviderSessions {
             { code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502 },
           );
         } finally {
-          client?.close();
+          await client.close();
         }
       }
     } catch (error) {

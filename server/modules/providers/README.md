@@ -135,6 +135,37 @@ import the service from `server/modules/providers/index.ts`.
 - `sessions` handles runtime event normalization and history fetches.
 - `sessionSynchronizer` handles file-backed session indexing into `sessionsDb`.
 
+## Codex native session interoperability
+
+Linux, macOS and Windows share `connectCodexNativeClient` for execution,
+discovery and native history. Prefer the existing app-server socket. If its
+default socket is absent, use the absolute `CODEY_CODEX_EXECUTABLE` with the
+same `CODEX_HOME`. Explicit `CODEY_CODEX_RUNTIME_TRANSPORT=stdio` is supported
+on every platform; an explicit socket and stdio selection are mutually
+exclusive. An unavailable explicit socket or failed native handshake never
+selects another runtime.
+
+Native `thread/start`/`thread/resume` preserve the original provider ID and
+normal source metadata. On the exact native `thread/resume` writer refusal,
+the helper verifies the desktop thread and queues the input once through
+`thread/queue/add`; it never deletes a lock, forks the conversation, or retries
+an ambiguous submission. Queued turns inherit the owner's model/permissions,
+and desktop approvals and interruption of started queue work remain there.
+
+Discovery includes native-only threads without a JSONL export. History and
+queued output use full native turn pages, including for legacy histories that
+do not support item pagination. Read-only helpers verify that they loaded no
+thread and await their own exit. Partial JSONL exports cannot substitute for
+native history. Only unconfigured legacy installations retain SDK fallback.
+
+Tests include cross-platform transport selection, mocked native owners and
+opt-in offline real-CLI round trips (`CODEY_TEST_NATIVE_INTEROP=1` plus an
+absolute `CODEY_TEST_CODEX_EXECUTABLE`; optionally set
+`CODEY_TEST_CODEX_OWNER_EXECUTABLE` to exercise desktop/CLI version skew).
+These never use user conversations or real model credentials.
+This change requires deploying the node backend, not
+just publishing the shared frontend.
+
 ## How To Add A Provider
 
 1. Add the provider id everywhere it is part of the contract.
