@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AppError, readObjectRecord } from '@/shared/index.js';
-import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
+import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient } from '@/shared/index.js';
 
 type QueueObserver = {
   item(item: AnyRecord, turnId: string): void;
@@ -11,8 +11,10 @@ type QueueObserver = {
 /**
  * Used by CodexSharedRuntime when another desktop process already owns a thread,
  * regardless of operating system.
- * Queue RPCs operate without acquiring its writer. The original owner executes
- * the submission, including localImage inputs, with its own model/permissions.
+ * A discovered desktop peer receives explicit input at the actual owner;
+ * native queue RPCs remain a compatibility path when no peer is available.
+ * Neither path acquires its writer. The original owner executes the input,
+ * including localImage inputs, with its own model/permissions.
  * Correlate persisted output by the native user-message clientId, never by text,
  * the most recent turn, or somebody else's completion notification.
  */
@@ -26,6 +28,7 @@ export class CodexNativeQueueRun {
   private readonly enqueueSettled = new Promise<void>(resolve => { this.enqueueFinished = resolve; });
   private readonly emitted = new Map<string, string>();
   private baselineTurnId: string | null = null;
+  private latestObservedTurn: AnyRecord | null = null;
 
   constructor(
     private readonly client: ICodexRpcClient,
@@ -34,9 +37,13 @@ export class CodexNativeQueueRun {
     private readonly options: {
       /** Reuses the submitting browser's identity so its optimistic echo can reconcile with native history. */
       clientMessageId?: string;
+      /** A verified peer can explicitly continue a desktop whose automatic queue was paused. */
+      owner?: ICodexDesktopThreadOwner | null;
       sleep?: (ms: number) => Promise<void>;
       clock?: () => number;
       timeoutMs?: number;
+      /** Bound idle, unstarted delivery separately from a legitimately long-running model turn. */
+      startupTimeoutMs?: number;
     } = {},
   ) {
     this.clientId = options.clientMessageId ?? randomUUID();
@@ -45,32 +52,42 @@ export class CodexNativeQueueRun {
   async run(input: AnyRecord[]): Promise<{ turn: AnyRecord | null; cancelled: boolean }> {
     try {
       const snapshot = await this.client.request('thread/read', { threadId: this.threadId, includeTurns: false });
-      if (snapshot.thread?.id !== this.threadId || snapshot.thread.source !== 'vscode') {
+      if (snapshot.thread?.id !== this.threadId || (!this.options.owner && snapshot.thread.source !== 'vscode')) {
         throw this.error('The native desktop thread identity could not be verified.', 'CODEX_DESKTOP_QUEUE_UNAVAILABLE');
       }
       const baseline = await this.turns(null, 1);
       this.baselineTurnId = baseline.data[0]?.id ?? null;
+      this.latestObservedTurn = baseline.data[0] ?? null;
       // Probe support before submitting anything. An older CLI must fail closed.
-      await this.queuePage(null);
+      const queued = await this.queuePage(null);
       await this.assertReaderOnly();
       if (this.cancelRequested) {
         this.cancelled = true;
         return { turn: null, cancelled: true };
       }
-      let added: AnyRecord;
-      try {
-        added = await this.client.request('thread/queue/add', {
-          threadId: this.threadId, clientUserMessageId: this.clientId, input,
-        });
-      } catch {
-        throw this.error('Codex did not acknowledge the desktop queue request. It may already be queued; check the original session before retrying. No prompt was resubmitted.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
+      if (this.options.owner && !this.activeTurn(this.latestObservedTurn)) {
+        await this.startThroughOwner(input, queued);
+        await this.assertReaderOnly();
+      } else {
+        if (this.pausedTurn(this.latestObservedTurn)) {
+          throw this.error('The desktop stopped its previous turn and its native queue is paused. Its owner connection is unavailable; no new message was queued. Reconnect the owning desktop before retrying.',
+            'CODEX_DESKTOP_QUEUE_PAUSED');
+        }
+        let added: AnyRecord;
+        try {
+          added = await this.client.request('thread/queue/add', {
+            threadId: this.threadId, clientUserMessageId: this.clientId, input,
+          });
+        } catch {
+          throw this.error('Codex did not acknowledge the desktop queue request. It may already be queued; check the original session before retrying. No prompt was resubmitted.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
+        }
+        const entry = readObjectRecord(added.queuedSubmission);
+        if (!entry || typeof entry.id !== 'string' || !entry.id || entry.clientUserMessageId !== this.clientId) {
+          throw this.error('Codex did not confirm the queued submission. Check the desktop queue before retrying; the prompt was not resubmitted.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
+        }
+        this.queuedId = entry.id;
+        await this.assertReaderOnly();
       }
-      const entry = readObjectRecord(added.queuedSubmission);
-      if (!entry || typeof entry.id !== 'string' || !entry.id || entry.clientUserMessageId !== this.clientId) {
-        throw this.error('Codex did not confirm the queued submission. Check the desktop queue before retrying; the prompt was not resubmitted.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
-      }
-      this.queuedId = entry.id;
-      await this.assertReaderOnly();
     } finally {
       this.enqueueFinished();
     }
@@ -79,6 +96,7 @@ export class CodexNativeQueueRun {
     const deadline = clock() + (this.options.timeoutMs ?? 24 * 60 * 60_000);
     const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     let missingSince: number | null = null;
+    let idleSince: number | null = null;
     while (clock() < deadline) {
       if (this.cancelled) return { turn: null, cancelled: true };
       const turn = await this.findOwnTurn();
@@ -95,19 +113,58 @@ export class CodexNativeQueueRun {
           return { turn, cancelled: false };
         }
         missingSince = null;
-      } else if (await this.findQueuedSubmission()) {
+      } else if (this.queuedId && await this.findQueuedSubmission()) {
         missingSince = null;
+        if (this.pausedTurn(this.latestObservedTurn)) {
+          throw this.error('The desktop stopped while this input was queued. The pending input is still in its paused queue; it was not restarted or replayed.',
+            'CODEX_DESKTOP_QUEUE_PAUSED');
+        }
+        if (this.activeTurn(this.latestObservedTurn)) idleSince = null;
+        else idleSince ??= clock();
+        if (idleSince !== null && clock() - idleSince >= (this.options.startupTimeoutMs ?? 30_000)) {
+          throw this.error('The desktop has not started this queued input. It remains in the original session; check its paused queue before retrying. No replacement prompt was sent.',
+            'CODEX_DESKTOP_QUEUE_NOT_STARTED');
+        }
       } else {
         // The owner may have claimed the queue before committing the new turn.
         // Allow that short transition, but do not hang forever after deletion.
         missingSince ??= clock();
         if (clock() - missingSince > 30_000) {
+          if (!this.queuedId) {
+            throw this.error('The desktop owner acknowledged this input, but its matching turn is not available yet. Check the original session before retrying; the prompt was not queued or resubmitted.',
+              'CODEX_DESKTOP_SUBMISSION_UNCONFIRMED');
+          }
           throw this.error('The desktop queue no longer contains this request, but its matching turn is not available. Check Codex before retrying; no replacement turn was started.', 'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
         }
       }
       await sleep(1500);
     }
     throw this.error('The desktop submission is still pending or running. It remains in Codex; check the original session before retrying.', 'CODEX_DESKTOP_QUEUE_TIMEOUT');
+  }
+
+  private async startThroughOwner(input: AnyRecord[], queued: AnyRecord): Promise<void> {
+    if (queued.data.length) {
+      // turn/start does not deduplicate an already queued client ID. Native
+      // queue removal + peer submission is not atomic; never replay, delete,
+      // or leapfrog a durable pending input just to make a new send succeed.
+      throw this.error('The desktop already has pending input ahead of this message. Continue or cancel that input first; no new turn was started and the queue order was not changed.',
+        'CODEX_DESKTOP_QUEUE_PENDING');
+    }
+    if (this.cancelRequested) {
+      this.cancelled = true;
+      return;
+    }
+    // The owner receives the original user-message identity. A lost IPC reply
+    // is not permission to put the input back in the queue or retry elsewhere.
+    await this.options.owner!.startTurn(input, this.clientId);
+  }
+
+  private pausedTurn(turn: AnyRecord | null): boolean {
+    return Boolean(turn && ['failed', 'interrupted'].includes(turn.status) && Number.isFinite(turn.completedAt));
+  }
+
+  private activeTurn(turn: AnyRecord | null): boolean {
+    return Boolean(turn && !Number.isFinite(turn.completedAt) && !['completed', 'failed'].includes(turn.status));
   }
 
   /** Cancel only our unclaimed queue entry; never interrupt a desktop-owned turn. */
@@ -117,7 +174,8 @@ export class CodexNativeQueueRun {
     if (!this.queuedId || this.turnId || this.cancelled) return this.cancelled;
     if (!await this.findQueuedSubmission()) return false;
     try {
-      await this.client.request('thread/queue/delete', { threadId: this.threadId, queuedSubmissionId: this.queuedId });
+      const result = await this.client.request('thread/queue/delete', { threadId: this.threadId, queuedSubmissionId: this.queuedId });
+      if (result.deleted !== true) return false;
       this.cancelled = true;
       return true;
     } catch {
@@ -147,6 +205,7 @@ export class CodexNativeQueueRun {
     const seen = new Set<string>();
     for (let page = 0; page < 20; page++) {
       const response = await this.turns(cursor);
+      if (page === 0) this.latestObservedTurn = response.data[0] ?? null;
       for (const turn of response.data) {
         if (typeof turn?.id !== 'string') throw this.error('Codex returned an invalid turn identity.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
         if (turn.id === this.turnId) return turn;
