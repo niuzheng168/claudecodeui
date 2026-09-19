@@ -40,6 +40,19 @@ export interface ICodexRpcClient {
   close(): void | Promise<void>;
 }
 
+/**
+ * Used by the Codex provider's desktop submission and peer transport services.
+ * This connection addresses the verified, existing owner of one native thread;
+ * it never acquires a writer or changes that owner's model/permissions.
+ * A start acknowledgement is not completion: callers must correlate persisted
+ * native history with the supplied clientUserMessageId. An uncertain delivery
+ * must never be retried through another owner, the native queue, or exec.
+ */
+export interface ICodexDesktopThreadOwner {
+  startTurn(input: AnyRecord[], clientUserMessageId: string): Promise<void>;
+  close(): void;
+}
+
 //----------------- PROVIDER CONTRACT INTERFACES ------------
 
 /**

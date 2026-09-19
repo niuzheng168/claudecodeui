@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -24,8 +25,10 @@ const native = {
   timeout: 180_000,
 };
 
-for (const historyMode of ['paginated', 'legacy']) {
-  test(`real native ${historyMode} sessions round-trip between an owner and Codey without changing IDs`, native, async t => {
+const nativeCases = ['paginated', 'legacy'].flatMap(historyMode =>
+  [false, true].map(interruptBeforeContinuation => ({ historyMode, interruptBeforeContinuation })));
+for (const { historyMode, interruptBeforeContinuation } of nativeCases) {
+  test(`real native ${historyMode} sessions round-trip ${interruptBeforeContinuation ? 'after desktop interruption' : 'after normal completion'} without changing IDs`, native, async t => {
     const executable = process.env.CODEY_TEST_CODEX_EXECUTABLE;
     assert.ok(executable && path.isAbsolute(executable), 'Set an absolute CODEY_TEST_CODEX_EXECUTABLE');
     const ownerExecutable = process.env.CODEY_TEST_CODEX_OWNER_EXECUTABLE || executable;
@@ -42,6 +45,10 @@ for (const historyMode of ['paginated', 'legacy']) {
     const calls: Array<{ method: string; params: AnyRecord }> = [];
     const messages: AnyRecord[] = [];
     let responses = 0;
+    let holdNextResponse = false;
+    let peerServer: net.Server | undefined;
+    const peerSockets = new Set<net.Socket>();
+    const peerCalls: AnyRecord[] = [];
     let threadId: string | null = null;
     let runtime: CodexSharedRuntime | undefined;
     let pendingRun: Promise<void> | undefined;
@@ -60,6 +67,13 @@ for (const historyMode of ['paginated', 'legacy']) {
         output: [item], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
       };
       response.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (holdNextResponse) {
+        holdNextResponse = false;
+        response.write(`data: ${JSON.stringify({
+          type: 'response.created', response: { ...result, status: 'in_progress', output: [] },
+        })}\n\n`);
+        return;
+      }
       for (const event of [
         { type: 'response.created', response: { ...result, status: 'in_progress', output: [] } },
         { type: 'response.output_item.added', output_index: 0, item },
@@ -118,6 +132,74 @@ enabled = false
         } finally { off(); }
       };
       await ownerTurn('Original desktop fixture prompt');
+      if (interruptBeforeContinuation) {
+        holdNextResponse = true;
+        const started = await owner.request('turn/start', {
+          threadId, input: [{ type: 'text', text: 'Interrupted desktop fixture prompt' }],
+        });
+        await bounded((async () => {
+          while (responses !== 2) await new Promise(resolve => setTimeout(resolve, 20));
+        })());
+        await owner.request('turn/interrupt', { threadId, turnId: started.turn.id });
+        await bounded((async () => {
+          for (;;) {
+            const page = await owner.request('thread/turns/list', {
+              threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
+            });
+            if (page.data[0]?.status === 'interrupted' && Number.isFinite(page.data[0]?.completedAt)) break;
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+        })());
+        // A real interrupted owner will not automatically consume a new
+        // native queue entry. Model the desktop peer's *owner-side* dispatch,
+        // while retaining real CLIs, writer locks, storage and model traffic.
+        // The separate, opt-in live-session E2E must verify the real app peer.
+        await mkdir(path.join(root, 'ipc'), { mode: 0o700 });
+        peerServer = net.createServer(socket => {
+          peerSockets.add(socket);
+          socket.on('close', () => peerSockets.delete(socket));
+          socket.on('error', () => {});
+          let buffered: Buffer = Buffer.alloc(0);
+          const respond = (message: AnyRecord) => {
+            const payload = Buffer.from(JSON.stringify(message));
+            const frame = Buffer.alloc(4 + payload.length);
+            frame.writeUInt32LE(payload.length); payload.copy(frame, 4); socket.write(frame);
+          };
+          const handle = async (request: AnyRecord) => {
+            peerCalls.push(request);
+            if (request.type !== 'request') return;
+            const response = { type: 'response', requestId: request.requestId, method: request.method, resultType: 'success' };
+            if (request.method === 'initialize') {
+              assert.equal(request.params.clientType, 'codey');
+              respond({ ...response, result: { clientId: 'codey-fixture-peer' } });
+            } else if (request.method === 'thread-owner-discovery') {
+              assert.equal(request.params.conversationId, threadId);
+              respond({ ...response, handledByClientId: 'fixture-owner', result: { supportsUntrustedAppInput: true } });
+            } else if (request.method === 'thread-follower-start-turn') {
+              assert.equal(request.targetClientId, 'fixture-owner');
+              assert.equal(request.params.conversationId, threadId);
+              assert.deepEqual(request.params.turnStart.context, { inheritThreadSettings: true });
+              assert.deepEqual(Object.keys(request.params.turnStart.request).sort(), ['clientUserMessageId', 'input', 'threadId']);
+              const result = await owner.request('turn/start', request.params.turnStart.request);
+              respond({ ...response, handledByClientId: 'fixture-owner', result: { result } });
+            } else assert.fail(`Unexpected desktop peer operation: ${request.method}`);
+          };
+          socket.on('data', data => {
+            buffered = Buffer.concat([buffered, data]);
+            while (buffered.length >= 4) {
+              const length = buffered.readUInt32LE(0);
+              if (buffered.length < 4 + length) return;
+              const request = JSON.parse(buffered.subarray(4, 4 + length).toString('utf8'));
+              buffered = buffered.subarray(4 + length);
+              void handle(request).catch(error => socket.destroy(error));
+            }
+          });
+        });
+        await new Promise<void>((resolve, reject) => {
+          peerServer!.once('error', reject);
+          peerServer!.listen(path.join(root, 'ipc/ipc.sock'), resolve);
+        });
+      }
       stage = 'discover and read the desktop thread';
       const originalId = threadId;
       await synchronizeCodexDaemonSessions();
@@ -156,17 +238,22 @@ enabled = false
         assert.deepEqual(messages.filter(message => message.kind === 'error'), []);
         assert.equal(messages.at(-1)?.success, true);
       };
-      stage = 'queue through the original desktop owner';
+      stage = 'continue through the original desktop owner';
       await run('Codey queued fixture prompt');
       assert.equal(threadId, originalId);
-      assert.equal(calls.filter(call => call.method === 'thread/queue/add').length, 1);
+      assert.equal(calls.filter(call => call.method === 'thread/queue/add').length, interruptBeforeContinuation ? 0 : 1);
+      assert.equal(peerCalls.filter(call => call.method === 'thread-follower-start-turn').length, interruptBeforeContinuation ? 1 : 0);
       assert.equal(calls.filter(call => call.method === 'turn/start').length, 0);
       assert.ok(!calls.some(call => ['thread/start', 'thread/fork'].includes(call.method)));
       const snapshot = await codexAppServer.readThreadSnapshot(originalId!);
       const prompts = snapshot.turns.flatMap((turn: AnyRecord) => turn.items)
         .filter((item: AnyRecord) => item.type === 'userMessage')
         .map((item: AnyRecord) => item.content.map((part: AnyRecord) => part.text ?? '').join(''));
-      assert.deepEqual(prompts, ['Original desktop fixture prompt', 'Codey queued fixture prompt']);
+      assert.deepEqual(prompts, [
+        'Original desktop fixture prompt',
+        ...(interruptBeforeContinuation ? ['Interrupted desktop fixture prompt'] : []),
+        'Codey queued fixture prompt',
+      ]);
 
       // Release only this fixture owner, then prove Codey can resume the same
       // persisted history directly and releases its writer at completion.
@@ -179,7 +266,7 @@ enabled = false
       clients.push(reopened);
       stage = 'desktop resumes the Codey continuation';
       assert.equal((await reopened.request('thread/resume', { threadId: originalId, excludeTurns: true })).thread.id, originalId);
-      assert.equal((await codexAppServer.readThreadSnapshot(originalId!)).turns.length, 3);
+      assert.equal((await codexAppServer.readThreadSnapshot(originalId!)).turns.length, interruptBeforeContinuation ? 4 : 3);
 
       // Conversely, new Codey sessions must be discoverable by the ordinary
       // desktop thread/list and resumable without rewriting their source.
@@ -198,6 +285,8 @@ enabled = false
       await runtime?.abort('app').catch(() => false);
       await Promise.allSettled(clients.map(client => client.close()));
       await pendingRun?.catch(() => {});
+      for (const socket of peerSockets) socket.destroy();
+      if (peerServer) await new Promise<void>(resolve => peerServer!.close(() => resolve()));
       closeConnection();
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));

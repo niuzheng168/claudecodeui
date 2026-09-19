@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
-import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
+import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient } from '@/shared/index.js';
 
-function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: boolean; loaded?: boolean; sharedDaemon?: boolean; incompleteItems?: boolean; transientInterrupted?: boolean; clientMessageId?: string } = {}) {
+function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: boolean; loaded?: boolean; sharedDaemon?: boolean; incompleteItems?: boolean; transientInterrupted?: boolean; clientMessageId?: string; deleteAck?: boolean | null } = {}) {
   const calls: Array<{ method: string; params: AnyRecord }> = [];
   const items: AnyRecord[] = [];
   const started: string[] = [];
@@ -12,6 +12,7 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
   let created = false;
   let deleted = false;
   let completed = !options.transientInterrupted;
+  let pending = options.pending;
   let sleeping: (() => void) | null = null;
   let sleepEntered!: () => void;
   const asleep = new Promise<void>(resolve => { sleepEntered = resolve; });
@@ -30,17 +31,18 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
       if (method === 'thread/queue/list') return {
         data: [
           { id: 'another-queue', clientUserMessageId: 'another-client' },
-          ...(created && !deleted && options.pending ? [{ id: 'our-queue', clientUserMessageId: clientId }] : []),
+          ...(created && !deleted && pending ? [{ id: 'our-queue', clientUserMessageId: clientId }] : []),
         ], nextCursor: null,
       };
       if (method === 'thread/queue/delete') {
         assert.equal(params.queuedSubmissionId, 'our-queue');
-        deleted = true;
-        return {};
+        const acknowledged = options.deleteAck === undefined || options.deleteAck === true;
+        if (acknowledged) deleted = true;
+        return options.deleteAck === null ? {} : { deleted: acknowledged };
       }
       if (method === 'thread/turns/list') return {
         data: [
-          ...(created && !options.pending ? [
+          ...(created && !pending ? [
             { id: 'foreign-turn', status: 'completed', items: [{ type: 'userMessage', id: 'other-user', clientId: 'another-client' }] },
             {
               id: 'our-turn', status: completed ? 'completed' : 'interrupted',
@@ -63,7 +65,10 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
     sleepEntered();
     await new Promise<void>(resolve => { sleeping = resolve; });
   } });
-  return { run, calls, items, started, asleep, wake: () => { completed = true; sleeping?.(); } };
+  return {
+    run, calls, items, started, asleep, wake: () => { completed = true; sleeping?.(); },
+    claim: () => { pending = false; completed = true; sleeping?.(); },
+  };
 }
 
 test('desktop queue preserves the browser input identity through its native receipt', async () => {
@@ -101,6 +106,20 @@ test('cancellation removes only the correlated, still-pending submission', async
   assert.deepEqual(await completion, { turn: null, cancelled: true });
   assert.equal(f.calls.filter(call => call.method === 'thread/queue/delete').length, 1);
   assert.ok(!f.calls.some(call => call.method === 'turn/interrupt'));
+});
+
+test('a refused or unconfirmed queue deletion is not a successful Stop', async () => {
+  for (const deleteAck of [false, null]) {
+    const f = fixture({ pending: true, deleteAck });
+    const completion = f.run.run([{ type: 'text', text: 'Claimed concurrently by the desktop' }]);
+    await f.asleep;
+    assert.equal(await f.run.cancel(), false);
+    f.claim();
+    const result = await completion;
+    assert.equal(result.cancelled, false);
+    assert.equal(result.turn?.id, 'our-turn');
+    assert.ok(!f.calls.some(call => call.method === 'turn/interrupt'));
+  }
 });
 
 test('a shared daemon can relay to a different desktop owner without claiming its thread', async () => {
@@ -163,4 +182,125 @@ test('an observer that loaded a writer or returns incomplete turn items cannot r
     await assert.rejects(f.run.run([{ type: 'text', text: 'Bounded observation' }]), { code: 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR' });
     assert.deepEqual(f.items, []);
   }
+});
+
+function ownerFixture(options: {
+  noOwner?: boolean; previousStatus?: string; active?: boolean; source?: string;
+  pendingClientId?: string; lostAck?: boolean; neverStarts?: boolean;
+} = {}) {
+  const calls: Array<{ method: string; params: AnyRecord }> = [];
+  const emitted: AnyRecord[] = [];
+  const input = [{ type: 'text', text: 'Continue after the desktop was stopped' }];
+  const clientId = 'same-browser-input';
+  let started = false;
+  let queued = false;
+  let now = 0;
+  const client: ICodexRpcClient = {
+    ownsProcess: true,
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === 'thread/read') return { thread: { id: 'desktop', source: options.source ?? 'vscode' } };
+      if (method === 'thread/loaded/list') return { data: [] };
+      if (method === 'thread/queue/list') return { data: options.pendingClientId
+        ? [{ id: 'old-queued-input', clientUserMessageId: options.pendingClientId, input }]
+        : queued ? [{ id: 'new-queued-input', clientUserMessageId: clientId, input }] : [], nextCursor: null };
+      if (method === 'thread/queue/add') {
+        queued = true;
+        if (options.active) started = true;
+        return { queuedSubmission: { id: 'new-queued-input', clientUserMessageId: clientId } };
+      }
+      if (method === 'thread/turns/list') return {
+        data: [
+          ...(started && !options.neverStarts ? [{
+            id: 'desktop-owner-turn', status: 'completed', completedAt: 200, items: [
+              { id: 'desktop-user', type: 'userMessage', clientId },
+              { id: 'desktop-answer', type: 'agentMessage', text: 'The original owner continued' },
+            ],
+          }] : []),
+          { id: 'stopped-turn', status: options.previousStatus ?? 'interrupted',
+            completedAt: options.active ? null : 100, items: [] },
+        ], nextCursor: null,
+      };
+      assert.fail(`Unsafe or unexpected observer operation: ${method}`);
+    },
+    onNotification: () => () => {}, onServerRequest: () => () => {},
+    onDisconnect: () => () => {}, close: () => {},
+  };
+  const owner: ICodexDesktopThreadOwner = {
+    async startTurn(items, id) {
+      calls.push({ method: 'owner/start', params: { input: items, clientUserMessageId: id } });
+      assert.equal(id, clientId);
+      assert.deepEqual(items, input);
+      started = true;
+      if (options.lostAck) throw new Error('Unconfirmed owner outcome; never retry');
+    },
+    close: () => {},
+  };
+  const run = new CodexNativeQueueRun(client, 'desktop', {
+    started: () => {}, item: item => emitted.push(item),
+  }, {
+    owner: options.noOwner ? null : owner, clientMessageId: clientId,
+    clock: () => now, startupTimeoutMs: 2000, sleep: async () => { now += 1500; },
+  });
+  return { run, calls, input, emitted };
+}
+
+test('an interrupted desktop is continued through its verified owner, not its paused queue', async () => {
+  for (const previousStatus of ['interrupted', 'failed', 'completed']) {
+    const f = ownerFixture({ previousStatus });
+    const result = await f.run.run(f.input);
+    assert.equal(result.turn?.id, 'desktop-owner-turn');
+    assert.deepEqual(f.emitted.map(item => item.text), ['The original owner continued']);
+    assert.equal(f.calls.filter(call => call.method === 'owner/start').length, 1);
+    assert.ok(!f.calls.some(call => ['thread/queue/add', 'thread/queue/delete', 'thread/resume', 'turn/start'].includes(call.method)));
+  }
+});
+
+test('verified desktop ownership also covers a legacy Codey-created exec thread without rewriting its source', async () => {
+  const f = ownerFixture({ source: 'exec' });
+  assert.equal((await f.run.run(f.input)).turn?.status, 'completed');
+  assert.equal(f.calls.filter(call => call.method === 'owner/start').length, 1);
+});
+
+test('without an owner channel a paused native queue is rejected before adding another message', async () => {
+  const f = ownerFixture({ noOwner: true });
+  await assert.rejects(f.run.run(f.input), { code: 'CODEX_DESKTOP_QUEUE_PAUSED' });
+  assert.ok(!f.calls.some(call => ['owner/start', 'thread/queue/add', 'thread/queue/delete'].includes(call.method)));
+});
+
+test('an idle compatibility queue cannot silently wait a whole day without starting', async () => {
+  const f = ownerFixture({ noOwner: true, previousStatus: 'completed' });
+  await assert.rejects(f.run.run(f.input), { code: 'CODEX_DESKTOP_QUEUE_NOT_STARTED' });
+  assert.equal(f.calls.filter(call => call.method === 'thread/queue/add').length, 1);
+  assert.ok(!f.calls.some(call => ['owner/start', 'thread/queue/delete'].includes(call.method)));
+});
+
+test('active desktop work still receives queued input, never a competing direct turn', async () => {
+  const f = ownerFixture({ active: true });
+  assert.equal((await f.run.run(f.input)).turn?.status, 'completed');
+  assert.equal(f.calls.filter(call => call.method === 'thread/queue/add').length, 1);
+  assert.ok(!f.calls.some(call => call.method === 'owner/start'));
+});
+
+test('an existing native queue is neither leapfrogged nor replayed, even with the same client ID', async () => {
+  for (const pendingClientId of ['someone-else', 'same-browser-input']) {
+    const f = ownerFixture({ pendingClientId });
+    await assert.rejects(f.run.run(f.input), { code: 'CODEX_DESKTOP_QUEUE_PENDING' });
+    assert.ok(!f.calls.some(call => ['owner/start', 'thread/queue/add', 'thread/queue/delete'].includes(call.method)));
+  }
+});
+
+test('lost owner acknowledgement never falls back to queueing or another writer', async () => {
+  const f = ownerFixture({ lostAck: true });
+  await assert.rejects(f.run.run(f.input), /Unconfirmed owner outcome/);
+  assert.equal(f.calls.filter(call => call.method === 'owner/start').length, 1);
+  assert.ok(!f.calls.some(call => ['thread/queue/add', 'thread/queue/delete', 'thread/resume', 'turn/start'].includes(call.method)));
+});
+
+test('cancellation during owner preflight submits nothing and never interrupts the desktop', async () => {
+  const f = ownerFixture();
+  const completion = f.run.run(f.input);
+  assert.equal(await f.run.cancel(), true);
+  assert.deepEqual(await completion, { turn: null, cancelled: true });
+  assert.ok(!f.calls.some(call => ['owner/start', 'thread/queue/add', 'turn/interrupt'].includes(call.method)));
 });

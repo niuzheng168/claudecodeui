@@ -9,7 +9,7 @@ export { readObjectRecord } from './utils.js';
 // WebSocket acceptance assigns one persisted input identity per native submission.
 export { generateMessageId } from './utils.js';
 // Codex provider transports/runtime share the RPC, message and attachment contracts.
-export type { ICodexRpcClient, IProviderRuntime } from './interfaces.js';
+export type { ICodexRpcClient, ICodexDesktopThreadOwner, IProviderRuntime } from './interfaces.js';
 export type {
   AnyRecord, CodexRpcRequestId, CodexRpcServerReply, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,

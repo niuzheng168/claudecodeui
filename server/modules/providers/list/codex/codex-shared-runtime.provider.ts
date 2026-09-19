@@ -1,5 +1,6 @@
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
+import { CodexDesktopPeerClient } from '@/modules/providers/list/codex/codex-desktop-peer.client.js';
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
@@ -8,7 +9,7 @@ import { controlCodexGoal, formatCodexGoalResult, getCodexGoal, parseCodexGoalCo
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { codexRuntime as sdkRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 import { assertCodexDesktopSelection, readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
-import type { CodexGoal, CodexGoalCommand, ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderAbortOptions, ProviderRuntimeContext, ProviderRuntimeObservation, ProviderRuntimeWriter } from '@/shared/index.js';
+import type { CodexGoal, CodexGoalCommand, ICodexDesktopThreadOwner, ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderAbortOptions, ProviderRuntimeContext, ProviderRuntimeObservation, ProviderRuntimeWriter } from '@/shared/index.js';
 import {
   AppError, createCompleteMessage, createNormalizedMessage, readObjectRecord,
   appendFilesInputTag, buildCodexInputItems,
@@ -101,6 +102,8 @@ export class CodexSharedRuntime implements IProviderRuntime {
     private readonly fallback: IProviderRuntime = sdkRuntime,
     private readonly connect: () => Promise<ICodexRpcClient | null> = connectCodexNativeClient,
     private readonly connectLocalNative: () => Promise<ICodexRpcClient> = () => CodexStdioClient.connectInstalled(),
+    private readonly connectDesktopOwner: (threadId: string) => Promise<ICodexDesktopThreadOwner | null>
+      = threadId => CodexDesktopPeerClient.connect(threadId),
   ) {}
 
   async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
@@ -765,37 +768,45 @@ export class CodexSharedRuntime implements IProviderRuntime {
     const sessionId = String(options.sessionId);
     await assertCodexDesktopSelection(run.threadId!, { ...options, cwd: run.workingDirectory });
     if (run.aborted) return;
-    send(writer, createNormalizedMessage({
-      provider: 'codex', sessionId, kind: 'task_notification', status: 'info',
-      summary: 'Codex Desktop owns this session. Sending through its native queue, without taking its writer. This turn uses the desktop session’s model and permissions; desktop tool approvals stay there.',
-    }));
-    run.desktopQueue = new CodexNativeQueueRun(run.client!, run.threadId!, {
-      started: (turnId) => {
-        run.turnId = turnId;
-        send(writer, createNormalizedMessage({
-          provider: 'codex', sessionId, kind: 'status', canSteer: false, canInterrupt: false,
-        }));
-      },
-      item: (item, turnId) => {
-        for (const raw of projectCodexDaemonItem(item, turnId, new Date().toISOString())) {
-          for (const message of context.normalizeMessage(raw, run.threadId)) send(writer, message);
-        }
-      },
-    }, { clientMessageId: nativeInputIdentity(options.clientMessageId).clientUserMessageId });
-    const result = await run.desktopQueue.run(input);
-    run.finished = true;
-    const turn = result.turn;
-    if (turn?.status === 'failed') throw new Error(turn.error?.message || 'The desktop Codex turn failed.');
-    send(writer, createCompleteMessage({
-      provider: 'codex', sessionId, actualSessionId: run.threadId,
-      exitCode: turn?.status === 'completed' ? 0 : 1,
-      aborted: result.cancelled || turn?.status === 'interrupted',
-    }));
-    if (turn?.status === 'completed') {
-      (notifyRunStopped as (input: AnyRecord) => void)({
-        userId: writer.userId ?? null, provider: 'codex', sessionId,
-        sessionName: options.sessionSummary, stopReason: 'completed',
-      });
+    const owner = await this.connectDesktopOwner(run.threadId!);
+    try {
+      if (run.aborted) return;
+      send(writer, createNormalizedMessage({
+        provider: 'codex', sessionId, kind: 'task_notification', status: 'info',
+        summary: owner
+          ? 'Continuing through the existing Codex Desktop session owner, without taking its writer. The desktop session’s model, permissions and tool approvals are preserved.'
+          : 'Codex Desktop owns this session. Sending through its native queue, without taking its writer. This turn uses the desktop session’s model and permissions; desktop tool approvals stay there.',
+      }));
+      run.desktopQueue = new CodexNativeQueueRun(run.client!, run.threadId!, {
+        started: (turnId) => {
+          run.turnId = turnId;
+          send(writer, createNormalizedMessage({
+            provider: 'codex', sessionId, kind: 'status', canSteer: false, canInterrupt: false,
+          }));
+        },
+        item: (item, turnId) => {
+          for (const raw of projectCodexDaemonItem(item, turnId, new Date().toISOString())) {
+            for (const message of context.normalizeMessage(raw, run.threadId)) send(writer, message);
+          }
+        },
+      }, { clientMessageId: nativeInputIdentity(options.clientMessageId).clientUserMessageId, owner });
+      const result = await run.desktopQueue.run(input);
+      run.finished = true;
+      const turn = result.turn;
+      if (turn?.status === 'failed') throw new Error(turn.error?.message || 'The desktop Codex turn failed.');
+      send(writer, createCompleteMessage({
+        provider: 'codex', sessionId, actualSessionId: run.threadId,
+        exitCode: turn?.status === 'completed' ? 0 : 1,
+        aborted: result.cancelled || turn?.status === 'interrupted',
+      }));
+      if (turn?.status === 'completed') {
+        (notifyRunStopped as (input: AnyRecord) => void)({
+          userId: writer.userId ?? null, provider: 'codex', sessionId,
+          sessionName: options.sessionSummary, stopReason: 'completed',
+        });
+      }
+    } finally {
+      owner?.close();
     }
   }
 }
