@@ -280,9 +280,23 @@ Current session sync roots are:
 | Provider | Scan Roots | Metadata Helpers / Notes |
 | --- | --- | --- |
 | Claude | `~/.claude/projects/**/*.jsonl` | Uses `~/.claude/history.jsonl` for name lookup and the trailing `ai-title`, `last-prompt`, or `custom-title` entries for title recovery. |
-| Codex | `~/.codex/sessions/**/*.jsonl` | Uses `~/.codex/session_index.jsonl` for title lookup and the last `task_complete` message for a fallback title. |
+| Codex | Native `thread/list` and `~/.codex/sessions/**/*.jsonl` | Follows native names, then the latest appended `session_index.jsonl` name. Only explicit Codey renames override them; index-only changes are watched independently of rollout creation time. |
 | Cursor | `~/.cursor/projects/**/*.jsonl` | Uses sibling `worker.log` to recover `workspacePath`, then derives the session title from the first user prompt. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Reads active sessions/messages/parts from OpenCode's shared SQLite database and stores `jsonl_path` as `null` so deleting one app session cannot remove the shared DB. |
+
+Codex title synchronization uses `sessions.custom_name_source` to distinguish
+automatic/imported titles (`auto`) from explicit local renames (`user`).
+App-generated first-message titles remain automatic. Native names take priority
+over an older JSONL index even when a rollout watcher runs after a native poll.
+The database guards manual titles at write time, so a rename racing an index
+read is not lost. Titles do not rename the underlying Codex thread.
+
+Before this distinction existed, title provenance was not recorded. The upgrade
+retains old Codex labels in `sessions.legacy_custom_name` and treats their effective
+titles as automatic; an old manual label cannot be identified reliably and can
+be reapplied through Codey's rename action. The backup is not rewritten on later
+starts. Claude's first-seen index behavior and other providers' app-title policy
+are unchanged.
 
 8. Register the provider.
 

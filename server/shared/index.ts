@@ -24,7 +24,7 @@ export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.j
 export { findApplicationRoot, getModuleDirectory } from './utils.js';
 export { parseFrontMatter } from './frontmatter.js';
 // Providers use the shared session/history contracts and projections through this barrel.
-export type { IProviderSessions, IProviderSessionSynchronizer } from './interfaces.js';
+export type { IProviderSessions, IProviderSessionSynchronizer, IProviderFork } from './interfaces.js';
 export type {
   FetchHistoryOptions, FetchHistoryResult, MemoryCitation, NormalizedMessage,
   SubagentActivity, SubagentInfo,

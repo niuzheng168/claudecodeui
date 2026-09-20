@@ -10,7 +10,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError } from '@/shared/index.js';
 
 async function withProviderServer(
   run: (baseUrl: string, workspacePath: string) => Promise<void>,
@@ -75,6 +75,29 @@ test('session creation route names a CloudCLI session from the initial message',
       sessionsDb.getSessionById(payload.data.sessionId)?.custom_name,
       'abcd efg hij klm',
     );
+    assert.equal(sessionsDb.getSessionById(payload.data.sessionId)?.custom_name_source, 'auto');
+  });
+});
+
+test('explicit session rename validates input and protects the local title from provider updates', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createSession('rename-session', 'codex', workspacePath, 'Imported title');
+    const response = await fetch(`${baseUrl}/api/providers/sessions/rename-session`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ summary: '  My local title  ' }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(sessionsDb.getSessionById('rename-session')?.custom_name_source, 'user');
+    sessionsDb.createSession('rename-session', 'codex', workspacePath, 'Later native name');
+    assert.equal(sessionsDb.getSessionById('rename-session')?.custom_name, 'My local title');
+    for (const summary of [' ', 'x'.repeat(501)]) {
+      const rejected = await fetch(`${baseUrl}/api/providers/sessions/rename-session`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ summary }),
+      });
+      assert.equal(rejected.status, 400);
+    }
+    assert.equal(sessionsDb.getSessionById('rename-session')?.custom_name, 'My local title');
   });
 });
 

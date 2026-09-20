@@ -3,7 +3,7 @@ import { access, readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
-import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
+import { readCodexHistoryMode, readCodexThreadName } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
@@ -21,6 +21,37 @@ type ParsedSession = {
 };
 
 let daemonSyncInFlight: Promise<{ known: Set<string>; changed: string[] }> | null = null;
+
+function readCodexNameIndex(): Promise<Map<string, string>> {
+  return buildLookupMap(
+    path.join(resolveCodexHomeDirectory(), 'session_index.jsonl'), 'id', 'thread_name', 'last',
+  );
+}
+
+async function refreshIndexedNames(nameMap: Map<string, string>, nativeIds = new Set<string>()): Promise<string[]> {
+  const changed: string[] = [];
+  for (const [providerId, indexedName] of nameMap) {
+    if (nativeIds.has(providerId) || !indexedName.trim()) continue;
+    const existing = sessionsDb.getSessionByProviderSessionId(providerId);
+    if (!existing || existing.provider !== 'codex' || existing.isArchived
+      || existing.custom_name_source === 'user') continue;
+    const name = normalizeSessionName(
+      await readCodexThreadName(providerId) || indexedName, 'Untitled Codex Session',
+    );
+    if (sessionsDb.updateSessionSyncedName(existing.session_id, name)) changed.push(existing.session_id);
+  }
+  return changed;
+}
+
+/**
+ * Used by the provider watcher for name-index-only changes. Renaming in Codex
+ * need not touch a rollout or create a file past the discovery birthtime cursor.
+ * Only existing active rows are refreshed; local renames and removed sessions
+ * are never overwritten or re-created by this metadata-only path.
+ */
+export async function synchronizeCodexSessionIndex(): Promise<string[]> {
+  return refreshIndexedNames(await readCodexNameIndex());
+}
 
 /**
  * Used by the Codex synchronizer and the provider watcher. Desktop threads may
@@ -40,6 +71,7 @@ async function synchronizeDaemonIndex(): Promise<{ known: Set<string>; changed: 
   const client = await connectCodexNativeClient();
   if (!client) return { known, changed };
   try {
+    const nameMap = await readCodexNameIndex();
     let cursor: string | undefined;
     const seenCursors = new Set<string>();
     do {
@@ -59,10 +91,10 @@ async function synchronizeDaemonIndex(): Promise<{ known: Set<string>; changed: 
         // Polling is not an instruction to undo the user's local archive.
         if (existing?.isArchived) continue;
         const nativeName = typeof thread.name === 'string' && thread.name.trim()
-          ? normalizeSessionName(thread.name, 'Untitled Codex Session')
-          : existing?.custom_name || 'Untitled Codex Session';
-        const name = existing?.custom_name && existing.custom_name !== 'Untitled Codex Session'
-          ? existing.custom_name : nativeName;
+          ? thread.name : nameMap.get(thread.id);
+        const name = existing?.custom_name_source === 'user'
+          ? existing.custom_name ?? 'Untitled Codex Session'
+          : normalizeSessionName(nativeName, existing?.custom_name || 'Untitled Codex Session');
         const createdAt = new Date(Number(thread.createdAt || 0) * 1000).toISOString();
         const updatedAt = new Date(Number(thread.updatedAt || thread.createdAt || 0) * 1000).toISOString();
         let transcriptPath: string | null = typeof thread.path === 'string' && thread.path ? thread.path : null;
@@ -117,7 +149,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       // Its index is retried independently, without the JSONL birthtime cursor.
       console.warn('[Codex] Desktop session discovery unavailable:', error instanceof Error ? error.message : String(error));
     }
-    const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
+    const nameMap = await readCodexNameIndex();
+    await refreshIndexedNames(nameMap, nativeIds);
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.codexHome, 'sessions'),
       '.jsonl',
@@ -129,15 +162,6 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed || nativeIds.has(parsed.sessionId)) {
         continue;
-      }
-
-      const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
-        ?? sessionsDb.getSessionById(parsed.sessionId);
-      if (existingSession) {
-        // If session name is untitled and we now have a name, update it
-        if (existingSession.custom_name === 'Untitled Codex Session' && parsed.sessionName && parsed.sessionName !== 'Untitled Codex Session') {
-          sessionsDb.updateSessionCustomName(existingSession.session_id, parsed.sessionName);
-        }
       }
 
       const timestamps = await readFileTimestamps(filePath);
@@ -164,7 +188,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
+    const nameMap = await readCodexNameIndex();
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
       return null;
@@ -225,14 +249,20 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       ?? sessionsDb.getSessionById(parsed.sessionId);
     if (existingSession?.isArchived) return null;
     const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Codex Session') {
+    if (existingSession?.custom_name_source === 'user') {
       return {
         ...parsed,
-        sessionName: normalizeSessionName(existingSessionName, 'Untitled Codex Session'),
+        sessionName: existingSessionName ?? 'Untitled Codex Session',
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
+    // A rollout change may race the daemon poll. Read native metadata first so
+    // an older JSONL name cannot revert a name already updated by thread/list.
+    let sessionName = await readCodexThreadName(parsed.sessionId)
+      || nameMap.get(parsed.sessionId)?.trim();
+    if (!sessionName && existingSessionName && existingSessionName !== 'Untitled Codex Session') {
+      sessionName = existingSessionName;
+    }
     if (!sessionName) {
       sessionName = await this.extractLastAgentMessageFromEnd(filePath);
     }

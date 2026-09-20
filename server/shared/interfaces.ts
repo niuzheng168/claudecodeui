@@ -106,7 +106,9 @@ export interface IProvider {
 // ---------------------------
 //----------------- PROVIDER FORK INTERFACE ------------
 /**
- * Transcript-branching contract for one provider.
+ * Transcript-branching contract used by Providers' fork adapters and tests.
+ * Forking creates a distinct native session; callers keep the original intact
+ * and map the new artifact to an independent app session.
  */
 export interface IProviderFork {
   /**

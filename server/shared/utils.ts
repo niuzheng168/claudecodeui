@@ -1044,16 +1044,18 @@ export async function readFileTimestamps(
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER JSONL PARSING HELPERS ------------
 /**
- * Builds a first-seen key/value lookup map from a JSONL file.
+ * Builds a key/value lookup map from a provider's JSONL index.
  *
  * Use this for provider index files where session id -> display name metadata
- * is stored line-by-line. The first value for each key wins, preserving the
- * earliest known label while avoiding repeated map overwrites.
+ * is stored line-by-line. Claude history keeps the default first-seen label;
+ * Codex's append-only name index opts into last-seen values so renames win.
+ * Malformed/partially written lines are skipped without hiding later records.
  */
 export async function buildLookupMap(
   filePath: string,
   keyField: string,
-  valueField: string
+  valueField: string,
+  duplicateKeyPolicy: 'first' | 'last' = 'first',
 ): Promise<Map<string, string>> {
   const lookup = new Map<string, string>();
 
@@ -1067,11 +1069,19 @@ export async function buildLookupMap(
         continue;
       }
 
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      let parsed: Record<string, unknown>;
+      try {
+        const value: unknown = JSON.parse(trimmed);
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        parsed = value as Record<string, unknown>;
+      } catch {
+        continue;
+      }
       const key = parsed[keyField];
       const value = parsed[valueField];
 
-      if (typeof key === 'string' && typeof value === 'string' && !lookup.has(key)) {
+      if (typeof key === 'string' && typeof value === 'string'
+        && (duplicateKeyPolicy === 'last' || !lookup.has(key))) {
         lookup.set(key, value);
       }
     }
