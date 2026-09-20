@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/index.js';
-import type { AnyRecord, ICodexDesktopThreadOwner } from '@/shared/index.js';
+import type { AnyRecord, CodexDesktopThreadState, ICodexDesktopThreadOwner } from '@/shared/index.js';
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 8;
@@ -16,14 +16,21 @@ type PendingRequest = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type PendingSnapshot = {
+  resolve: (state: CodexDesktopThreadState) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 /**
- * Used by CodexSharedRuntime after an exact foreign-writer refusal. Desktop
+ * Used by CodexSharedRuntime before acquiring a private writer, and after an
+ * exact foreign-writer refusal. Desktop
  * peers coordinate over the owner's private IPC endpoint, not the app-server
  * control socket. Unlike writing a native queue, an explicit follower turn
  * reaches the owner even when a prior interruption paused queue consumption.
  *
- * Only owner discovery and one scoped turn submission are supported. This is
- * not a generic app/UI control channel. No peer is claimed as owned by Codey;
+ * Only scoped thread submission, observation and explicit turn controls are
+ * supported. This is not a generic app/UI control channel. No peer is claimed as owned by Codey;
  * model, permissions, approvals and the original writer remain in the desktop.
  */
 export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
@@ -32,6 +39,11 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<string, PendingRequest>();
   private closedError: Error | null = null;
+  private snapshot: PendingSnapshot | null = null;
+  private snapshotPromise: Promise<CodexDesktopThreadState> | null = null;
+  private following = false;
+  private latestRevision = -1;
+  private readonly disconnectListeners = new Set<() => void>();
 
   private constructor(
     private readonly socket: net.Socket,
@@ -61,7 +73,10 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   ): Promise<CodexDesktopPeerClient | null> {
     const home = options.home ?? resolveCodexHomeDirectory();
     const platform = options.platform ?? process.platform;
-    const timeoutMs = options.timeoutMs ?? 8_000;
+    // The native router's owner-discovery window is 10s. A shorter deadline
+    // mistakes its eventual read-only "no-client-found" answer for a failure,
+    // blocking ordinary continuation when no desktop owns the UI stream.
+    const timeoutMs = options.timeoutMs ?? 12_000;
     if (!threadId || !path.isAbsolute(home) || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
       throw new AppError('Invalid native desktop owner connection settings.', {
         code: 'CODEX_DESKTOP_PEER_UNAVAILABLE', statusCode: 503,
@@ -149,8 +164,146 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
     }
   }
 
+  get connected(): boolean {
+    return this.closedError === null;
+  }
+
+  onDisconnect(listener: () => void): () => void {
+    this.disconnectListeners.add(listener);
+    return () => { this.disconnectListeners.delete(listener); };
+  }
+
+  async readState(): Promise<CodexDesktopThreadState> {
+    if (this.closedError) throw this.closedError;
+    if (this.snapshotPromise) return this.snapshotPromise;
+    // A repeated following announcement asks the pinned owner for a fresh
+    // snapshot. Do not use stale patches, disk "interrupted" status, or another
+    // window's broadcast to guess which turn currently accepts input.
+    const pending = new Promise<CodexDesktopThreadState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.snapshot = null;
+        reject(this.error('The desktop owner did not confirm its current turn. No input was sent.',
+          'CODEX_DESKTOP_STATE_UNAVAILABLE'));
+      }, this.timeoutMs);
+      this.snapshot = { resolve, reject, timer };
+      this.following = true;
+      this.sendFollowing(true);
+    });
+    this.snapshotPromise = pending;
+    try { return await pending; }
+    finally { if (this.snapshotPromise === pending) this.snapshotPromise = null; }
+  }
+
+  async steerTurn(expectedTurnId: string, input: AnyRecord[], clientUserMessageId: string): Promise<void> {
+    if (!expectedTurnId || !input.length || !clientUserMessageId) {
+      throw this.error('The correction is incomplete. No input was sent.', 'STEER_UNAVAILABLE');
+    }
+    await this.assertActiveTurn(expectedTurnId);
+    let response: AnyRecord;
+    try {
+      response = await this.request('thread-follower-steer-turn', 1, {
+        conversationId: this.threadId, input, clientUserMessageId,
+        // The desktop requires a restoration envelope for its pending input.
+        // No model, effort, permissions, mode or service-tier overrides belong
+        // in a correction. These settings remain with the existing owner.
+        restoreMessage: { input, context: {} },
+      }, this.ownerClientId);
+    } catch {
+      throw this.steerUnconfirmed();
+    }
+    if (response.resultType !== 'success' || response.method !== 'thread-follower-steer-turn'
+      || response.handledByClientId !== this.ownerClientId || response.result?.result?.turnId !== expectedTurnId) {
+      // The native desktop selects its active turn internally. Validate the
+      // actual receipt too; a rollover or lost acknowledgement is never a
+      // reason to replay the correction or turn it into queued input.
+      throw this.steerUnconfirmed();
+    }
+  }
+
+  async interruptTurn(expectedTurnId: string): Promise<boolean> {
+    if (!expectedTurnId) return false;
+    await this.assertActiveTurn(expectedTurnId);
+    let response: AnyRecord;
+    try {
+      response = await this.request('thread-follower-interrupt-turn', 4, {
+        conversationId: this.threadId, mode: 'user-stop', expectedTurnId,
+      }, this.ownerClientId);
+    } catch {
+      throw this.error('The desktop did not confirm Stop. Check the original turn before retrying.',
+        'CODEX_DESKTOP_INTERRUPT_UNCONFIRMED');
+    }
+    if (response.resultType !== 'success' || response.method !== 'thread-follower-interrupt-turn'
+      || response.handledByClientId !== this.ownerClientId || response.result?.ok !== true
+      || (response.result.interruptedTurnId !== null && response.result.interruptedTurnId !== expectedTurnId)) {
+      throw this.error('The desktop did not confirm Stop for the expected turn. No other turn was interrupted by Codey.',
+        'CODEX_DESKTOP_INTERRUPT_UNCONFIRMED');
+    }
+    return response.result.interruptedTurnId === expectedTurnId;
+  }
+
   close(): void {
+    if (this.following && !this.closedError) this.sendFollowing(false);
     this.fail(this.disconnected());
+  }
+
+  private async assertActiveTurn(expectedTurnId: string): Promise<void> {
+    const state = await this.readState();
+    if (state.activeTurnId !== expectedTurnId) {
+      throw this.error('The desktop turn ended or changed. No input was sent; refresh before trying again.',
+        'STEER_UNAVAILABLE');
+    }
+  }
+
+  private sendFollowing(following: boolean): void {
+    this.send({
+      type: 'broadcast', method: 'thread-stream-following-changed', version: 1,
+      sourceClientId: this.clientId, targetClientIds: [this.ownerClientId],
+      params: { hostId: 'local', conversationId: this.threadId, following },
+    });
+  }
+
+  private receiveSnapshot(message: AnyRecord): void {
+    if (message.sourceClientId !== this.ownerClientId
+      || message.method !== 'thread-stream-state-changed' || message.version !== 11
+      || message.params?.hostId !== 'local' || message.params.conversationId !== this.threadId) return;
+    const change = readObjectRecord(message.params.change);
+    if (!change || !Number.isSafeInteger(change.revision) || change.revision < 0
+      || change.revision < this.latestRevision) return;
+    // We do not apply UI patches, but their revision prevents an older full
+    // snapshot from satisfying a later state read after a turn rollover.
+    this.latestRevision = change.revision;
+    if (!this.snapshot || change.type !== 'snapshot') return;
+    const state = readObjectRecord(change.conversationState);
+    if (!state || state.id !== this.threadId) {
+      this.fail(this.error('The desktop returned state for an unverified conversation.',
+        'CODEX_DESKTOP_PEER_PROTOCOL_ERROR'));
+      return;
+    }
+    // Recent desktops keep their ordered tail in canonical history instead
+    // of state.turns. Never scan old unfinished turns or unordered entities.
+    let turns = state.turns;
+    if (state.turnHistory?.kind === 'canonical') {
+      const history = state.turnHistory.history;
+      const tail = Array.isArray(history?.islands) ? history.islands.at(-1) : null;
+      if (tail?.newerBoundary?.status !== 'exhausted' || !Array.isArray(tail.entries)) {
+        this.fail(this.error('The desktop did not provide its current turn tail.',
+          'CODEX_DESKTOP_PEER_PROTOCOL_ERROR'));
+        return;
+      }
+      turns = tail.entries.map((entry: AnyRecord) => history.entitiesByKey?.[entry.value]);
+    }
+    if (!Array.isArray(turns) || turns.some(turn => !readObjectRecord(turn))) {
+      this.fail(this.error('The desktop returned an invalid live turn snapshot.',
+        'CODEX_DESKTOP_PEER_PROTOCOL_ERROR'));
+      return;
+    }
+    const last = turns.at(-1);
+    const activeTurnId = last?.status === 'inProgress' && typeof last.turnId === 'string' && last.turnId
+      ? last.turnId : null;
+    const pending = this.snapshot;
+    this.snapshot = null;
+    clearTimeout(pending.timer);
+    pending.resolve({ activeTurnId, ...(typeof state.cwd === 'string' ? { cwd: state.cwd } : {}) });
   }
 
   private request(method: string, version: number, params: AnyRecord, targetClientId?: string): Promise<AnyRecord> {
@@ -209,8 +362,15 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
         this.pending.delete(message.requestId);
         clearTimeout(pending.timer);
         pending.resolve(message);
+      } else if (message.type === 'broadcast') {
+        if (message.method === 'client-status-changed' && message.params?.clientId === this.ownerClientId
+          && message.sourceClientId === this.ownerClientId && message.params.status === 'disconnected') {
+          this.fail(this.disconnected());
+        } else {
+          this.receiveSnapshot(message);
+        }
       }
-      // No subscription is created and unrelated peer broadcasts are ignored.
+      // Ignore unrelated threads, owners, UI events and incremental patches.
     }
   }
 
@@ -222,7 +382,14 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
       request.reject(error);
     }
     this.pending.clear();
+    if (this.snapshot) {
+      clearTimeout(this.snapshot.timer);
+      this.snapshot.reject(error);
+      this.snapshot = null;
+    }
     this.socket.destroy();
+    for (const listener of this.disconnectListeners) listener();
+    this.disconnectListeners.clear();
   }
 
   private disconnected(): AppError {
@@ -233,6 +400,11 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   private unconfirmed(): AppError {
     return this.error('The desktop owner did not confirm this submission. It may already be running; check the original session before retrying. The prompt was not queued or resubmitted.',
       'CODEX_DESKTOP_SUBMISSION_UNCONFIRMED');
+  }
+
+  private steerUnconfirmed(): AppError {
+    return this.error('The desktop did not confirm the correction for the expected turn. Check its transcript before retrying; it was not queued or resubmitted.',
+      'STEER_UNCONFIRMED');
   }
 
   private error(message: string, code: string): AppError {

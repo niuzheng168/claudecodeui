@@ -10,7 +10,12 @@ import type { AnyRecord } from '@/shared/index.js';
 
 async function fixture(
   body: (f: { home: string; endpoint: string; calls: AnyRecord[]; connect: () => Promise<CodexDesktopPeerClient | null> }) => Promise<void>,
-  options: { noOwner?: boolean; rejectStart?: boolean; lostAck?: boolean; wrongOwner?: boolean; invalidHandshake?: boolean; invalidFrame?: boolean } = {},
+  options: {
+    noOwner?: boolean; rejectStart?: boolean; lostAck?: boolean; wrongOwner?: boolean;
+    invalidHandshake?: boolean; invalidFrame?: boolean;
+    state?: AnyRecord; staleSnapshot?: boolean; staleRevision?: boolean; wrongTurn?: boolean; noTurnReceipt?: boolean;
+    rejectControl?: boolean; ownerDisconnected?: boolean;
+  } = {},
 ) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'codey-desktop-peer-'));
   const directory = path.join(home, 'ipc');
@@ -33,6 +38,7 @@ async function fixture(
     socket.on('error', () => {});
     socket.on('close', () => sockets.delete(socket));
     let buffered: Buffer = Buffer.alloc(0);
+    let snapshots = 0;
     socket.on('data', data => {
       buffered = Buffer.concat([buffered, data]);
       while (buffered.length >= 4) {
@@ -41,6 +47,39 @@ async function fixture(
         const message = JSON.parse(buffered.subarray(4, size + 4).toString('utf8')) as AnyRecord;
         buffered = buffered.subarray(size + 4);
         calls.push(message);
+        if (message.type === 'broadcast' && message.method === 'thread-stream-following-changed') {
+          if (!message.params.following) continue;
+          const snapshot = {
+            type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'desktop-owner',
+            params: { hostId: 'local', conversationId: 'desktop-thread', change: {
+              type: 'snapshot', revision: 1,
+              conversationState: options.state ?? {
+                id: 'desktop-thread', cwd: '/workspace',
+                turns: [{ turnId: 'own-turn', status: 'inProgress' }],
+              },
+            } },
+          };
+          // A different owner/host/thread must never satisfy this read, even
+          // if its snapshot arrived before the pinned owner's response.
+          send(socket, { ...snapshot, sourceClientId: 'another-owner' });
+          send(socket, { ...snapshot, params: { ...snapshot.params, conversationId: 'another-thread' } });
+          send(socket, { ...snapshot, params: { ...snapshot.params, hostId: 'remote-host' } });
+          if (options.staleRevision && snapshots++ > 0) {
+            send(socket, { ...snapshot, params: { ...snapshot.params, change: {
+              ...snapshot.params.change, revision: 0,
+              conversationState: { id: 'desktop-thread', turns: [{ turnId: 'old-turn', status: 'inProgress' }] },
+            } } });
+          }
+          if (!options.staleSnapshot) send(socket, snapshot);
+          if (options.ownerDisconnected) {
+            send(socket, {
+              type: 'broadcast', method: 'client-status-changed', version: 0,
+              sourceClientId: 'desktop-owner',
+              params: { clientId: 'desktop-owner', status: 'disconnected' },
+            });
+          }
+          continue;
+        }
         if (message.type !== 'request') continue;
         const response = { type: 'response', requestId: message.requestId, method: message.method, resultType: 'success' };
         if (message.method === 'initialize') {
@@ -58,6 +97,15 @@ async function fixture(
           send(socket, options.rejectStart
             ? { ...response, resultType: 'error', error: 'PRIVATE_OWNER_ERROR_DO_NOT_EXPORT' }
             : { ...response, handledByClientId: options.wrongOwner ? 'unrelated-owner' : 'desktop-owner', result: { result: { turn: { id: 'own-turn' } } } });
+        } else if (['thread-follower-steer-turn', 'thread-follower-interrupt-turn'].includes(message.method)) {
+          if (options.lostAck) { socket.destroy(); continue; }
+          const turnId = options.wrongTurn ? 'later-turn' : 'own-turn';
+          send(socket, {
+            ...response, handledByClientId: options.wrongOwner ? 'unrelated-owner' : 'desktop-owner',
+            ...(options.rejectControl ? { resultType: 'error', error: 'PRIVATE_OWNER_ERROR_DO_NOT_EXPORT' } : {}),
+            result: options.noTurnReceipt ? {} : message.method === 'thread-follower-steer-turn'
+              ? { result: { turnId } } : { ok: true, interruptedTurnId: turnId },
+          });
         }
       }
     });
@@ -194,4 +242,141 @@ test('Windows uses the desktop named pipe only for the shared default profile', 
     assert.ok(client); client.close();
     assert.equal(seen, '\\\\.\\pipe\\codex-ipc');
   });
+});
+
+test('a live desktop snapshot is read-only, owner-bound and requested afresh for each control', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    try {
+      assert.deepEqual(await client.readState(), { activeTurnId: 'own-turn', cwd: '/workspace' });
+      const input = [{ type: 'text', text: 'Correct this turn' }, { type: 'localImage', path: '/workspace/image.png' }];
+      await client.steerTurn('own-turn', input, 'correction-id');
+      const steer = f.calls.find(x => x.method === 'thread-follower-steer-turn');
+      assert.equal(steer?.version, 1);
+      assert.equal(steer?.targetClientId, 'desktop-owner');
+      assert.deepEqual(steer?.params, {
+        conversationId: 'desktop-thread', input, clientUserMessageId: 'correction-id',
+        restoreMessage: { input, context: {} },
+      });
+      assert.equal(await client.interruptTurn('own-turn'), true);
+      const stop = f.calls.find(x => x.method === 'thread-follower-interrupt-turn');
+      assert.equal(stop?.version, 4);
+      assert.deepEqual(stop?.params, { conversationId: 'desktop-thread', mode: 'user-stop', expectedTurnId: 'own-turn' });
+      assert.equal(f.calls.filter(x => x.method === 'thread-stream-following-changed' && x.params.following).length, 3);
+      assert.ok(!f.calls.some(x => ['thread/resume', 'turn/start', 'thread-follower-start-turn', 'thread/queue/add'].includes(x.method)));
+    } finally { client.close(); }
+    assert.equal(client.connected, false);
+  });
+});
+
+test('canonical desktop history selects only its current ordered tail, not an older unfinished turn', async () => {
+  const state = {
+    id: 'desktop-thread', turns: [{ turnId: 'stale-optimistic-turn', status: 'inProgress' }],
+    turnHistory: { kind: 'canonical', history: {
+      entitiesByKey: {
+        old: { turnId: 'old-unfinished', status: 'inProgress' },
+        now: { turnId: 'own-turn', status: 'inProgress' },
+      },
+      islands: [
+        { entries: [{ value: 'old' }], newerBoundary: { status: 'available' } },
+        { entries: [{ value: 'now' }], newerBoundary: { status: 'exhausted' } },
+      ],
+    } },
+  };
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    try {
+      assert.deepEqual(await client.readState(), { activeTurnId: 'own-turn' });
+      await assert.rejects(client.steerTurn('old-unfinished', [{ type: 'text', text: 'Stale' }], 'stale'),
+        { code: 'STEER_UNAVAILABLE' });
+      assert.ok(!f.calls.some(x => x.method === 'thread-follower-steer-turn'));
+    } finally { client.close(); }
+  }, { state });
+});
+
+test('a late older snapshot cannot replace a more recent owner state when steering', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    try {
+      assert.equal((await client.readState()).activeTurnId, 'own-turn');
+      await client.steerTurn('own-turn', [{ type: 'text', text: 'Current correction' }], 'current-input');
+      assert.equal(f.calls.filter(x => x.method === 'thread-follower-steer-turn').length, 1);
+    } finally { client.close(); }
+  }, { staleRevision: true });
+});
+
+test('idle, changed, malformed and unverified snapshots cannot submit a correction or interrupt', async () => {
+  for (const options of [
+    { state: { id: 'desktop-thread', turns: [] } },
+    { state: { id: 'desktop-thread', turns: [{ turnId: 'own-turn', status: 'completed' }] } },
+    { state: { id: 'desktop-thread', turns: [{ turnId: 'later-turn', status: 'inProgress' }] } },
+    { state: { id: 'wrong-thread', turns: [] } },
+    { state: { id: 'desktop-thread', turns: [null] } },
+    { staleSnapshot: true },
+  ]) {
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        await assert.rejects(client.steerTurn('own-turn', [{ type: 'text', text: 'Must not send' }], 'rejected'));
+        assert.ok(!f.calls.some(x => x.method === 'thread-follower-steer-turn'));
+        assert.ok(!f.calls.some(x => x.method === 'thread-follower-interrupt-turn'));
+      } finally { client.close(); }
+    }, options);
+  }
+});
+
+test('ambiguous desktop steering holds the input for review, never retries or queues it', async () => {
+  for (const options of [
+    { lostAck: true }, { wrongOwner: true }, { wrongTurn: true }, { noTurnReceipt: true }, { rejectControl: true },
+  ]) {
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        await assert.rejects(client.steerTurn('own-turn', [{ type: 'text', text: 'Once' }], 'one-id'),
+          (error: AnyRecord) => error.code === 'STEER_UNCONFIRMED' && !error.message.includes('PRIVATE_OWNER_ERROR'));
+        assert.equal(f.calls.filter(x => x.method === 'thread-follower-steer-turn').length, 1);
+        assert.ok(!f.calls.some(x => ['thread-follower-start-turn', 'thread/queue/add', 'turn/start'].includes(x.method)));
+      } finally { client.close(); }
+    }, options);
+  }
+});
+
+test('a pinned desktop owner disconnect immediately invalidates controls and pending reads', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    let disconnected = false;
+    client.onDisconnect(() => { disconnected = true; });
+    try {
+      await assert.rejects(client.readState(), { code: 'CODEX_DESKTOP_PEER_DISCONNECTED' });
+      assert.equal(client.connected, false);
+      assert.equal(disconnected, true);
+      await assert.rejects(client.steerTurn('own-turn', [{ type: 'text', text: 'No retry' }], 'disconnected'));
+      assert.ok(!f.calls.some(x => x.method === 'thread-follower-steer-turn'));
+    } finally { client.close(); }
+  }, { ownerDisconnected: true, staleSnapshot: true });
+});
+
+test('an unconfirmed Stop never retries against a different desktop turn or owner', async () => {
+  for (const options of [
+    { lostAck: true }, { wrongOwner: true }, { wrongTurn: true }, { noTurnReceipt: true }, { rejectControl: true },
+  ]) {
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        await assert.rejects(client.interruptTurn('own-turn'), { code: 'CODEX_DESKTOP_INTERRUPT_UNCONFIRMED' });
+        const stops = f.calls.filter(x => x.method === 'thread-follower-interrupt-turn');
+        assert.equal(stops.length, 1);
+        assert.equal(stops[0].params.expectedTurnId, 'own-turn');
+        assert.equal(stops[0].targetClientId, 'desktop-owner');
+        assert.ok(!f.calls.some(x => ['thread-follower-start-turn', 'thread/queue/add', 'turn/start'].includes(x.method)));
+      } finally { client.close(); }
+    }, options);
+  }
 });

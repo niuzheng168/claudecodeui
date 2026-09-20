@@ -47,6 +47,7 @@ for (const { historyMode, interruptBeforeContinuation } of nativeCases) {
     let responses = 0;
     let holdNextResponse = false;
     let peerServer: net.Server | undefined;
+    let ownerAvailable = true;
     const peerSockets = new Set<net.Socket>();
     const peerCalls: AnyRecord[] = [];
     let threadId: string | null = null;
@@ -167,6 +168,23 @@ enabled = false
           };
           const handle = async (request: AnyRecord) => {
             peerCalls.push(request);
+            if (request.type === 'broadcast' && request.method === 'thread-stream-following-changed') {
+              if (!request.params.following || !ownerAvailable) return;
+              const page = await owner.request('thread/turns/list', {
+                threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
+              });
+              respond({
+                type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'fixture-owner',
+                params: { hostId: 'local', conversationId: threadId, change: {
+                  type: 'snapshot', revision: 1,
+                  conversationState: {
+                    id: threadId, cwd: workspace,
+                    turns: page.data.map((turn: AnyRecord) => ({ turnId: turn.id, status: turn.status })),
+                  },
+                } },
+              });
+              return;
+            }
             if (request.type !== 'request') return;
             const response = { type: 'response', requestId: request.requestId, method: request.method, resultType: 'success' };
             if (request.method === 'initialize') {
@@ -174,7 +192,9 @@ enabled = false
               respond({ ...response, result: { clientId: 'codey-fixture-peer' } });
             } else if (request.method === 'thread-owner-discovery') {
               assert.equal(request.params.conversationId, threadId);
-              respond({ ...response, handledByClientId: 'fixture-owner', result: { supportsUntrustedAppInput: true } });
+              respond(ownerAvailable
+                ? { ...response, handledByClientId: 'fixture-owner', result: { supportsUntrustedAppInput: true } }
+                : { ...response, resultType: 'error', error: 'no-client-found' });
             } else if (request.method === 'thread-follower-start-turn') {
               assert.equal(request.targetClientId, 'fixture-owner');
               assert.equal(request.params.conversationId, threadId);
@@ -257,6 +277,7 @@ enabled = false
 
       // Release only this fixture owner, then prove Codey can resume the same
       // persisted history directly and releases its writer at completion.
+      ownerAvailable = false;
       await owner.close();
       stage = 'continue after the original owner exits';
       await run('Codey direct continuation fixture prompt');

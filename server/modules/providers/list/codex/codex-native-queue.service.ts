@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AppError, readObjectRecord } from '@/shared/index.js';
-import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient } from '@/shared/index.js';
+import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
 
 type QueueObserver = {
-  item(item: AnyRecord, turnId: string): void;
+  item(item: AnyRecord, turnId: string, position: NativeTranscriptPosition): void;
   started(turnId: string): void;
 };
 
@@ -29,6 +29,8 @@ export class CodexNativeQueueRun {
   private readonly emitted = new Map<string, string>();
   private baselineTurnId: string | null = null;
   private latestObservedTurn: AnyRecord | null = null;
+  private observing = false;
+  private readonly observedAt = new Date().toISOString();
 
   constructor(
     private readonly client: ICodexRpcClient,
@@ -61,11 +63,12 @@ export class CodexNativeQueueRun {
       // Probe support before submitting anything. An older CLI must fail closed.
       const queued = await this.queuePage(null);
       await this.assertReaderOnly();
+      const ownerState = await this.options.owner?.readState?.();
       if (this.cancelRequested) {
         this.cancelled = true;
         return { turn: null, cancelled: true };
       }
-      if (this.options.owner && !this.activeTurn(this.latestObservedTurn)) {
+      if (this.options.owner && (ownerState ? !ownerState.activeTurnId : !this.activeTurn(this.latestObservedTurn))) {
         await this.startThroughOwner(input, queued);
         await this.assertReaderOnly();
       } else {
@@ -92,6 +95,24 @@ export class CodexNativeQueueRun {
       this.enqueueFinished();
     }
 
+    return this.poll();
+  }
+
+  /** Follow a verified owner turn without resuming it or submitting any input. */
+  async observe(expectedTurnId: string): Promise<{ turn: AnyRecord | null; cancelled: boolean }> {
+    try {
+      if (!expectedTurnId) throw this.error('No desktop turn was selected.', 'CODEX_ACTIVE_TURN_UNCONFIRMED');
+      await this.assertReaderOnly();
+      this.observing = true;
+      this.turnId = expectedTurnId;
+      this.observer.started(expectedTurnId);
+    } finally {
+      this.enqueueFinished();
+    }
+    return this.poll();
+  }
+
+  private async poll(): Promise<{ turn: AnyRecord | null; cancelled: boolean }> {
     const clock = this.options.clock ?? Date.now;
     const deadline = clock() + (this.options.timeoutMs ?? 24 * 60 * 60_000);
     const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
@@ -219,15 +240,21 @@ export class CodexNativeQueueRun {
   }
 
   private emitItems(turn: AnyRecord): void {
-    for (const item of turn.items) {
+    for (const [itemIndex, item] of turn.items.entries()) {
       if (!readObjectRecord(item) || typeof item.id !== 'string' || !item.id) {
         throw this.error('Codex returned an invalid native item.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
       }
-      if (item.type === 'userMessage') continue; // Already echoed by the Codey gateway.
+      // Only the original queued input is already echoed by this gateway.
+      // Desktop sends and later steering receipts must reach both clients,
+      // even when their acceptance arrives after the native user item.
+      if (!this.observing && item.type === 'userMessage' && item.clientId === this.clientId) continue;
       const signature = createHash('sha256').update(JSON.stringify(item)).digest('hex');
       if (this.emitted.get(item.id) === signature) continue;
       this.emitted.set(item.id, signature);
-      this.observer.item(item, turn.id);
+      this.observer.item(item, turn.id, {
+        turnId: turn.id, itemIndex,
+        turnStartedAt: Number.isFinite(turn.startedAt) ? new Date(turn.startedAt * 1000).toISOString() : this.observedAt,
+      });
     }
   }
 

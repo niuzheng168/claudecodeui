@@ -30,6 +30,17 @@ export type CodexRpcServerReply =
   | { result: AnyRecord }
   | { error: { code: number; message: string } };
 
+/**
+ * Read-only state returned by the verified desktop peer for one conversation.
+ * Unlike a foreign app-server's disk snapshot, this is the owner's live state.
+ * A null activeTurnId is idle, not permission to resume or acquire its writer.
+ * Used by the Codex peer transport and runtime observation/steering adapters.
+ */
+export type CodexDesktopThreadState = {
+  activeTurnId: string | null;
+  cwd?: string;
+};
+
 // ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**
