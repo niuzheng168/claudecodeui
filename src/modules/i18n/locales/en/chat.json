@@ -39,6 +39,11 @@
     "cooldown": "Completion is cooling down. You can keep typing.",
     "unavailable": "Completion is temporarily unavailable. You can keep typing."
   },
+  "images": {
+    "loading": "Loading image…",
+    "unavailable": "Image unavailable. Check the node connection and file path.",
+    "retry": "Retry image"
+  },
   "codeBlock": {
     "copy": "Copy",
     "copied": "Copied",

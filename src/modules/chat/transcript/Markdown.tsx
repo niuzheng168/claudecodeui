@@ -1,5 +1,6 @@
 import React, { memo, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import type { UrlTransform } from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -14,6 +15,7 @@ import { SyntaxHighlighter } from '@/shared/syntaxHighlighter';
 import { usePaletteOps } from '@/modules/command-palette';
 import { buildSyntaxTheme } from '@/modules/chat/utils/syntaxHighlightTheme';
 import type { PrismStyleSheet } from '@/modules/chat/utils/syntaxHighlightTheme';
+import { MarkdownImage } from '@/modules/chat/transcript/MarkdownImage';
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -61,6 +63,12 @@ const childrenToText = (children: React.ReactNode): string => {
 const MATH_DELIMITER = /\$\$|\\\(|\\\[/;
 
 const EMPTY_PLUGINS: never[] = [];
+
+// Image sources are interpreted only by MarkdownImage's explicit scheme
+// allowlist/project reader, never spread into the DOM. Keep the default
+// sanitizer for links; retaining file:/drive paths here must not enable them.
+const transformMarkdownUrl: UrlTransform = (url, key, node) =>
+  node.tagName === 'img' && key === 'src' ? url : defaultUrlTransform(url);
 
 type CodeBlockProps = {
   node?: any;
@@ -194,6 +202,7 @@ if (!document.getElementById(SYNTAX_THEME_STYLE_ELEMENT_ID)) {
 }
 
 const markdownComponents = {
+  img: MarkdownImage,
   code: CodeBlock,
   // Fenced/indented code arrives as <pre><code>. Re-render the child CodeBlock
   // with `forceBlock` so it always gets the block treatment (react-markdown v9+
@@ -308,7 +317,12 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
   );
 
   return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={components as any}
+      urlTransform={transformMarkdownUrl}
+    >
       {content}
     </ReactMarkdown>
   );

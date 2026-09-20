@@ -15,6 +15,7 @@ import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
+import { TranscriptProjectContext } from '@/modules/chat/context/TranscriptProjectContext';
 
 type MessageComponentProps = {
   message: ChatMessage;
@@ -91,6 +92,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   }
 
   return (
+    <TranscriptProjectContext.Provider value={selectedProject?.projectId ?? null}>
     <div
       ref={messageRef}
       data-message-timestamp={message.timestamp || undefined}
@@ -371,8 +373,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
         </div>
       )}
     </div>
+    </TranscriptProjectContext.Provider>
   );
 });
 
 export default MessageComponent;
-
