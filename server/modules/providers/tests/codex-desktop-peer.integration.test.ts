@@ -274,7 +274,9 @@ enabled = false
       if (peerServer) await new Promise<void>(resolve => peerServer!.close(() => resolve()));
       model.closeAllConnections();
       await new Promise<void>(resolve => model.close(() => resolve()));
-      await rm(root, { recursive: true, force: true });
+      // Native bootstrap helpers may finish writing their plugin cache just
+      // after the app-server exits. Retry only cleanup of this fixture's home.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 }

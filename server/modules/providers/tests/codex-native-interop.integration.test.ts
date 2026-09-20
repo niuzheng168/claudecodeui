@@ -314,7 +314,9 @@ enabled = false
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
-      await rm(root, { recursive: true, force: true });
+      // Native bootstrap helpers may finish writing their plugin cache just
+      // after the app-server exits. Retry only cleanup of this fixture's home.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 }
