@@ -39,6 +39,11 @@
     "cooldown": "補全請求正在冷卻，可繼續輸入。",
     "unavailable": "補全暫時不可用，可繼續輸入。"
   },
+  "images": {
+    "loading": "正在載入圖片…",
+    "unavailable": "無法載入圖片，請檢查節點連線和檔案路徑。",
+    "retry": "重試載入圖片"
+  },
   "codeBlock": {
     "copy": "複製",
     "copied": "已複製",

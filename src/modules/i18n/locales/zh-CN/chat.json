@@ -39,6 +39,11 @@
     "cooldown": "补全请求正在冷却，可继续输入。",
     "unavailable": "补全暂时不可用，可继续输入。"
   },
+  "images": {
+    "loading": "正在加载图片…",
+    "unavailable": "无法加载图片，请检查节点连接和文件路径。",
+    "retry": "重试加载图片"
+  },
   "codeBlock": {
     "copy": "复制",
     "copied": "已复制",
