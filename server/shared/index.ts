@@ -11,7 +11,7 @@ export { generateMessageId } from './utils.js';
 // Codex provider transports/runtime share the RPC, message and attachment contracts.
 export type { ICodexRpcClient, ICodexDesktopThreadOwner, IProviderRuntime } from './interfaces.js';
 export type {
-  AnyRecord, CodexRpcRequestId, CodexRpcServerReply, ProviderRuntimeContext,
+  AnyRecord, CodexRpcRequestId, CodexRpcServerReply, CodexDesktopThreadState, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
   LLMProvider, NativeTranscriptPosition, ProviderAbortOptions, ProviderRuntimeObservation,
   CodexGoal, CodexGoalCommand, CodexGoalCommandResult,

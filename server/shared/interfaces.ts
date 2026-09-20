@@ -2,6 +2,7 @@ import type {
   AnyRecord,
   CodexRpcRequestId,
   CodexRpcServerReply,
+  CodexDesktopThreadState,
   FetchHistoryOptions,
   FetchHistoryResult,
   LLMProvider,
@@ -50,6 +51,12 @@ export interface ICodexRpcClient {
  */
 export interface ICodexDesktopThreadOwner {
   startTurn(input: AnyRecord[], clientUserMessageId: string): Promise<void>;
+  /** Optional controls distinguish a live peer from older start-only adapters. */
+  readonly connected?: boolean;
+  readState?(): Promise<CodexDesktopThreadState>;
+  steerTurn?(expectedTurnId: string, input: AnyRecord[], clientUserMessageId: string): Promise<void>;
+  interruptTurn?(expectedTurnId: string): Promise<boolean>;
+  onDisconnect?(listener: () => void): () => void;
   close(): void;
 }
 

@@ -73,9 +73,21 @@ Ordinary messages sent while the shared daemon is running a desktop turn use
 `turn/steer`, not another `turn/start`. The adapter verifies the thread and
 newest active turn, pins `expectedTurnId`, and follows that turn's output with
 the existing model, permissions and mode. Further same-turn corrections are
-available, but Stop and approvals remain with the desktop owner. Lost/stale
-acknowledgements never cause a retry, fork, or exec fallback. Windows
-foreign-writer sessions retain their separate native queue path.
+available; an explicit run-bound Stop can interrupt that verified turn, but
+automatic cleanup and approvals remain with the desktop owner. Lost/stale
+acknowledgements never cause a retry, fork, or exec fallback.
+
+Private stdio backends (including macOS) discover an existing desktop IPC owner
+before resuming ordinary shared threads, so Codey does not take the writer from
+an idle desktop window. Owner-pinned live snapshots enable prompt-free
+observation, queued-card steering and explicit Stop. The helper reads complete
+native turn pages without loading a thread; desktop and Codey inputs retain
+their receipt identities and transcript positions in both views. The desktop
+steering protocol selects its active turn internally: Codey checks fresh state
+before dispatch and verifies the returned turn ID, treating rollover/ambiguous
+receipts as unconfirmed without replay. Its Stop protocol has an expected-turn
+guard. Older/no-peer foreign-writer sessions keep the native queue fallback
+without advertising unsupported controls.
 
 Each browser send and accepted correction now carries its own input identity
 through native `clientUserMessageId`, history `clientId` (legacy `client_id`),
