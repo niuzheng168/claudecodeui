@@ -40,6 +40,20 @@ export async function readCodexHistoryMode(threadId: string): Promise<string | n
 }
 
 /**
+ * Used by Codex title indexing so a stale JSONL name cannot undo a newer native
+ * rename. Metadata is read-only and optional: old schemas, absent databases or
+ * transient read failures fall back to the append-only session name index.
+ */
+export async function readCodexThreadName(threadId: string): Promise<string | null> {
+  try {
+    const row = await readThreadMetadata(threadId);
+    return typeof row?.name === 'string' && row.name.trim() ? row.name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Used by the desktop queue runtime on every platform before enqueueing. Native queued
  * inputs inherit the owner's settings: reject incompatible explicit selections
  * instead of silently changing models, widening permissions, or modifying the

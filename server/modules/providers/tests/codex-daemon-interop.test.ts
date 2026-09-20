@@ -199,14 +199,50 @@ test('native discovery indexes a desktop session without JSONL and coalesces con
   });
 });
 
-test('native discovery preserves app/provider mapping and existing app title', { concurrency: false }, async () => {
+test('native discovery preserves app/provider mapping while replacing the automatic app title', { concurrency: false }, async () => {
   await withFixture(async () => {
     sessionsDb.createAppSession(APP_ID, 'codex', '/workspace/demo', 'My Codey title');
     sessionsDb.assignProviderSessionId(APP_ID, THREAD_ID);
     await new CodexSessionSynchronizer().synchronize(new Date());
-    assert.equal(sessionsDb.getSessionById(APP_ID)?.custom_name, 'My Codey title');
+    assert.equal(sessionsDb.getSessionById(APP_ID)?.custom_name, 'Desktop-only session');
+    assert.equal(sessionsDb.getSessionById(APP_ID)?.custom_name_source, 'auto');
     assert.equal(sessionsDb.getSessionById(THREAD_ID), null);
     assert.deepEqual((await synchronizeCodexDaemonSessions()).changed, []);
+  });
+});
+
+test('native polling follows subsequent desktop renames even when recency is unchanged', { concurrency: false }, async () => {
+  let name = 'Original desktop name';
+  await withFixture(async ({ requests }) => {
+    await synchronizeCodexDaemonSessions();
+    name = 'Updated desktop name';
+    assert.deepEqual((await synchronizeCodexDaemonSessions()).changed, [THREAD_ID]);
+    assert.equal(sessionsDb.getSessionById(THREAD_ID)?.custom_name, name);
+    assert.deepEqual((await synchronizeCodexDaemonSessions()).changed, []);
+    assert.ok(!requests.some((request) => request.method === 'thread/resume' || request.method === 'thread/name/set'));
+  }, (request, socket) => {
+    if (request.method !== 'thread/list') return false;
+    reply(socket, request, { data: [{
+      id: THREAD_ID, name, cwd: '/workspace/demo', createdAt: CREATED_AT, updatedAt: CREATED_AT,
+    }], nextCursor: null });
+    return true;
+  });
+});
+
+test('native discovery falls back to the last index name when the native name is absent', { concurrency: false }, async () => {
+  await withFixture(async ({ home }) => {
+    await writeFile(path.join(home, 'session_index.jsonl'), [
+      JSON.stringify({ id: THREAD_ID, thread_name: 'First name' }),
+      JSON.stringify({ id: THREAD_ID, thread_name: 'Latest index name' }),
+    ].join('\n'));
+    await synchronizeCodexDaemonSessions();
+    assert.equal(sessionsDb.getSessionById(THREAD_ID)?.custom_name, 'Latest index name');
+  }, (request, socket) => {
+    if (request.method !== 'thread/list') return false;
+    reply(socket, request, { data: [{
+      id: THREAD_ID, name: null, cwd: '/workspace/demo', createdAt: CREATED_AT, updatedAt: CREATED_AT,
+    }], nextCursor: null });
+    return true;
   });
 });
 

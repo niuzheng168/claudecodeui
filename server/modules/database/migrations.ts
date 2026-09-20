@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import type { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
@@ -457,6 +457,30 @@ const addSessionEffortColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'effort', 'TEXT');
 };
 
+/**
+ * Separates explicit local renames from automatic session-title caches.
+ *
+ * Old Codex rows have no reliable provenance. Preserve their original labels
+ * for recovery, then let them follow native names rather than guessing that
+ * every cached label was a manual override. The backup and schema change are
+ * atomic and run only once; subsequent starts never overwrite either field.
+ */
+const addSessionNameSourceColumns = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  db.transaction(() => {
+    addColumnToTableIfNotExists(db, 'sessions', columnNames, 'legacy_custom_name', 'TEXT');
+    if (columnNames.includes('custom_name_source')) return;
+    addColumnToTableIfNotExists(
+      db, 'sessions', columnNames, 'custom_name_source',
+      "TEXT NOT NULL DEFAULT 'auto' CHECK (custom_name_source IN ('auto', 'user'))",
+    );
+    db.exec(`
+      UPDATE sessions SET legacy_custom_name = custom_name
+      WHERE provider = 'codex' AND legacy_custom_name IS NULL
+    `);
+  })();
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -476,6 +500,7 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
   `);
 };
 
+/** Used by database initialization to upgrade existing installations in place. */
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -519,6 +544,7 @@ export const runMigrations = (db: Database) => {
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addForkedFromSessionIdColumn(db);
+    addSessionNameSourceColumns(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

@@ -12,8 +12,8 @@ import type {
   FetchHistoryResult,
   LLMProvider,
   NormalizedMessage,
-} from '@/shared/types.js';
-import { AppError, sliceTailPage } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError, sliceTailPage } from '@/shared/index.js';
 
 type CreateAppSessionResult = {
   sessionId: string;
@@ -292,6 +292,7 @@ export const sessionsService = {
       provider,
       projectPath: source.project_path ?? '',
       customName: sessionName,
+      customNameSource: options.title?.trim() ? 'user' : 'auto',
       providerSessionId: forked.providerSessionId,
       jsonlPath: forked.jsonlPath,
       forkedFromSessionId: sessionId,

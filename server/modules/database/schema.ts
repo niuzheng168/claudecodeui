@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
 );
 `;
 
+/** Used by database initialization and migrations to store app session metadata. */
 export const SESSIONS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,
@@ -131,6 +132,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
     custom_name TEXT,
+    -- Only an explicit local rename overrides the provider's current name.
+    custom_name_source TEXT NOT NULL DEFAULT 'auto' CHECK (custom_name_source IN ('auto', 'user')),
+    -- Upgrade recovery: old releases did not distinguish cached and user names.
+    legacy_custom_name TEXT,
     project_path TEXT,
     jsonl_path TEXT,
     -- Model and reasoning effort this session runs with. Written when the user

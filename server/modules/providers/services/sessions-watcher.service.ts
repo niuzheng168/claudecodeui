@@ -5,10 +5,10 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
-import { synchronizeCodexDaemonSessions } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
+import { synchronizeCodexDaemonSessions, synchronizeCodexSessionIndex } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
-import type { LLMProvider } from '@/shared/types.js';
-import { resolveCodexHomeDirectory } from '@/shared/utils.js';
+import { resolveCodexHomeDirectory } from '@/shared/index.js';
+import type { LLMProvider } from '@/shared/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -174,6 +174,13 @@ async function onUpdate(
   }
 
   try {
+    if (provider === 'codex'
+      && path.resolve(filePath) === path.join(resolveCodexHomeDirectory(), 'session_index.jsonl')) {
+      for (const sessionId of await synchronizeCodexSessionIndex()) {
+        queuePendingWatcherUpdate(eventType, provider, sessionId);
+      }
+      return;
+    }
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
     if (!result.indexed) {
       return;
@@ -195,7 +202,7 @@ async function onUpdate(
 }
 
 /**
- * Starts provider filesystem watchers and performs initial DB synchronization.
+ * Used by the server bootstrap to start provider watchers and initial DB synchronization.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
   console.log('Setting up session watchers');
@@ -222,7 +229,10 @@ export async function initializeSessionsWatcher(): Promise<void> {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
-      const watcher = chokidar.watch(rootPath, {
+      const watchPaths = provider === 'codex'
+        ? [rootPath, path.join(resolveCodexHomeDirectory(), 'session_index.jsonl')]
+        : rootPath;
+      const watcher = chokidar.watch(watchPaths, {
         ignored: WATCHER_IGNORED_PATTERNS,
         persistent: true,
         ignoreInitial: true,
@@ -257,7 +267,7 @@ export async function initializeSessionsWatcher(): Promise<void> {
 }
 
 /**
- * Stops all active provider session watchers.
+ * Used by server shutdown and provider tests to stop all session watchers.
  */
 export async function closeSessionsWatcher(): Promise<void> {
   clearPendingWatcherFlushTimer();

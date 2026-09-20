@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import { normalizeProjectPath } from '@/shared/index.js';
 
 type SessionRow = {
   session_id: string;
@@ -9,6 +9,10 @@ type SessionRow = {
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
+  /** Only explicit Codey renames are user-owned; generated/imported names are automatic. */
+  custom_name_source: 'auto' | 'user';
+  /** Original pre-provenance Codex title, retained for upgrade recovery only. */
+  legacy_custom_name: string | null;
   /** Model this session runs with; NULL until the app records one for it. */
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
@@ -26,7 +30,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, custom_name_source, legacy_custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -69,6 +73,7 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
   return normalizeProjectPath(projectPath);
 }
 
+/** Used by Providers, Projects and WebSocket to persist session metadata and native-id mappings. */
 export const sessionsDb = {
   /**
    * Upserts one session row discovered on disk by a provider synchronizer.
@@ -76,9 +81,10 @@ export const sessionsDb = {
    * The given id is the provider-native session id. Rows are keyed by
    * `provider_session_id` so a session that was first created by the app
    * (with an app-allocated `session_id`) is updated in place once its
-   * transcript shows up on disk, instead of producing a duplicate row. An
-   * app-created row keeps its existing name; synchronizer names only update
-   * rows that were themselves created by indexing provider storage.
+   * transcript shows up on disk, instead of producing a duplicate row.
+   * Explicit local renames always survive indexing, including a rename racing
+   * a synchronizer's async reads. Codex automatic titles follow native names
+   * even on app-created rows; other providers retain their app-title policy.
    */
   createSession(
     providerSessionId: string,
@@ -115,7 +121,8 @@ export const sessionsDb = {
            jsonl_path = ?,
            isArchived = 0,
            custom_name = CASE
-             WHEN session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
+             WHEN custom_name_source = 'user' THEN custom_name
+             WHEN provider <> 'codex' AND session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
              ELSE COALESCE(?, custom_name)
            END
          WHERE session_id = ?`
@@ -145,7 +152,8 @@ export const sessionsDb = {
          jsonl_path = excluded.jsonl_path,
          isArchived = 0,
          custom_name = CASE
-           WHEN sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
+           WHEN sessions.custom_name_source = 'user' THEN sessions.custom_name
+           WHEN sessions.provider <> 'codex' AND sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
              THEN sessions.custom_name
            ELSE COALESCE(excluded.custom_name, sessions.custom_name)
          END`
@@ -209,6 +217,7 @@ export const sessionsDb = {
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;
+    customNameSource?: 'auto' | 'user';
   }): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(input.provider, input.projectPath);
@@ -222,8 +231,8 @@ export const sessionsDb = {
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, input.sessionId);
       db.prepare(
-        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, model, effort, forked_from_session_id, custom_name_source, isArchived, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       ).run(
         input.sessionId,
         input.provider,
@@ -234,6 +243,7 @@ export const sessionsDb = {
         input.model,
         input.effort,
         input.forkedFromSessionId,
+        input.customNameSource ?? 'auto',
       );
     })();
 
@@ -268,10 +278,23 @@ export const sessionsDb = {
           `UPDATE sessions SET
              provider_session_id = ?,
              jsonl_path = COALESCE(jsonl_path, ?),
-             custom_name = COALESCE(custom_name, ?),
+             custom_name = CASE
+               WHEN custom_name_source = 'user' THEN custom_name
+               WHEN ? = 'user' THEN ?
+               ELSE COALESCE(custom_name, ?)
+             END,
+             custom_name_source = CASE
+               WHEN custom_name_source = 'user' OR ? = 'user' THEN 'user'
+               ELSE 'auto'
+             END,
+             legacy_custom_name = COALESCE(legacy_custom_name, ?),
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
-        ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
+        ).run(
+          providerSessionId, duplicate.jsonl_path,
+          duplicate.custom_name_source, duplicate.custom_name, duplicate.custom_name,
+          duplicate.custom_name_source, duplicate.legacy_custom_name, sessionId,
+        );
         return;
       }
 
@@ -436,13 +459,29 @@ export const sessionsDb = {
     ).run(effort, sessionId);
   },
 
+  /** Records an explicit local rename, not a synchronizer's cached title. */
   updateSessionCustomName(sessionId: string, customName: string): void {
     const db = getConnection();
     db.prepare(
       `UPDATE sessions
-       SET custom_name = ?
+       SET custom_name = ?, custom_name_source = 'user'
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /**
+   * Refreshes a provider-owned title without changing recency or local lifecycle.
+   * Used by Codex's append-only name index when no transcript has changed.
+   * The SQL guard preserves a concurrent manual rename and other providers'
+   * existing app-created-title policy.
+   */
+  updateSessionSyncedName(sessionId: string, name: string): boolean {
+    return getConnection().prepare(`
+      UPDATE sessions SET custom_name = ?
+      WHERE session_id = ? AND custom_name_source = 'auto' AND isArchived = 0
+        AND (provider = 'codex' OR session_id = provider_session_id)
+        AND custom_name IS NOT ?
+    `).run(name, sessionId, name).changes > 0;
   },
 
   getSessionById(sessionId: string): SessionRow | null {

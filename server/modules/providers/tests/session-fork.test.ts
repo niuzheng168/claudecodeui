@@ -7,7 +7,7 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
-import type { IProviderFork } from '@/shared/interfaces.js';
+import type { IProviderFork } from '@/shared/index.js';
 
 const SOURCE_ID = 'fork-source';
 
@@ -93,6 +93,7 @@ test('a fork becomes an independent session that points back at its source', asy
     assert.equal(forked?.jsonl_path, path.join(directory, 'native-fork.jsonl'));
     assert.equal(forked?.forked_from_session_id, SOURCE_ID);
     assert.equal(forked?.custom_name, 'Original session (fork)');
+    assert.equal(forked?.custom_name_source, 'auto');
 
     // The source is untouched: this is "try two approaches", not a move.
     const source = sessionsDb.getSessionById(SOURCE_ID);
@@ -101,6 +102,14 @@ test('a fork becomes an independent session that points back at its source', asy
   });
 });
 
+test('an explicitly supplied fork title is recorded as a local override', async () => {
+  await withForkableClaude(async ({ directory }) => {
+    seedSource(directory);
+    const result = await sessionsService.forkSessionById(SOURCE_ID, { title: 'My branch title' });
+    assert.equal(sessionsDb.getSessionById(result.sessionId)?.custom_name, 'My branch title');
+    assert.equal(sessionsDb.getSessionById(result.sessionId)?.custom_name_source, 'user');
+  });
+});
 test('a fork inherits the model and effort of the conversation it branched from', async () => {
   await withForkableClaude(async ({ directory }) => {
     seedSource(directory);
