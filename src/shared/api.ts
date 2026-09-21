@@ -255,9 +255,9 @@ export const api = {
   deleteFile: (projectId: string, { path, type }: { path: string; type: string }) =>
     del(`/api/file-tree/projects/${projectId}/files`, { path, type }),
 
-  // Uploads with a progress bar go through XMLHttpRequest, which needs the URL.
+  // Progress uploads use XHR, bypassing authenticatedFetch's runtime node prefix.
   uploadFilesUrl: (projectId: string) =>
-    `/api/file-tree/projects/${encodeURIComponent(projectId)}/files/upload`,
+    withDeploymentBasePath(`/api/file-tree/projects/${encodeURIComponent(projectId)}/files/upload`),
 
   // Browse filesystem for project suggestions
   browseFilesystem: (dirPath: string | null = null) =>
