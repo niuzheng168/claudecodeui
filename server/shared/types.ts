@@ -512,6 +512,22 @@ export type ProviderRuntimeWriter = {
   isSSEStreamWriter?: boolean;
 };
 
+// ---------------------------
+//----------------- NEW CODEX SESSION NAMING ------------
+/**
+ * Provider-runtime notification that one newly allocated Codey conversation
+ * has acquired its first native thread ID. Background naming consumes only
+ * the original user text; attachments, tool output and conversation history
+ * must not be read or injected into the title request. Not used for resumes,
+ * imported desktop threads, forks or passive observations.
+ */
+export type NewCodexSessionTitleRequest = {
+  sessionId: string;
+  providerSessionId: string;
+  initialMessage: string;
+};
+
+// ---------------------------
 export type ProviderPermissionDecision = {
   allow: boolean;
   updatedInput?: unknown;
@@ -563,6 +579,7 @@ export type ProviderRuntimeObservation = {
   dispose(): void | Promise<void>;
 };
 
+/** Providers and WebSocket use this dispatcher signature for one user-requested runtime turn. */
 export type ProviderRunFunction = (
   command: string,
   options: AnyRecord,
@@ -1218,7 +1235,19 @@ export type FileTreeProjectGateway = {
 };
 
 /**
- * Workspace validation boundary used by filesystem browsing and folder creation.
+ * Git-backed scope lookup used by File Tree's single-file reads and edits.
+ *
+ * Returns only a verified related worktree root containing the absolute file
+ * path, preserving a subdirectory project's scope in the other checkout.
+ * Unknown, stale, or unrelated checkouts return null. This does not register a
+ * project or grant access outside the separately enforced workspace policy.
+ */
+export type FileTreeWorktreeGateway = {
+  resolveRoot(projectPath: string, filePath: string): Promise<string | null>;
+};
+
+/**
+ * Workspace validation boundary used by browsing, creation, and related worktrees.
  *
  * The injected validator enforces the configured workspace root and resolves
  * symlinks before the File Tree service exposes or mutates paths.
@@ -1255,13 +1284,14 @@ export type FileTreeLogger = {
 /**
  * Required production dependencies for the File Tree application service.
  *
- * Filesystem, project lookup, workspace policy, MIME detection, concurrency,
- * and logging are all explicit so service construction has no hidden process,
- * repository, or machine-wide defaults.
+ * Filesystem, project lookup, related-worktree lookup, workspace policy, MIME
+ * detection, concurrency, and logging are all explicit so service construction
+ * has no hidden process, repository, or machine-wide defaults.
  */
 export type FileTreeServiceDependencies = {
   fileSystem: FileTreeFileSystem;
   projects: FileTreeProjectGateway;
+  worktrees: FileTreeWorktreeGateway;
   workspace: FileTreeWorkspaceGateway;
   resolveMimeType(filePath: string): string;
   fileSystemConcurrency: number;

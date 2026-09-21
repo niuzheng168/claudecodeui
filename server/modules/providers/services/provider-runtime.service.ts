@@ -1,18 +1,20 @@
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
-import { AppError } from '@/shared/utils.js';
-import type { IProvider } from '@/shared/interfaces.js';
+import { codexSessionTitleService } from '@/modules/providers/list/codex/codex-session-title.service.js';
+import { AppError, readObjectRecord } from '@/shared/index.js';
 import type {
   AnyRecord,
+  IProvider,
   LLMProvider,
+  NewCodexSessionTitleRequest,
   ProviderPermissionDecision,
   ProviderAbortOptions,
   ProviderRuntimeObservation,
   ProviderRunFunction,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
-} from '@/shared/types.js';
+} from '@/shared/index.js';
 
 type ProviderRuntimeServiceDependencies = {
   listProviders(): IProvider[];
@@ -24,6 +26,7 @@ type ProviderRuntimeServiceDependencies = {
     requestedModel?: string | null,
   ): Promise<string | undefined>;
   getProviderModels: typeof providerModelsService.getProviderModels;
+  scheduleTitle(input: NewCodexSessionTitleRequest): Promise<void>;
 };
 
 const defaultDependencies: ProviderRuntimeServiceDependencies = {
@@ -33,6 +36,7 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
   resolveResumeModel: (provider, sessionId, requestedModel) =>
     providerModelsService.resolveResumeModel(provider, sessionId, requestedModel),
   getProviderModels: (provider) => providerModelsService.getProviderModels(provider),
+  scheduleTitle: input => codexSessionTitleService.schedule(input),
 };
 
 /**
@@ -72,7 +76,38 @@ export function createProviderRuntimeService(
     writer: ProviderRuntimeWriter,
   ): Promise<unknown> => {
     const provider = dependencies.resolveProvider(providerName);
-    return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
+    const sessionId = typeof options.sessionId === 'string' ? options.sessionId : null;
+    if (providerName !== 'codex' || !sessionId || dependencies.resolveProviderSessionId(sessionId)) {
+      return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
+    }
+
+    let scheduled = false;
+    const schedule = (providerSessionId: unknown): void => {
+      if (scheduled || typeof providerSessionId !== 'string' || !providerSessionId) return;
+      scheduled = true;
+      try {
+        // The original writer persists the native ID first. Naming runs on
+        // its own metadata connection and never delays chat/queue completion.
+        void dependencies.scheduleTitle({ sessionId, providerSessionId, initialMessage: command }).catch(() => {});
+      } catch { /* Metadata generation cannot fail the provider's user turn. */ }
+    };
+    const namingWriter: ProviderRuntimeWriter = {
+      userId: writer.userId,
+      isWebSocketWriter: writer.isWebSocketWriter,
+      isSSEStreamWriter: writer.isSSEStreamWriter,
+      setSessionId: id => {
+        writer.setSessionId?.(id);
+        schedule(id);
+      },
+      send: value => {
+        writer.send(value);
+        if (scheduled) return;
+        let message: AnyRecord | null = null;
+        try { message = readObjectRecord(typeof value === 'string' ? JSON.parse(value) : value); } catch { /* Preserve non-JSON output. */ }
+        if (message?.kind === 'session_created') schedule(message.newSessionId || message.sessionId);
+      },
+    };
+    return provider.runtime.run(command, options, namingWriter, createRuntimeContext(provider));
   };
 
   return {
@@ -132,4 +167,5 @@ export function createProviderRuntimeService(
   };
 }
 
+/** WebSocket and provider routes use the registry-backed runtime dispatcher. */
 export const providerRuntimeService = createProviderRuntimeService();

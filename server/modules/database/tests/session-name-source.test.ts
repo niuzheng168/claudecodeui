@@ -68,6 +68,18 @@ test('metadata-only title refresh leaves recency and archives unchanged', async 
   });
 });
 
+test('a generated title cannot update a session that moved to another native thread', async () => {
+  await withDatabase(() => {
+    sessionsDb.createAppSession('app', 'codex', '/workspace/demo', 'Initial title');
+    sessionsDb.assignProviderSessionId('app', 'new-native');
+    assert.equal(sessionsDb.updateSessionSyncedName('app', 'Old generated title', 'old-native'), false);
+    assert.equal(sessionsDb.getSessionById('app')?.custom_name, 'Initial title');
+    assert.equal(sessionsDb.updateSessionSyncedName('app', 'Current generated title', 'new-native'), true);
+    sessionsDb.updateSessionCustomName('app', 'Manual title');
+    assert.equal(sessionsDb.updateSessionSyncedName('app', 'Late generated title', 'new-native'), false);
+    assert.equal(sessionsDb.getSessionById('app')?.custom_name, 'Manual title');
+  });
+});
 test('old Codex titles are backed up once before automatic names are refreshed', async () => {
   await withDatabase(() => {
     sessionsDb.createSession('legacy-codex', 'codex', '/workspace/demo', 'Legacy cached title');

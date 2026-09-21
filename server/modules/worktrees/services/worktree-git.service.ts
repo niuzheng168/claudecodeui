@@ -1,27 +1,63 @@
+import path from 'node:path';
+
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution (same choice as routes/git.js).
 import spawn from 'cross-spawn';
 
-import type { GitCommandResult, GitCommandRunner, WorktreePorcelainEntry } from '@/shared/types.js';
-import { AppError, normalizeProjectPath } from '@/shared/utils.js';
+import type { GitCommandResult, GitCommandRunner, WorktreePorcelainEntry } from '@/shared/index.js';
+import { AppError, normalizeProjectPath } from '@/shared/index.js';
 
 /**
- * Default `GitCommandRunner`: spawns `git <args>` in `cwd` and captures output.
+ * Worktrees composition's `GitCommandRunner`: spawns git in cwd and captures output.
  * Rejects with an `AppError` carrying git's stderr when the command fails, so
  * callers (and ultimately the API client) see the real git diagnostic.
+ * Read-only metadata callers opt into bounded output/time and an environment
+ * that cannot redirect repository discovery through inherited GIT_* values.
+ * The caller remains responsible for supplying only read-only commands.
  */
-export function runGitCommand(args: string[], cwd: string): Promise<GitCommandResult> {
+export function runGitCommand(
+  args: string[],
+  cwd: string,
+  options: { readOnly?: boolean } = {},
+): Promise<GitCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, shell: false });
+    const env = options.readOnly
+      ? {
+          ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_'))),
+          GIT_OPTIONAL_LOCKS: '0',
+        }
+      : process.env;
+    const child = spawn('git', args, {
+      cwd,
+      shell: false,
+      env,
+      ...(options.readOnly ? { timeout: 5_000, killSignal: 'SIGKILL' as const } : {}),
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let outputBytes = 0;
+    let outputExceeded = false;
 
-    let stdout = '';
-    let stderr = '';
+    const collect = (chunks: Buffer[], data: Buffer) => {
+      if (outputExceeded) return;
+      outputBytes += data.length;
+      if (options.readOnly && outputBytes > 1024 * 1024) {
+        outputExceeded = true;
+        child.kill('SIGKILL');
+        reject(new AppError('Git metadata output exceeds the size limit', {
+          code: 'GIT_OUTPUT_TOO_LARGE',
+          statusCode: 500,
+        }));
+        return;
+      }
+      chunks.push(data);
+    };
 
     child.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
+      collect(stdoutChunks, data);
     });
 
     child.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      collect(stderrChunks, data);
     });
 
     child.on('error', (error) => {
@@ -34,6 +70,10 @@ export function runGitCommand(args: string[], cwd: string): Promise<GitCommandRe
     });
 
     child.on('close', (code) => {
+      if (outputExceeded) return;
+      // Decode once so Unicode paths split across stream chunks remain intact.
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -80,12 +120,15 @@ export function validateWorktreeBranchName(branch: string): string {
 }
 
 /**
- * Parses `git worktree list --porcelain` output. Entries are separated by blank
- * lines; the first entry is always the main worktree. Paths come back with
- * forward slashes even on Windows, so they are normalized here for stable
- * comparisons against DB-stored project paths.
+ * Used by worktree listing and file-scope resolution to parse Git's porcelain.
+ * The default retains the listing API's legacy line-based normalization.
+ * nullTerminated parses --porcelain -z without trimming or unquoting filesystem
+ * paths, so whitespace, newlines, and Unicode cannot change access decisions.
  */
-export function parseWorktreeListPorcelain(output: string): WorktreePorcelainEntry[] {
+export function parseWorktreeListPorcelain(
+  output: string,
+  nullTerminated = false,
+): WorktreePorcelainEntry[] {
   const entries: WorktreePorcelainEntry[] = [];
   let current: WorktreePorcelainEntry | null = null;
 
@@ -96,8 +139,8 @@ export function parseWorktreeListPorcelain(output: string): WorktreePorcelainEnt
     }
   };
 
-  for (const rawLine of output.split('\n')) {
-    const line = rawLine.trimEnd();
+  for (const rawLine of output.split(nullTerminated ? '\0' : '\n')) {
+    const line = nullTerminated ? rawLine : rawLine.trimEnd();
     if (!line) {
       flush();
       continue;
@@ -106,7 +149,9 @@ export function parseWorktreeListPorcelain(output: string): WorktreePorcelainEnt
     if (line.startsWith('worktree ')) {
       flush();
       current = {
-        path: normalizeProjectPath(line.slice('worktree '.length)),
+        path: nullTerminated
+          ? path.normalize(line.slice('worktree '.length))
+          : normalizeProjectPath(line.slice('worktree '.length)),
         headSha: null,
         branch: null,
         isDetached: false,

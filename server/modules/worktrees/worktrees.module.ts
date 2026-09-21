@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 
 import { projectsDb } from '@/modules/database/index.js';
 import {
@@ -10,11 +10,12 @@ import type {
   WorktreeFileSystem,
   WorktreeProjectGateway,
   WorktreeServices,
-} from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError } from '@/shared/index.js';
 import { createWorktree } from '@/modules/worktrees/services/worktree-create.service.js';
 import { createAndOpenWorktree } from '@/modules/worktrees/services/worktree-create-and-open.service.js';
 import { runGitCommand } from '@/modules/worktrees/services/worktree-git.service.js';
+import { findRelatedWorktreeFileRoot } from '@/modules/worktrees/services/worktree-file-scope.service.js';
 import { listWorktrees } from '@/modules/worktrees/services/worktree-list.service.js';
 import { mergeWorktree } from '@/modules/worktrees/services/worktree-merge.service.js';
 import { openWorktreeAsProject } from '@/modules/worktrees/services/worktree-open.service.js';
@@ -103,6 +104,20 @@ const worktreeServices: WorktreeServices = {
   }),
   remove,
 };
+
+/**
+ * File Tree uses this Git-verified boundary for linked files in other worktrees.
+ * Metadata queries are bounded and read-only; no project rows are created.
+ */
+export function resolveRelatedWorktreeRoot(
+  projectPath: string,
+  filePath: string,
+): Promise<string | null> {
+  return findRelatedWorktreeFileRoot(projectPath, filePath, {
+    runGit: (args, cwd) => runGitCommand(args, cwd, { readOnly: true }),
+    realpath,
+  });
+}
 
 /**
  * Worktrees router mounted by the server entrypoint at `/api/worktrees`.

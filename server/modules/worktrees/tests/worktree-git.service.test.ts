@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -6,7 +7,7 @@ import {
   parseWorktreeListPorcelain,
   validateWorktreeBranchName,
 } from '@/modules/worktrees/services/worktree-git.service.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError } from '@/shared/index.js';
 
 const SAMPLE_PORCELAIN = [
   'worktree /home/user/repo',
@@ -48,6 +49,31 @@ test('parseWorktreeListPorcelain handles output without a trailing blank line', 
 
   assert.equal(entries.length, 1);
   assert.equal(entries[0].branch, 'main');
+});
+
+test('NUL porcelain preserves raw paths and separates locked/prunable records', () => {
+  const unusualPath = '/home/user/worktrees/设计\ntrailing ';
+  const entries = parseWorktreeListPorcelain([
+    'worktree /home/user/repo',
+    'HEAD 1111111111111111111111111111111111111111',
+    'branch refs/heads/main',
+    '',
+    `worktree ${unusualPath}`,
+    'HEAD 2222222222222222222222222222222222222222',
+    'detached',
+    'locked reason\non another line',
+    '',
+    'worktree /home/user/removed',
+    'HEAD 3333333333333333333333333333333333333333',
+    'prunable gitdir file points to non-existent location',
+    '',
+    '',
+  ].join('\0'), true);
+  assert.equal(entries.length, 3);
+  assert.equal(entries[1].path, path.normalize(unusualPath));
+  assert.equal(entries[1].isLocked, true);
+  assert.equal(entries[1].isPrunable, false);
+  assert.equal(entries[2].isPrunable, true);
 });
 
 test('findWorktreeEntryByPath matches normalized paths', () => {

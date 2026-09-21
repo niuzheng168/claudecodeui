@@ -9,10 +9,11 @@ export { readObjectRecord } from './utils.js';
 // WebSocket acceptance assigns one persisted input identity per native submission.
 export { generateMessageId } from './utils.js';
 // Codex provider transports/runtime share the RPC, message and attachment contracts.
-export type { ICodexRpcClient, ICodexDesktopThreadOwner, IProviderRuntime } from './interfaces.js';
+export type { ICodexRpcClient, ICodexDesktopThreadOwner, IProvider, IProviderRuntime } from './interfaces.js';
 export type {
   AnyRecord, CodexRpcRequestId, CodexRpcServerReply, CodexDesktopThreadState, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
+  NewCodexSessionTitleRequest, ProviderRunFunction,
   LLMProvider, NativeTranscriptPosition, ProviderAbortOptions, ProviderRuntimeObservation,
   CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
 } from './types.js';
@@ -36,3 +37,14 @@ export {
 } from './utils.js';
 export { parseFilesInputTag, toImageAttachments } from './image-attachments.js';
 export { prepareTranscriptMessages } from './message-unification.js';
+// File Tree and Worktrees share filesystem scope checks and injected capabilities.
+export {
+  FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, isPathInsideDirectory,
+} from './utils.js';
+export type {
+  FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeLogger, FileTreeNode,
+  FileTreeProjectGateway, FileTreeServiceDependencies, FileTreeServices,
+  FileTreeStats, FileTreeUploadedFile, FileTreeWorkspaceGateway, FileTreeWorktreeGateway,
+  GitCommandResult, GitCommandRunner, WorktreeFileSystem, WorktreePorcelainEntry,
+  WorktreeProjectGateway, WorktreeServices,
+} from './types.js';

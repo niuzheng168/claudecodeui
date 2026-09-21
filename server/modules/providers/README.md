@@ -301,7 +301,25 @@ automatic/imported titles (`auto`) from explicit local renames (`user`).
 App-generated first-message titles remain automatic. Native names take priority
 over an older JSONL index even when a rollout watcher runs after a native poll.
 The database guards manual titles at write time, so a rename racing an index
-read is not lost. Titles do not rename the underlying Codex thread.
+read is not lost. Explicit local renames do not rename the underlying Codex thread.
+
+For a newly created Codey conversation, the runtime dispatcher also starts one
+best-effort background title job after persisting the native ID. It summarizes
+the first user message with the thread's configured custom Responses provider
+and existing credentials, then assigns an otherwise unnamed native thread
+through `thread/name/set`. This is not a prompt or extra turn in the conversation.
+The confirmed name is cached as `auto` and broadcast to Codey immediately.
+
+The job uses a separate metadata-only native connection, at most 4,000 input
+characters, a requested 512-token output budget, no tools, and a 30-second
+deadline. At most two jobs run at once, with 32 total admitted jobs; overload,
+failures and unsupported auth leave the initial local title and do not block
+chat. Custom Responses providers with HTTPS or loopback HTTP are supported;
+the title helper never extracts ChatGPT OAuth credentials or switches accounts.
+Native/local names are rechecked before the single native write. Since that
+API offers no compare-and-set, the cross-client check is not an atomic lock.
+Existing conversations, imports, forks and blank/image-only first messages are
+not automatically renamed or backfilled.
 
 Before this distinction existed, title provenance was not recorded. The upgrade
 retains old Codex labels in `sessions.legacy_custom_name` and treats their effective

@@ -471,17 +471,20 @@ export const sessionsDb = {
 
   /**
    * Refreshes a provider-owned title without changing recency or local lifecycle.
-   * Used by Codex's append-only name index when no transcript has changed.
+   * Used by Codex's name index and background title generation when no
+   * transcript has changed. A generated name can pin the expected native ID
+   * so a concurrently repointed conversation never receives the old title.
    * The SQL guard preserves a concurrent manual rename and other providers'
    * existing app-created-title policy.
    */
-  updateSessionSyncedName(sessionId: string, name: string): boolean {
+  updateSessionSyncedName(sessionId: string, name: string, expectedProviderSessionId?: string): boolean {
     return getConnection().prepare(`
       UPDATE sessions SET custom_name = ?
       WHERE session_id = ? AND custom_name_source = 'auto' AND isArchived = 0
         AND (provider = 'codex' OR session_id = provider_session_id)
+        AND (? IS NULL OR provider_session_id = ?)
         AND custom_name IS NOT ?
-    `).run(name, sessionId, name).changes > 0;
+    `).run(name, sessionId, expectedProviderSessionId ?? null, expectedProviderSessionId ?? null, name).changes > 0;
   },
 
   getSessionById(sessionId: string): SessionRow | null {

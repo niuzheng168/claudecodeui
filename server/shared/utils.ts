@@ -123,6 +123,26 @@ export class AppError extends Error {
 // ---------------------------
 //----------------- WORKSPACE PATH VALIDATION UTILITIES ------------
 /**
+ * Tests a lexical directory boundary for File Tree and Worktrees services.
+ *
+ * Descendants are accepted without confusing sibling prefixes (repo/repo-2)
+ * or Windows drive roots. The directory itself is excluded unless allowRoot
+ * is true. Callers must separately resolve symlinks before using this as a
+ * filesystem access check; this function does not perform any I/O.
+ */
+export function isPathInsideDirectory(
+  directoryPath: string,
+  candidatePath: string,
+  allowRoot = false,
+): boolean {
+  const relativePath = path.relative(directoryPath, candidatePath);
+  if (!relativePath) return allowRoot;
+  return relativePath !== '..'
+    && !relativePath.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relativePath);
+}
+
+/**
  * Root directory that all workspace/project paths must stay under.
  *
  * This is resolved from `WORKSPACES_ROOT` when configured; otherwise it falls
