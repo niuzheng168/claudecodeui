@@ -8,8 +8,10 @@ import type {
   FileTreeServiceDependencies,
   FileTreeServices,
   FileTreeUploadedFile,
-} from '@/shared/types.js';
-import { AppError, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import {
+  AppError, FORBIDDEN_WORKSPACE_PATHS, isPathInsideDirectory, normalizeProjectPath,
+} from '@/shared/index.js';
 
 const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
   'node_modules', '.git', '.svn', '.hg',
@@ -92,9 +94,7 @@ function resolvePathInsideProject(projectRoot: string, targetPath: string): stri
   const resolvedPath = path.isAbsolute(targetPath)
     ? path.resolve(targetPath)
     : path.resolve(projectRoot, targetPath);
-  const normalizedProjectRoot = path.resolve(projectRoot) + path.sep;
-
-  if (!resolvedPath.startsWith(normalizedProjectRoot)) {
+  if (!isPathInsideDirectory(projectRoot, resolvedPath)) {
     throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
   }
 
@@ -169,7 +169,7 @@ function createGitignoreEntryFilter(
 
 /**
  * Creates File Tree workflows for the module composition root and route tests.
- * Every filesystem, project, workspace, environment, and logging dependency is
+ * Every filesystem, project, worktree, workspace, and logging dependency is
  * required explicitly so this service has no machine-wide production defaults.
  */
 export function createFileTreeService(dependencies: FileTreeServiceDependencies): FileTreeServices {
@@ -186,6 +186,78 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       throw createFileTreeError('Project not found', 404, 'PROJECT_NOT_FOUND');
     }
     return projectRoot;
+  }
+
+  async function resolveSingleFilePath(
+    projectRoot: string,
+    filePath: string,
+    allowMissingFile = false,
+  ): Promise<{ requestedPath: string; canonicalPath: string }> {
+    const requestedPath = path.resolve(projectRoot, filePath);
+    let allowedRoot = projectRoot;
+    if (!isPathInsideDirectory(projectRoot, requestedPath)) {
+      // Relative traversal never expands scope. Absolute transcript links may
+      // point at a verified sibling checkout, without registering a new project.
+      const worktreeRoot = path.isAbsolute(filePath)
+        ? await dependencies.worktrees.resolveRoot(projectRoot, requestedPath)
+        : null;
+      if (!worktreeRoot || !isPathInsideDirectory(worktreeRoot, requestedPath)) {
+        throw createFileTreeError(
+          'Path must be under the project root or a related Git worktree',
+          403,
+          'PATH_OUTSIDE_PROJECT',
+        );
+      }
+      allowedRoot = worktreeRoot;
+    }
+
+    const canonicalRoot = await fileSystem.realpath(allowedRoot);
+    if (allowedRoot !== projectRoot) {
+      const validation = await dependencies.workspace.validatePath(canonicalRoot);
+      if (!validation.valid) {
+        throw createFileTreeError(
+          validation.error ?? 'Worktree is outside the allowed workspace root',
+          403,
+          'INVALID_WORKSPACE_PATH',
+        );
+      }
+      // The workspace validator also normalizes user-entered paths. Check the
+      // exact canonical boundary so a real directory ending in whitespace, or
+      // a symlinked workspace root, cannot turn a sibling into an allowed root.
+      const canonicalWorkspaceRoot = await fileSystem.realpath(dependencies.workspace.rootPath);
+      if (!isPathInsideDirectory(canonicalWorkspaceRoot, canonicalRoot, true)) {
+        throw createFileTreeError(
+          'Worktree is outside the allowed workspace root',
+          403,
+          'INVALID_WORKSPACE_PATH',
+        );
+      }
+    }
+
+    let canonicalPath: string;
+    try {
+      canonicalPath = await fileSystem.realpath(requestedPath);
+    } catch (error) {
+      if (!allowMissingFile || readErrorCode(error) !== 'ENOENT') throw error;
+      // Preserve saving new files, but do not follow a dangling symlink when
+      // realpath failed: writing it could create a file outside the project.
+      try {
+        await fileSystem.lstat(requestedPath);
+        throw createFileTreeError('Cannot save through an unresolved symlink', 403, 'PATH_OUTSIDE_PROJECT');
+      } catch (statError) {
+        if (readErrorCode(statError) !== 'ENOENT') throw statError;
+      }
+      const canonicalParent = await fileSystem.realpath(path.dirname(requestedPath));
+      canonicalPath = path.join(canonicalParent, path.basename(requestedPath));
+    }
+    if (!isPathInsideDirectory(canonicalRoot, canonicalPath)) {
+      throw createFileTreeError(
+        'Symlink target must stay under the project root or the permitted worktree root',
+        403,
+        'PATH_OUTSIDE_PROJECT',
+      );
+    }
+    return { requestedPath, canonicalPath };
   }
 
   /**
@@ -409,46 +481,50 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
     async readTextFile(projectId, filePath) {
       const projectRoot = await resolveProjectRoot(projectId);
-      const resolvedPath = resolvePathInsideProject(projectRoot, filePath);
       try {
-        const content = await fileSystem.readTextFile(resolvedPath);
-        return { content, path: resolvedPath };
+        const resolved = await resolveSingleFilePath(projectRoot, filePath);
+        const content = await fileSystem.readTextFile(resolved.canonicalPath);
+        return { content, path: resolved.requestedPath };
       } catch (error) {
         mapFileSystemError(error, {
           ENOENT: { message: 'File not found', statusCode: 404 },
           EACCES: { message: 'Permission denied', statusCode: 403 },
+          EPERM: { message: 'Permission denied', statusCode: 403 },
         });
       }
     },
 
     async openFile(projectId, filePath) {
       const projectRoot = await resolveProjectRoot(projectId);
-      const resolvedPath = resolvePathInsideProject(projectRoot, filePath);
       try {
-        await fileSystem.access(resolvedPath);
-      } catch {
-        throw createFileTreeError('File not found', 404, 'FILE_NOT_FOUND');
+        const resolved = await resolveSingleFilePath(projectRoot, filePath);
+        await fileSystem.access(resolved.canonicalPath);
+        return {
+          contentType: dependencies.resolveMimeType(resolved.requestedPath),
+          stream: fileSystem.createReadStream(resolved.canonicalPath),
+        };
+      } catch (error) {
+        mapFileSystemError(error, {
+          ENOENT: { message: 'File not found', statusCode: 404 },
+          EACCES: { message: 'Permission denied', statusCode: 403 },
+          EPERM: { message: 'Permission denied', statusCode: 403 },
+        });
       }
-
-      return {
-        contentType: dependencies.resolveMimeType(resolvedPath),
-        stream: fileSystem.createReadStream(resolvedPath),
-      };
     },
 
     async saveTextFile(projectId, filePath, content) {
       const projectRoot = await resolveProjectRoot(projectId);
-      const resolvedPath = resolvePathInsideProject(projectRoot, filePath);
       try {
-        await fileSystem.writeTextFile(resolvedPath, content);
+        const resolved = await resolveSingleFilePath(projectRoot, filePath, true);
+        await fileSystem.writeTextFile(resolved.canonicalPath, content);
+        return { success: true, path: resolved.requestedPath, message: 'File saved successfully' };
       } catch (error) {
         mapFileSystemError(error, {
           ENOENT: { message: 'File or directory not found', statusCode: 404 },
           EACCES: { message: 'Permission denied', statusCode: 403 },
+          EPERM: { message: 'Permission denied', statusCode: 403 },
         });
       }
-
-      return { success: true, path: resolvedPath, message: 'File saved successfully' };
     },
 
     async listProjectFiles(projectId, options) {

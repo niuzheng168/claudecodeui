@@ -8,13 +8,15 @@ import multer from 'multer';
 import { projectsDb } from '@/modules/database/index.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
+import { resolveRelatedWorktreeRoot } from '@/modules/worktrees/index.js';
 import type {
   FileTreeFileSystem,
   FileTreeLogger,
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
-} from '@/shared/types.js';
-import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/utils.js';
+  FileTreeWorktreeGateway,
+} from '@/shared/index.js';
+import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/index.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -65,6 +67,11 @@ const fileTreeProjects: FileTreeProjectGateway = {
   getProjectPathById: (projectId) => projectsDb.getProjectPathById(projectId),
 };
 
+/** Worktrees grants File Tree only a verified file root, never project registration. */
+const fileTreeWorktrees: FileTreeWorktreeGateway = {
+  resolveRoot: (projectPath, filePath) => resolveRelatedWorktreeRoot(projectPath, filePath),
+};
+
 /**
  * Workspace-policy boundary used only by File Tree production composition.
  * Keeping both the configured root and symlink-aware validator together makes
@@ -82,6 +89,7 @@ const fileTreeLogger: FileTreeLogger = {
 const fileTreeServices = createFileTreeService({
   fileSystem: fileTreeFileSystem,
   projects: fileTreeProjects,
+  worktrees: fileTreeWorktrees,
   workspace: fileTreeWorkspace,
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import express, { type RequestHandler } from 'express';
 
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
-import type { FileTreeServices } from '@/shared/types.js';
+import { AppError } from '@/shared/index.js';
+import type { FileTreeServices } from '@/shared/index.js';
 
 function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTreeServices {
   const unexpectedOperation = async (): Promise<never> => {
@@ -93,6 +95,71 @@ test('project files route requests gitignore filtering when explicitly enabled',
   });
 
   assert.deepEqual(inputs, [['project-1', { respectGitignore: true }]]);
+});
+
+test('text, raw-content and save routes forward absolute worktree file paths unchanged', async () => {
+  const filePath = '/workspace/linked worktree/设计.md';
+  const calls: unknown[][] = [];
+  const services = createFakeServices({
+    readTextFile: async (...input) => {
+      calls.push(['read', ...input]);
+      return { content: '# design', path: filePath };
+    },
+    openFile: async (...input) => {
+      calls.push(['open', ...input]);
+      return { contentType: 'text/markdown', stream: Readable.from(['# design']) };
+    },
+    saveTextFile: async (...input) => {
+      calls.push(['save', ...input]);
+      return { success: true, path: filePath, message: 'File saved successfully' };
+    },
+  });
+  await withFileTreeServer(services, async (baseUrl) => {
+    const endpoint = `${baseUrl}/api/file-tree/projects/main-project`;
+    const text = await fetch(`${endpoint}/file?${new URLSearchParams({ filePath })}`);
+    assert.equal(text.status, 200);
+    assert.deepEqual(await text.json(), { content: '# design', path: filePath });
+    const raw = await fetch(`${endpoint}/files/content?${new URLSearchParams({ path: filePath })}`);
+    assert.equal(raw.status, 200);
+    assert.equal(await raw.text(), '# design');
+    const saved = await fetch(`${endpoint}/file`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filePath, content: '# updated' }),
+    });
+    assert.equal(saved.status, 200);
+    await saved.json();
+  });
+  assert.deepEqual(calls, [
+    ['read', 'main-project', filePath],
+    ['open', 'main-project', filePath],
+    ['save', 'main-project', filePath, '# updated'],
+  ]);
+});
+
+test('file routes preserve a concrete scope rejection for the editor', async () => {
+  const error = 'Path must be under the project root or a related Git worktree';
+  const denied = async (): Promise<never> => {
+    throw new AppError(error, { statusCode: 403, code: 'PATH_OUTSIDE_PROJECT' });
+  };
+  await withFileTreeServer(createFakeServices({
+    readTextFile: denied, openFile: denied, saveTextFile: denied,
+  }), async (baseUrl) => {
+    const endpoint = `${baseUrl}/api/file-tree/projects/main-project`;
+    for (const [url, init] of [
+      [`${endpoint}/file?filePath=/unrelated/doc.md`, {}],
+      [`${endpoint}/files/content?path=/unrelated/doc.md`, {}],
+      [`${endpoint}/file`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filePath: '/unrelated/doc.md', content: 'no' }),
+      }],
+    ] as const) {
+      const response = await fetch(url, init);
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { error });
+    }
+  });
 });
 
 test('create route parses the transport payload before invoking the service', async () => {

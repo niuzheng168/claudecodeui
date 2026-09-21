@@ -9,8 +9,8 @@ import type {
   FileTreeFileSystem,
   FileTreeServiceDependencies,
   FileTreeStats,
-} from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError } from '@/shared/index.js';
 
 function createDirectoryEntry(name: string, directory: boolean): FileTreeDirectoryEntry {
   return {
@@ -77,8 +77,11 @@ function createDependencies(
     projects: {
       getProjectPathById: async () => projectRoot,
     },
+    worktrees: {
+      resolveRoot: async () => null,
+    },
     workspace: {
-      rootPath: projectRoot,
+      rootPath: path.dirname(projectRoot),
       validatePath: async (candidatePath) => ({ valid: true, resolvedPath: candidatePath }),
     },
     resolveMimeType: () => 'text/plain',
@@ -341,6 +344,248 @@ test('readTextFile rejects traversal before invoking the filesystem adapter', as
       && error.statusCode === 403,
   );
   assert.deepEqual(readPaths, []);
+});
+
+test('ordinary project files need no Git lookup and use their canonical path', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const requestedPath = path.join(projectRoot, 'linked.txt');
+  const canonicalPath = path.join(projectRoot, 'notes.txt');
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => candidate === requestedPath ? canonicalPath : candidate,
+    readTextFile: async (candidate) => {
+      assert.equal(candidate, canonicalPath);
+      return 'project notes';
+    },
+  });
+  const dependencies = createDependencies(fileSystem, projectRoot);
+  dependencies.worktrees.resolveRoot = async () => {
+    throw new Error('In-project reads must not query Git');
+  };
+
+  assert.deepEqual(
+    await createFileTreeService(dependencies).readTextFile('project-1', 'linked.txt'),
+    { content: 'project notes', path: requestedPath },
+  );
+});
+
+test('related worktree text, media and saves share the verified file boundary', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const worktreeRoot = path.resolve('file-tree-test-worktree');
+  const targetPath = path.join(worktreeRoot, 'docs', 'design.md');
+  const writes: Array<[string, string]> = [];
+  const scopes: Array<[string, string]> = [];
+  const validations: string[] = [];
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => candidate,
+    access: async (candidate) => { assert.equal(candidate, targetPath); },
+    readTextFile: async (candidate) => {
+      assert.equal(candidate, targetPath);
+      return '# worktree design';
+    },
+    writeTextFile: async (candidate, content) => { writes.push([candidate, content]); },
+    createReadStream: (candidate) => {
+      assert.equal(candidate, targetPath);
+      return Readable.from(['# worktree design']);
+    },
+  });
+  const dependencies = createDependencies(fileSystem, projectRoot);
+  dependencies.worktrees.resolveRoot = async (...input) => {
+    scopes.push(input);
+    return worktreeRoot;
+  };
+  dependencies.workspace.validatePath = async (candidate) => {
+    validations.push(candidate);
+    return { valid: true, resolvedPath: candidate };
+  };
+  const service = createFileTreeService(dependencies);
+
+  assert.deepEqual(await service.readTextFile('project-1', targetPath), {
+    content: '# worktree design', path: targetPath,
+  });
+  const opened = await service.openFile('project-1', targetPath);
+  assert.equal(opened.contentType, 'text/plain');
+  let streamed = '';
+  for await (const chunk of opened.stream) streamed += chunk;
+  assert.equal(streamed, '# worktree design');
+  assert.equal((await service.saveTextFile('project-1', targetPath, '# updated')).success, true);
+  assert.deepEqual(writes, [[targetPath, '# updated']]);
+  assert.deepEqual(scopes, Array.from({ length: 3 }, () => [projectRoot, targetPath]));
+  assert.deepEqual(validations, Array.from({ length: 3 }, () => worktreeRoot));
+});
+
+test('unrelated and prefix-matching sibling paths remain forbidden before filesystem access', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const service = createFileTreeService(createDependencies(createFakeFileSystem(), projectRoot));
+  for (const filePath of [
+    path.join(`${projectRoot}-other`, 'secret.txt'),
+    path.resolve('unrelated', 'secret.txt'),
+    path.join(path.dirname(projectRoot), '.ssh', 'id_ed25519'),
+    projectRoot,
+  ]) {
+    await assert.rejects(service.readTextFile('project-1', filePath), {
+      code: 'PATH_OUTSIDE_PROJECT', statusCode: 403,
+    });
+    await assert.rejects(service.openFile('project-1', filePath), { statusCode: 403 });
+    await assert.rejects(service.saveTextFile('project-1', filePath, 'no'), { statusCode: 403 });
+  }
+});
+
+test('relative traversal never invokes related-worktree discovery', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const dependencies = createDependencies(createFakeFileSystem(), projectRoot);
+  dependencies.worktrees.resolveRoot = async () => { throw new Error('must not run'); };
+  const service = createFileTreeService(dependencies);
+  for (const relativePath of ['../worktree/doc.md', 'docs/../../worktree/doc.md']) {
+    await assert.rejects(service.readTextFile('project-1', relativePath), { statusCode: 403 });
+    await assert.rejects(service.openFile('project-1', relativePath), { statusCode: 403 });
+    await assert.rejects(service.saveTextFile('project-1', relativePath, 'no'), { statusCode: 403 });
+  }
+});
+
+test('related worktrees cannot bypass the configured workspace boundary', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const worktreeRoot = path.resolve('outside-workspace');
+  const dependencies = createDependencies(createFakeFileSystem({
+    realpath: async (candidate) => candidate,
+  }), projectRoot);
+  dependencies.worktrees.resolveRoot = async () => worktreeRoot;
+  dependencies.workspace.validatePath = async () => ({ valid: false, error: 'Outside workspace policy' });
+  const service = createFileTreeService(dependencies);
+  await assert.rejects(service.readTextFile('project-1', path.join(worktreeRoot, 'design.md')), {
+    code: 'INVALID_WORKSPACE_PATH', statusCode: 403, message: 'Outside workspace policy',
+  });
+});
+
+test('workspace policy checks the exact canonical root, not a normalized sibling prefix', async () => {
+  const workspaceRoot = path.resolve('allowed-workspace');
+  const projectRoot = path.join(workspaceRoot, 'project');
+  const worktreeRoot = `${workspaceRoot} `;
+  const dependencies = createDependencies(createFakeFileSystem({
+    realpath: async (candidate) => candidate,
+  }), projectRoot);
+  dependencies.worktrees.resolveRoot = async () => worktreeRoot;
+  // Simulate a user-input validator that trims whitespace before comparison.
+  dependencies.workspace.validatePath = async () => ({ valid: true, resolvedPath: workspaceRoot });
+  const service = createFileTreeService(dependencies);
+  await assert.rejects(service.readTextFile('project-1', path.join(worktreeRoot, 'design.md')), {
+    code: 'INVALID_WORKSPACE_PATH', statusCode: 403,
+  });
+});
+
+test('project and worktree symlinks cannot escape the selected root for reads or writes', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const worktreeRoot = path.resolve('file-tree-test-worktree');
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => candidate.endsWith('escape.txt')
+      ? path.resolve('secrets', 'private.txt')
+      : candidate,
+  });
+  const dependencies = createDependencies(fileSystem, projectRoot);
+  dependencies.worktrees.resolveRoot = async () => worktreeRoot;
+  const service = createFileTreeService(dependencies);
+  for (const root of [projectRoot, worktreeRoot]) {
+    const target = path.join(root, 'escape.txt');
+    await assert.rejects(service.readTextFile('project-1', target), { statusCode: 403 });
+    await assert.rejects(service.openFile('project-1', target), { statusCode: 403 });
+    await assert.rejects(service.saveTextFile('project-1', target, 'no'), { statusCode: 403 });
+  }
+});
+
+test('a symlinked project root still permits files under its canonical root', async () => {
+  const projectRoot = path.resolve('file-tree-test-link');
+  const canonicalRoot = path.resolve('file-tree-test-real');
+  const targetPath = path.join(projectRoot, 'doc.md');
+  const canonicalPath = path.join(canonicalRoot, 'doc.md');
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => candidate === projectRoot ? canonicalRoot : canonicalPath,
+    readTextFile: async (candidate) => {
+      assert.equal(candidate, canonicalPath);
+      return 'safe';
+    },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+  assert.deepEqual(await service.readTextFile('project-1', targetPath), {
+    content: 'safe', path: targetPath,
+  });
+});
+
+test('missing files and permission failures retain their HTTP diagnostics', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  for (const [code, statusCode, message] of [
+    ['ENOENT', 404, 'File not found'],
+    ['EACCES', 403, 'Permission denied'],
+    ['EPERM', 403, 'Permission denied'],
+  ] as const) {
+    const fileSystem = createFakeFileSystem({
+      realpath: async (candidate) => {
+        if (candidate === projectRoot) return candidate;
+        throw Object.assign(new Error('filesystem error'), { code });
+      },
+    });
+    const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+    await assert.rejects(service.readTextFile('project-1', 'doc.md'), { statusCode, message });
+    await assert.rejects(service.openFile('project-1', 'doc.md'), { statusCode, message });
+  }
+});
+
+test('saving a missing file checks its parent and rejects dangling symlinks', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const target = path.join(projectRoot, 'new.md');
+  const missing = () => Object.assign(new Error('missing'), { code: 'ENOENT' });
+  const writes: string[] = [];
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => {
+      if (candidate === target) throw missing();
+      return candidate;
+    },
+    lstat: async () => { throw missing(); },
+    writeTextFile: async (candidate) => { writes.push(candidate); },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+  await service.saveTextFile('project-1', target, 'new document');
+  assert.deepEqual(writes, [target]);
+
+  fileSystem.lstat = async () => ({ ...createStats(false, 0o644), isSymbolicLink: () => true });
+  await assert.rejects(service.saveTextFile('project-1', target, 'no'), {
+    statusCode: 403, message: 'Cannot save through an unresolved symlink',
+  });
+  assert.deepEqual(writes, [target]);
+});
+
+test('saving a missing file rejects a parent symlink outside the allowed root', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const linkedParent = path.join(projectRoot, 'linked-directory');
+  const target = path.join(linkedParent, 'new.md');
+  const fileSystem = createFakeFileSystem({
+    realpath: async (candidate) => {
+      if (candidate === target) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return candidate === linkedParent ? path.resolve('secrets') : candidate;
+    },
+    lstat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+  await assert.rejects(service.saveTextFile('project-1', target, 'no'), { statusCode: 403 });
+});
+
+test('worktree file access does not expand create, rename, delete or upload scope', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const worktreeRoot = path.resolve('file-tree-test-worktree');
+  const dependencies = createDependencies(createFakeFileSystem(), projectRoot);
+  dependencies.worktrees.resolveRoot = async () => { throw new Error('must not run'); };
+  const service = createFileTreeService(dependencies);
+  await assert.rejects(service.createEntry({
+    projectId: 'project-1', parentPath: worktreeRoot, type: 'file', name: 'new.md',
+  }), { statusCode: 403 });
+  await assert.rejects(service.renameEntry({
+    projectId: 'project-1', oldPath: path.join(worktreeRoot, 'doc.md'), newName: 'renamed.md',
+  }), { statusCode: 403 });
+  await assert.rejects(service.deleteEntry({
+    projectId: 'project-1', targetPath: path.join(worktreeRoot, 'doc.md'),
+  }), { statusCode: 403 });
+  await assert.rejects(service.storeUploadedFiles({
+    projectId: 'project-1', targetPath: worktreeRoot, relativePaths: [], requestedFileCount: 1,
+    files: [{ temporaryPath: 'fixture-upload', originalName: 'doc.md', size: 1, mimeType: 'text/plain' }],
+  }), { statusCode: 403 });
 });
 
 test('createEntry performs filesystem mutation only through the injected adapter', async () => {
