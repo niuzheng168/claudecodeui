@@ -28,7 +28,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   if (request.method === 'thread/loaded/list') {
     return reply(request.id, {data: behavior === 'loaded' ? ['${THREAD_ID}'] : []});
   }
-  if (!['thread/read', 'thread/turns/list'].includes(request.method)) {
+  if (!['thread/read', 'thread/turns/list', 'thread/items/list'].includes(request.method)) {
     throw new Error('Unexpected mutation attempted by history reader');
   }
   if (behavior === 'hang') return;
@@ -47,12 +47,23 @@ readline.createInterface({input: process.stdin}).on('line', line => {
       ],
     }],
   };
+  if (request.method === 'thread/items/list') {
+    const index = request.params.cursor ? 1 : 0;
+    return reply(request.id, {
+      data: [{turnId: thread.turns[0].id, item: thread.turns[0].items[index]}],
+      nextCursor: index === 0 ? 'second-item' : null,
+    });
+  }
   if (request.method === 'thread/turns/list') {
     if (behavior === 'legacy') {
       return console.log(JSON.stringify({id: request.id, error: {code: -32601, message: 'Method not found'}}));
     }
     if (behavior === 'missing-turns') return reply(request.id, {});
     if (behavior === 'missing-items') delete thread.turns[0].items;
+    if (behavior === 'items-paged') {
+      thread.turns[0].items = [];
+      thread.turns[0].itemsView = 'notLoaded';
+    }
     if (behavior === 'paged') {
       if (!request.params.cursor) return reply(request.id, {data: thread.turns, nextCursor: 'page-2'});
       thread.turns[0].id = 'second-turn';
@@ -128,7 +139,7 @@ test('desktop history uses only snapshot RPCs and leaves no loaded thread', { co
     ]);
     assert.deepEqual(requests[2].params, { threadId: THREAD_ID, includeTurns: false });
     assert.deepEqual(requests[3].params, {
-      threadId: THREAD_ID, cursor: null, limit: 100, sortDirection: 'asc', itemsView: 'full',
+      threadId: THREAD_ID, cursor: null, limit: 100, sortDirection: 'asc', itemsView: 'notLoaded',
     });
     assert.equal(requests[0].params.capabilities.experimentalApi, true);
   });
@@ -144,6 +155,21 @@ test('native reader requires an explicit absolute CLI and never searches PATH', 
     }
     await assert.rejects(readFile(log), { code: 'ENOENT' });
   });
+});
+
+test('the standalone read-only reader permits item pagination but never a mutating RPC', { concurrency: false }, async () => {
+  await withReaderFixture(async ({ log }) => {
+    const snapshot = await codexAppServer.readThreadSnapshot(THREAD_ID);
+    assert.deepEqual(snapshot.turns[0].items.map((item: AnyRecord) => item.id), ['original-user', 'original-reply']);
+    const requests = await requestsAt(log);
+    assert.deepEqual(requests.map(request => request.method), [
+      'initialize', 'initialized', 'thread/read', 'thread/turns/list',
+      'thread/items/list', 'thread/items/list', 'thread/loaded/list',
+    ]);
+    assert.ok(requests.filter(request => request.method === 'thread/items/list')
+      .every(request => request.params.threadId === THREAD_ID && request.params.turnId === 'original-turn'
+        && request.params.limit === 1));
+  }, 'items-paged');
 });
 
 for (const behavior of ['wrong-thread', 'missing-turns', 'missing-items', 'repeated-cursor', 'loaded', 'rpc-error']) {

@@ -27,7 +27,28 @@ import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-threa
 
 /** How long a single request may take before the child is killed. */
 const REQUEST_TIMEOUT_MS = 30_000;
-const READ_ONLY_METHODS = new Set(['initialize', 'thread/read', 'thread/turns/list', 'thread/loaded/list']);
+const READ_ONLY_METHODS = new Set([
+  'initialize', 'thread/read', 'thread/turns/list', 'thread/items/list', 'thread/loaded/list',
+]);
+const MAX_HISTORY_TURNS = 20_000;
+const MAX_HISTORY_ITEMS = 100_000;
+const MAX_HISTORY_BYTES = 128 * 1024 * 1024;
+const MAX_HISTORY_DURATION_MS = 60_000;
+
+type HistoryCall = (method: string, params: AnyRecord) => Promise<unknown>;
+
+function unsupportedMethod(error: unknown): boolean {
+  return readObjectRecord(readObjectRecord(error)?.details)?.rpcCode === -32601;
+}
+
+function nextHistoryCursor(result: AnyRecord, seen: Set<string>): string | null {
+  if (result.nextCursor == null) return null;
+  if (typeof result.nextCursor !== 'string' || !result.nextCursor || seen.has(result.nextCursor)) {
+    throw new Error('invalid native history cursor');
+  }
+  seen.add(result.nextCursor);
+  return result.nextCursor;
+}
 
 type AppServerMode =
   | { kind: 'legacy-fork' }
@@ -229,7 +250,7 @@ async function withAppServer<T>(
 }
 
 async function readNativeSnapshot(
-  call: (method: string, params: AnyRecord) => Promise<unknown>,
+  call: HistoryCall,
   threadId: string,
   readerOnly: boolean,
 ): Promise<AnyRecord> {
@@ -237,44 +258,111 @@ async function readNativeSnapshot(
   const thread = readObjectRecord(snapshot?.thread);
   if (!thread || thread.id !== threadId) throw new Error('invalid snapshot identity');
 
-  let turns: AnyRecord[] = [];
-  let cursor: string | null = null;
-  const cursors = new Set<string>();
-  const turnIds = new Set<string>();
-  for (let page = 0; ; page++) {
-    if (page >= 200) throw new Error('native history exceeds the bounded page window');
-    let result: AnyRecord | null;
-    try {
-      result = readObjectRecord(await call('thread/turns/list', {
-        threadId, cursor, limit: 100, sortDirection: 'asc', itemsView: 'full',
-      }));
-    } catch (error) {
-      // Older backends may only implement inclusive thread/read. This is a
-      // read-only capability fallback, never a retry of a submitted prompt.
-      const details = readObjectRecord(readObjectRecord(error)?.details);
-      if (page !== 0 || details?.rpcCode !== -32601) throw error;
-      const legacy = readObjectRecord(await call('thread/read', { threadId, includeTurns: true }));
-      if (legacy?.thread?.id !== threadId || !Array.isArray(legacy.thread.turns)) {
-        throw new Error('invalid legacy snapshot');
+  const deadline = Date.now() + MAX_HISTORY_DURATION_MS;
+  let historyBytes = 0;
+  let itemCount = 0;
+  const checkBudget = (value?: AnyRecord) => {
+    if (value) historyBytes += Buffer.byteLength(JSON.stringify(value), 'utf8');
+    if (historyBytes > MAX_HISTORY_BYTES || itemCount > MAX_HISTORY_ITEMS || Date.now() > deadline) {
+      throw new Error('native history exceeds the bounded snapshot window');
+    }
+  };
+  const readTurns = async (itemsView: 'notLoaded' | 'full'): Promise<AnyRecord[]> => {
+    const turns: AnyRecord[] = [];
+    const ids = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; ; page++) {
+      checkBudget();
+      if (page >= MAX_HISTORY_TURNS) throw new Error('too many native turn pages');
+      let result: AnyRecord | null;
+      try {
+        result = readObjectRecord(await call('thread/turns/list', {
+          // A compatibility backend may only support full turns. Bound those
+          // pages to one turn rather than joining many large turns in one frame.
+          threadId, cursor, limit: itemsView === 'full' ? 1 : 100, sortDirection: 'asc', itemsView,
+        }));
+      } catch (error) {
+        if (page !== 0 || !unsupportedMethod(error)) throw error;
+        // Only a positively unsupported method permits an older read-only
+        // protocol. Never resume, change backend, or use a partial JSONL export.
+        const legacy = readObjectRecord(await call('thread/read', { threadId, includeTurns: true }));
+        if (legacy?.thread?.id !== threadId || !Array.isArray(legacy.thread.turns)) {
+          throw new Error('invalid legacy snapshot');
+        }
+        result = { data: legacy.thread.turns, nextCursor: null };
       }
-      turns = legacy.thread.turns;
-      break;
-    }
-    if (!result || !Array.isArray(result.data)) throw new Error('invalid native turn page');
-    for (const turn of result.data) {
-      if (typeof turn?.id !== 'string' || !turn.id || !Array.isArray(turn.items) || turnIds.has(turn.id)
-        || (turn.itemsView != null && turn.itemsView !== 'full')) {
-        throw new Error('invalid or repeated native turn');
+      if (!result || !Array.isArray(result.data)) throw new Error('invalid native turn page');
+      for (const raw of result.data) {
+        const turn = readObjectRecord(raw);
+        if (!turn || typeof turn.id !== 'string' || !turn.id || ids.has(turn.id)
+          || !Array.isArray(turn.items) || (turn.itemsView != null
+            && turn.itemsView !== 'full' && turn.itemsView !== itemsView)) {
+          throw new Error('invalid or repeated native turn');
+        }
+        if (turn.itemsView === 'notLoaded' && turn.items.length !== 0) throw new Error('unexpected unloaded items');
+        ids.add(turn.id);
+        if (ids.size > MAX_HISTORY_TURNS) throw new Error('too many native turns');
+        checkBudget(turn);
+        turns.push({ ...turn, items: [...turn.items] });
       }
-      turnIds.add(turn.id);
-      turns.push(turn);
+      cursor = nextHistoryCursor(result, cursors);
+      if (cursor === null) return turns;
+      if (result.data.length === 0) throw new Error('native turn page made no progress');
     }
-    if (result.nextCursor == null) break;
-    if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) {
-      throw new Error('invalid native history cursor');
+  };
+
+  let turns = await readTurns('notLoaded');
+  let itemPaginationConfirmed = false;
+  for (const turn of turns) {
+    // Old backends may ignore itemsView and return full turns. Their complete
+    // items remain usable; a summary is never accepted as complete history.
+    if (turn.itemsView !== 'notLoaded') {
+      itemCount += turn.items.length;
+      checkBudget();
+      continue;
     }
-    cursor = result.nextCursor;
-    cursors.add(cursor);
+    const ids = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      checkBudget();
+      let result: AnyRecord | null;
+      try {
+        result = readObjectRecord(await call('thread/items/list', {
+          // A single turn (or a page of screenshot-bearing items) can exceed
+          // the stdio frame limit. One item per RPC keeps the transport bound
+          // independent of both turn length and the size of adjacent items.
+          threadId, turnId: turn.id, cursor, limit: 1, sortDirection: 'asc',
+        }));
+      } catch (error) {
+        if (itemPaginationConfirmed || !unsupportedMethod(error)) throw error;
+        turns = await readTurns('full');
+        itemCount = turns.reduce((count, value) => count + value.items.length, 0);
+        checkBudget();
+        break;
+      }
+      if (!result || !Array.isArray(result.data) || result.data.length > 1
+        || !Object.hasOwn(result, 'nextCursor')) {
+        throw new Error('invalid native item page');
+      }
+      itemPaginationConfirmed = true;
+      for (const entry of result.data) {
+        const item = readObjectRecord(entry?.item);
+        if (entry?.turnId !== turn.id || !item || typeof item.id !== 'string' || !item.id
+          || typeof item.type !== 'string' || !item.type || ids.has(item.id)) {
+          throw new Error('invalid, foreign or repeated native item');
+        }
+        ids.add(item.id);
+        itemCount++;
+        checkBudget(item);
+        turn.items.push(item);
+      }
+      cursor = nextHistoryCursor(result, cursors);
+      if (cursor !== null && result.data.length === 0) throw new Error('native item page made no progress');
+    } while (cursor !== null);
+    if (!itemPaginationConfirmed) break; // Explicit legacy capability fallback.
+    turn.itemsView = 'full';
   }
   if (readerOnly) {
     const loaded = readObjectRecord(await call('thread/loaded/list', {}));

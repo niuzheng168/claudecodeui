@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -15,11 +16,14 @@ async function fixture(
     invalidHandshake?: boolean; invalidFrame?: boolean;
     state?: AnyRecord; staleSnapshot?: boolean; staleRevision?: boolean; wrongTurn?: boolean; noTurnReceipt?: boolean;
     rejectControl?: boolean; ownerDisconnected?: boolean;
+    timeoutMs?: number;
   } = {},
 ) {
-  const home = await mkdtemp(path.join(os.tmpdir(), 'codey-desktop-peer-'));
+  const parent = process.platform === 'win32' ? path.resolve(os.tmpdir()) : '/tmp';
+  const home = await mkdtemp(path.join(parent, 'codey-desktop-peer-'));
   const directory = path.join(home, 'ipc');
-  const endpoint = path.join(directory, 'ipc.sock');
+  const endpoint = process.platform === 'win32'
+    ? `\\\\.\\pipe\\codey-peer-test-${randomUUID()}` : path.join(directory, 'ipc.sock');
   await mkdir(directory, { mode: 0o700 });
   const calls: AnyRecord[] = [];
   const sockets = new Set<net.Socket>();
@@ -114,10 +118,17 @@ async function fixture(
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject); server.listen(endpoint, resolve);
     });
-    await body({ home, endpoint, calls, connect: () => CodexDesktopPeerClient.connect('desktop-thread', { home, timeoutMs: 500 }) });
+    await body({ home, endpoint, calls, connect: () => CodexDesktopPeerClient.connect('desktop-thread', {
+      home: process.platform === 'win32' ? path.join(os.homedir(), '.codex') : home,
+      timeoutMs: options.timeoutMs ?? 500,
+      // Only this test's random pipe/socket is used, never the real desktop.
+      connectSocket: () => net.createConnection({ path: endpoint }),
+    }) });
   } finally {
     for (const socket of sockets) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
+    assert.equal(path.dirname(path.resolve(home)), parent);
+    assert.ok(path.basename(home).startsWith('codey-desktop-peer-'));
     await rm(home, { recursive: true, force: true });
   }
 }
@@ -163,7 +174,7 @@ test('missing private IPC endpoint returns null without creating one', async () 
   finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test('untrusted or linked peer directories are refused before connecting', async () => {
+test('untrusted or linked peer directories are refused before connecting', { skip: process.platform === 'win32' }, async () => {
   await fixture(async f => {
     await chmod(path.join(f.home, 'ipc'), 0o755);
     await assert.rejects(f.connect(), { code: 'CODEX_DESKTOP_PEER_UNTRUSTED' });
@@ -178,7 +189,7 @@ test('untrusted or linked peer directories are refused before connecting', async
   });
 });
 
-test('a regular file cannot impersonate the desktop peer socket', async () => {
+test('a regular file cannot impersonate the desktop peer socket', { skip: process.platform === 'win32' }, async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'codey-peer-file-'));
   try {
     await mkdir(path.join(home, 'ipc'), { mode: 0o700 });
@@ -212,7 +223,7 @@ test('owner rejection, lost acknowledgement and wrong-owner replies never retry'
   }
 });
 
-test('Linux and macOS use the CODEX_HOME-scoped IPC endpoint', async () => {
+test('Linux and macOS use the CODEX_HOME-scoped IPC endpoint', { skip: process.platform === 'win32' }, async () => {
   await fixture(async f => {
     for (const platform of ['linux', 'darwin'] as const) {
       let seen: string | undefined;
@@ -294,6 +305,29 @@ test('canonical desktop history selects only its current ordered tail, not an ol
       assert.ok(!f.calls.some(x => x.method === 'thread-follower-steer-turn'));
     } finally { client.close(); }
   }, { state });
+});
+
+test('large desktop snapshots survive fragmented named-pipe/Unix frames without changing owner or sending input', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    try {
+      assert.deepEqual(await client.readState(), { activeTurnId: 'own-turn', cwd: '/workspace' });
+      assert.equal(client.connected, true);
+      assert.ok(!f.calls.some(call => [
+        'thread-follower-start-turn', 'thread-follower-steer-turn', 'thread-follower-interrupt-turn',
+        'thread/resume', 'thread/queue/add',
+      ].includes(call.method)));
+    } finally { client.close(); }
+  }, {
+    timeoutMs: 10_000,
+    state: {
+      id: 'desktop-thread', cwd: '/workspace',
+      turns: [{ turnId: 'own-turn', status: 'inProgress' }],
+      // Multi-byte text also exercises UTF-8 boundaries in fragmented frames.
+      screenshotHistory: '图'.repeat(6 * 1024 * 1024),
+    },
+  });
 });
 
 test('a late older snapshot cannot replace a more recent owner state when steering', async () => {
