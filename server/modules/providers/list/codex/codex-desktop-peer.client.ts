@@ -8,6 +8,10 @@ import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/
 import type { AnyRecord, CodexDesktopThreadState, ICodexDesktopThreadOwner } from '@/shared/index.js';
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// The owner's IPC snapshot is not item-paginated and can contain screenshot
+// history. Keep outgoing requests small, but allow a bounded larger snapshot
+// on both Windows named pipes and Linux/macOS Unix sockets.
+const MAX_SNAPSHOT_FRAME_BYTES = 64 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 8;
 
 type PendingRequest = {
@@ -36,7 +40,10 @@ type PendingSnapshot = {
 export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   private clientId: string | undefined;
   private ownerClientId: string | undefined;
-  private buffer = Buffer.alloc(0);
+  private readonly frameHeader = Buffer.alloc(4);
+  private headerBytes = 0;
+  private frameBody: Buffer | null = null;
+  private bodyBytes = 0;
   private readonly pending = new Map<string, PendingRequest>();
   private closedError: Error | null = null;
   private snapshot: PendingSnapshot | null = null;
@@ -342,13 +349,30 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   }
 
   private receive(data: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, data]);
-    while (this.buffer.length >= 4) {
-      const length = this.buffer.readUInt32LE(0);
-      if (!length || length > MAX_FRAME_BYTES) throw new Error('invalid frame length');
-      if (this.buffer.length < 4 + length) return;
-      const message = readObjectRecord(JSON.parse(this.buffer.subarray(4, 4 + length).toString('utf8')));
-      this.buffer = this.buffer.subarray(4 + length);
+    let offset = 0;
+    while (offset < data.length && !this.closedError) {
+      if (this.headerBytes < 4) {
+        const bytes = Math.min(4 - this.headerBytes, data.length - offset);
+        data.copy(this.frameHeader, this.headerBytes, offset, offset + bytes);
+        this.headerBytes += bytes;
+        offset += bytes;
+        if (this.headerBytes < 4) return;
+        const length = this.frameHeader.readUInt32LE(0);
+        if (!length || length > MAX_SNAPSHOT_FRAME_BYTES) throw new Error('invalid frame length');
+        // Allocate once after validating the header. Repeated Buffer.concat
+        // made large, fragmented desktop snapshots quadratic to receive.
+        this.frameBody = Buffer.allocUnsafe(length);
+      }
+      const body = this.frameBody!;
+      const bytes = Math.min(body.length - this.bodyBytes, data.length - offset);
+      data.copy(body, this.bodyBytes, offset, offset + bytes);
+      this.bodyBytes += bytes;
+      offset += bytes;
+      if (this.bodyBytes < body.length) return;
+      this.frameBody = null;
+      this.headerBytes = 0;
+      this.bodyBytes = 0;
+      const message = readObjectRecord(JSON.parse(body.toString('utf8')));
       if (!message) throw new Error('invalid frame');
       if (message.type === 'client-discovery-request' && typeof message.requestId === 'string') {
         // Codey is only a follower; it must never advertise ownership or handle
@@ -377,6 +401,9 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   private fail(error: Error): void {
     if (this.closedError) return;
     this.closedError = error;
+    this.frameBody = null;
+    this.headerBytes = 0;
+    this.bodyBytes = 0;
     for (const request of this.pending.values()) {
       clearTimeout(request.timer);
       request.reject(error);
