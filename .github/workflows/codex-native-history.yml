@@ -44,7 +44,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
+        env:
+          # Native dependency installers fetch release metadata from GitHub.
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Large history, legacy compatibility and native transports
         run: >-
           node node_modules/tsx/dist/cli.mjs --tsconfig server/tsconfig.json --test
