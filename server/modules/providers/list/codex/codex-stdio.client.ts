@@ -30,7 +30,10 @@ type Pending = {
 export class CodexStdioClient implements ICodexRpcClient {
   readonly ownsProcess = true;
   private nextId = 0;
-  private buffered = '';
+  // Keep raw fragments until a complete frame arrives. Rescanning/encoding the
+  // growing history string on every pipe read makes large replies quadratic.
+  private buffered: Buffer[] = [];
+  private bufferedBytes = 0;
   private closedError: Error | null = null;
   private childExited = false;
   private childClosed = false;
@@ -45,20 +48,29 @@ export class CodexStdioClient implements ICodexRpcClient {
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly timeoutMs: number,
   ) {
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      this.buffered += chunk;
-      if (Buffer.byteLength(this.buffered, 'utf8') > MAX_FRAME_BYTES) {
-        this.fail(new AppError('The native Codex response exceeded the safe frame limit.', {
-          code: 'CODEX_STDIO_PROTOCOL_ERROR', statusCode: 502,
-        }));
-        void this.close().catch(() => {});
-        return;
-      }
-      let newline: number;
-      while ((newline = this.buffered.indexOf('\n')) >= 0) {
-        const line = this.buffered.slice(0, newline);
-        this.buffered = this.buffered.slice(newline + 1);
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.closedError) return;
+      let start = 0;
+      while (start < chunk.length) {
+        // Search only the new bytes, and enforce the limit per JSON line, not
+        // per chunk: a single read may also contain several complete frames.
+        const newline = chunk.indexOf(0x0a, start);
+        const fragment = chunk.subarray(start, newline < 0 ? chunk.length : newline);
+        this.bufferedBytes += fragment.length;
+        if (this.bufferedBytes > MAX_FRAME_BYTES) {
+          this.fail(new AppError('The native Codex response exceeded the safe frame limit.', {
+            code: 'CODEX_STDIO_PROTOCOL_ERROR', statusCode: 502,
+          }));
+          void this.close().catch(() => {});
+          return;
+        }
+        if (fragment.length > 0) this.buffered.push(fragment);
+        if (newline < 0) return;
+
+        // Decode once so UTF-8 characters split between reads stay intact.
+        const line = Buffer.concat(this.buffered, this.bufferedBytes).toString('utf8');
+        this.buffered = [];
+        this.bufferedBytes = 0;
         try { this.receive(line); }
         catch {
           this.fail(new AppError('The native Codex event could not be processed.', {
@@ -66,6 +78,8 @@ export class CodexStdioClient implements ICodexRpcClient {
           }));
           void this.close().catch(() => {});
         }
+        if (this.closedError) return;
+        start = newline + 1;
       }
     });
     // Drain logs without persisting provider details, prompts, credentials or stderr.
@@ -271,6 +285,8 @@ export class CodexStdioClient implements ICodexRpcClient {
   private fail(error: Error): void {
     if (this.closedError) return;
     this.closedError = error;
+    this.buffered = [];
+    this.bufferedBytes = 0;
     for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(error); }
     this.pending.clear();
     this.serverPending.clear();

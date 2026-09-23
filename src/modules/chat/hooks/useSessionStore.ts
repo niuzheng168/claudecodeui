@@ -47,6 +47,7 @@ export type SessionSlot = {
   fetchedAt: number;
   total: number;
   hasMore: boolean;
+  /** Tail-relative oldest boundary; includes new tail rows not yet reconciled. */
   offset: number;
   tokenUsage: unknown;
 };
@@ -467,6 +468,9 @@ async function refreshLatestSlotFromServer(
 
   const previousServerMessages = slot.serverMessages;
   const previousTotal = slot.total;
+  // Older pages can advance without fetching the growing tail. Account for
+  // those omitted rows when planning the bridge back to the cached newest row.
+  const previousTailTotal = previousTotal - Math.max(0, slot.offset - previousServerMessages.length);
   const previousHasMore = slot.hasMore;
   const latestPage = await requestSessionHistoryPage(sessionId, {
     limit,
@@ -498,7 +502,7 @@ async function refreshLatestSlotFromServer(
       const bridgeRequest = planLatestPageBridge(
         previousServerMessages,
         latestPage.messages,
-        previousTotal,
+        previousTailTotal,
         latestPage.total,
         bridgeRowsFetched,
       );
@@ -682,27 +686,45 @@ export function useSessionStore() {
       if (!slot.hasMore || !canRequest()) return { slot, prependedCount };
 
       try {
-        // A tail-relative offset can shift while JSONL is still growing. One
-        // bounded latest-page reconciliation realigns the cache, after which
-        // the older-page request is retried once with the new raw-row offset.
+        const pageSize = opts.limit ?? SESSION_MESSAGES_PAGE_SIZE;
+        let requestedOffset = slot.offset;
+        let requestedLimit = pageSize;
+        let expectedTotal = slot.total;
+        let requireOverlap = false;
+        // Keep older reads independent of the moving tail: an overlapping
+        // persisted prefix proves continuity even while new rows arrive.
+        // Otherwise make at most one bounded attempt to find that anchor.
         for (let attempt = 0; attempt < 2 && slot.hasMore; attempt++) {
           if (!canRequest()) break;
 
           const cachedMessages = slot.serverMessages;
-          const expectedTotal = slot.total;
           const data = await requestSessionHistoryPage(sessionId, {
-            limit: opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
-            offset: slot.offset,
+            limit: requestedLimit,
+            offset: requestedOffset,
           });
           const olderMerge = mergeOlderServerPage(cachedMessages, data.messages);
-          const shiftedWhileFetching = (
-            data.total !== expectedTotal
-            || olderMerge.overlapLength > 0
-            || !olderPagePrecedesCachedHistory(data.messages, cachedMessages)
+          const canPrepend = data.total >= expectedTotal && (
+            olderMerge.overlapLength > 0
+            || (
+              !requireOverlap
+              && data.total === expectedTotal
+              && olderPagePrecedesCachedHistory(data.messages, cachedMessages)
+            )
           );
 
-          if (shiftedWhileFetching) {
+          if (!canPrepend) {
             if (attempt > 0 || !canRequest()) break;
+            if (data.total > expectedTotal) {
+              // The live tail overtook the whole page. Seek the previously
+              // loaded oldest row, including one overlap row to verify the
+              // total-based adjustment instead of guessing across a gap.
+              requestedOffset = Math.max(0, requestedOffset + data.total - expectedTotal - 1);
+              requestedLimit = pageSize + 1;
+              expectedTotal = data.total;
+              requireOverlap = true;
+              continue;
+            }
+            // A shrink/rewrite still needs authoritative tail reconciliation.
             const latestResult = await refreshLatestSlotFromServer(
               sessionId,
               slot,
@@ -711,19 +733,31 @@ export function useSessionStore() {
             );
             changed = changed || latestResult.changed;
             if (!latestResult.applied) break;
+            requestedOffset = slot.offset;
+            expectedTotal = slot.total;
             continue;
           }
 
           slot.serverMessages = olderMerge.messages;
           slot.hasMore = data.hasMore;
           slot.total = data.total;
-          slot.offset = slot.serverMessages.length;
+          // This page locates the oldest boundary in its own snapshot. Using
+          // the cached length would skip the unseen live tail and re-request
+          // the same history on the next scroll.
+          slot.offset = requestedOffset + data.messages.length;
           prependedCount = olderMerge.prependedCount;
           if (data.tokenUsage !== undefined) {
             slot.tokenUsage = data.tokenUsage;
           }
           recomputeMergedIfNeeded(slot);
           changed = true;
+          if (prependedCount === 0 && slot.hasMore) {
+            requestedOffset = slot.offset;
+            requestedLimit = pageSize;
+            expectedTotal = slot.total;
+            requireOverlap = false;
+            continue;
+          }
           break;
         }
 

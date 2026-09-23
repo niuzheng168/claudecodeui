@@ -7,9 +7,11 @@ Every transcript this tab has opened lives in one `Map<sessionId, SessionSlot>` 
 workspace is. A slot holds two arrays — `serverMessages` (what REST returned) and
 `realtimeMessages` (what the socket delivered since) — plus a cached `merged` array that is
 what actually renders. History is paginated from the *newest* row backwards: opening a session
-fetches the last 20 rows, scrolling up prepends 20 more. On the server those pages are sliced
-out of a full-transcript cache keyed by the transcript file's `stat`, so a multi-megabyte
-JSONL is parsed once, not once per page. On the client every rendered row is wrapped in a
+fetches the last 20 rows, scrolling up prepends up to 20 more. File-backed history pages are
+sliced out of a full-transcript cache keyed by the transcript file's `stat`, so a multi-megabyte
+JSONL is parsed once, not once per page. Native Codex histories instead use read-only native
+turn/item pagination; their exported JSONL is not authoritative. On the client every rendered
+row is wrapped in a
 `LazyMessageRow` that keeps a fixed-height placeholder in the DOM and mounts its expensive
 markdown/tool subtree only inside a band around the viewport. That last part is why "Load all"
 on a 29k-row session costs ~112 MB instead of ~1 GB.
@@ -27,11 +29,12 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
 3. **Pagination counts backwards from the end.** `offset: 0` is the newest page. `offset: N`
    means "the page ending N rows before the end". `hasMore` means *older* rows exist. Both
    `sliceTailPage` on the server and every helper in `sessionMessagePagination.ts` obey this.
-4. **`slot.offset` is "how many persisted rows I hold", not "how far into the list I am".**
-   After a successful page it equals `serverMessages.length`. `fetchFromServer` stores
-   `requestedOffset + page.length`, and since every one of its call sites requests
-   `offset: 0`, that is the same number. It is exactly the tail offset the next older page
-   needs, which is why `fetchMore` requests `slot.offset` and nothing has to translate.
+4. **`slot.offset` locates the oldest cached boundary in the last observed snapshot.**
+   It usually equals `serverMessages.length`, but also counts new tail rows that have not
+   yet been fetched when an older page lands during streaming. Older reads store
+   `requestedOffset + page.length`, not the merged cache length, so the next request advances
+   even while new messages arrive. A successful tail refresh fills that gap and restores
+   `offset === serverMessages.length`.
 5. **Server history and live frames are different shapes of the same conversation.**
    `prepareTranscriptMessages` runs on REST reads only, so the transcript mid-run does not
    match the transcript after a refresh. Reconciliation, not equality, is the contract — see
@@ -106,7 +109,7 @@ renders.
 
 | Field | Meaning |
 | --- | --- |
-| `serverMessages` | The contiguous persisted suffix currently held, oldest first. |
+| `serverMessages` | The contiguous persisted window currently held, oldest first. A tail refresh may still need to append newly arrived rows. |
 | `realtimeMessages` | Rows that arrived over the socket and are not yet known to be on disk. Capped at `MAX_REALTIME_MESSAGES = 500`, oldest dropped. |
 | `merged` | The render list. Recomputed only by `recomputeMergedIfNeeded`. |
 | `_lastServerRef` / `_lastRealtimeRef` | The two array identities `merged` was computed from. The dirty flag. |
@@ -115,7 +118,7 @@ renders.
 | `fetchedAt` | `Date.now()` of the last successful page. Drives `isStale` at `STALE_THRESHOLD_MS = 30_000`. |
 | `total` | Rows the server says the transcript has. |
 | `hasMore` | Older rows exist beyond `serverMessages[0]`. |
-| `offset` | Persisted rows held (`requestedOffset + page.length`) — the tail offset the next older page asks for. |
+| `offset` | Tail-relative oldest boundary (`requestedOffset + page.length`), including any not-yet-reconciled newer rows. |
 | `tokenUsage` | Last usage payload seen on a history page. `undefined` means "never reported"; `null` means "reported as none". |
 
 `status` has exactly one writer: `fetchFromServer` sets `loading` before it queues, then
@@ -274,7 +277,7 @@ flowchart TD
   G -->|"no"| Z["nothing is fetched"]
   G -->|"yes"| H{"slot.hasMore"}
   H -->|"false"| K["allMessagesLoaded, pager stops"]
-  H -->|"true"| I["fetchMore at offset equals rows already held"]
+  H -->|"true"| I["fetchMore at the cached oldest boundary's tail offset"]
   I --> J["mergeOlderServerPage prepends, offset grows, window grows by 20"]
   J --> L["layout effect re-pins the anchor row, no scroll to bottom"]
   L --> M["top-load lock closes until scrollTop passes 20"]
@@ -313,8 +316,8 @@ re-pins that anchor (`anchor.isConnected`) or falls back to a `scrollHeight` del
 
 ### When the tail moves under you
 
-**RULE: two pages are only ever concatenated after a shared row has been found. No proof, no
-concatenation — the cache is kept as it was.**
+**RULE: a latest-page stitch or shifted older-page stitch requires a shared row. An unchanged
+older boundary can use its existing offset; a guessed realignment must verify an anchor.**
 
 A tail-relative offset is only valid while `total` is stable, and a running turn appends rows
 between the request and the response. All the proving is done by pure helpers in
@@ -338,16 +341,29 @@ bridge. Bridging aborts and keeps the cached suffix when `total` changes mid-loo
 (`History changed while bridging`), or when a bridge chunk overlaps the window it should sit
 before, or fails to chronologically precede it (`History shifted while bridging`).
 
-`fetchMore` has the mirror defence: if the older page it just fetched overlaps the cache,
-reports a different `total`, or does not chronologically precede the rows it would be
-prepended to, it runs one bounded tail refresh and retries the older page once with the
-corrected offset. Two attempts, then it gives up and prepends nothing.
+`fetchMore` accepts an older page that overlaps the cache's head even if `total` grew: that
+overlap proves continuity, and refreshing the latest tail first could make every subsequent
+retry stale again on a busy session. Only the non-overlapping prefix is prepended. Its next
+offset is the response's requested offset plus page length, which also accounts for newer
+rows not yet present in the cache.
+
+When growth overtakes the whole older page, the reader adjusts the offset by the observed
+growth and requests one additional overlap row. That bounded retry must contain an actual
+cached anchor; a matching total or plausible timestamp alone is insufficient. A fully
+overlapping page can likewise realign the offset and retry once. Shrinks or other rewrites
+retain the authoritative tail-refresh fallback. Every older-page operation has at most two
+page attempts; failed alignment keeps the existing history.
+
+Later tail refreshes subtract `offset - serverMessages.length` from the observed total when
+planning their bridge, so all omitted new rows are fetched without discarding older messages.
+`sessionStorePagination.test.ts` covers continuous growth, overtaken pages, complete overlap,
+the oldest boundary, truncation, rewrites and recovery after a bounded retry.
 
 ---
 
 ## Server-side history
 
-**RULE: one page request costs one `stat`, not one transcript parse.**
+**RULE: file-backed pages use a stat-validated cache; native histories use their owning backend.**
 
 `sessionsService.fetchHistory` resolves the session row, returns an empty result when
 `provider_session_id` is not set yet (first message still streaming), then asks
@@ -361,7 +377,7 @@ slices with that same helper. Either way the caller cannot tell which path serve
 | --- | --- |
 | Key | App session id. |
 | Validity | `transcriptPath` + `mtimeMs` + `size` from one `fsp.stat` per request. A mismatch re-parses. |
-| Eligible providers | Claude and Codex only — they parse `session.jsonl_path` itself. Cursor (`store.db`) and OpenCode (shared SQLite) pass `transcriptPath: null` and bypass the cache, because the JSONL's stat says nothing about their history. |
+| Eligible providers | Claude and legacy Codex parse `session.jsonl_path` itself. Native paginated Codex, Cursor (`store.db`) and OpenCode (shared SQLite) bypass this cache, because an exported JSONL's stat says nothing about their authoritative history. |
 | Budget | `MAX_CACHED_TRANSCRIPT_FILE_BYTES = 256 MB` of source-file bytes and `MAX_CACHE_ENTRIES = 8`, LRU by re-insertion. The newest entry is never evicted. |
 | Concurrency | `pendingLoads` — concurrent requests for one session share a single parse. |
 | Invalidation | None, by design. Anything that changes history (a turn, an edit, a rewind, a fork) touches the file, so the next `stat` misses. |
@@ -369,6 +385,12 @@ slices with that same helper. Either way the caller cannot tell which path serve
 `sessions.service.test.ts` → *"history pages are sliced from the cached full transcript and see
 appended rows"* is the test that pins this: page, append a row, re-read, and the newest page
 reflects the append while an older page still honours the tail-offset contract.
+
+Native Codex snapshots use bounded turn metadata and item RPCs. The stdio transport retains
+raw byte fragments and decodes each complete JSON line once, preserving split UTF-8 characters
+without repeatedly scanning a growing history string. Its 16-MiB limit applies to each frame,
+not all frames that happen to arrive in one pipe read; malformed/oversized responses still
+fail closed. `codex-stdio-framing.test.ts` pins these framing and linear-work guarantees.
 
 Every returned row is re-stamped with the app session id before it leaves `fetchHistory`, so
 the browser never sees a provider-native id.
