@@ -9,8 +9,11 @@ workspace is. A slot holds two arrays — `serverMessages` (what REST returned) 
 what actually renders. History is paginated from the *newest* row backwards: opening a session
 fetches the last 20 rows, scrolling up prepends up to 20 more. File-backed history pages are
 sliced out of a full-transcript cache keyed by the transcript file's `stat`, so a multi-megabyte
-JSONL is parsed once, not once per page. Native Codex histories instead use read-only native
-turn/item pagination; their exported JSONL is not authoritative. On the client every rendered
+JSONL is parsed once, not once per page. Native Codex histories materialize a bounded,
+immutable snapshot using read-only native turn/item pagination; older pages reuse its handle
+and a persisted row anchor instead of traversing the native store again. Their exported JSONL
+is not authoritative. Confirmed client history and its viewport are cached in account- and
+node-scoped IndexedDB, with memory → disk → network hydration. On the client every rendered
 row is wrapped in a
 `LazyMessageRow` that keeps a fixed-height placeholder in the DOM and mounts its expensive
 markdown/tool subtree only inside a band around the viewport. That last part is why "Load all"
@@ -18,7 +21,7 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
 
 ## Mental model
 
-1. **The store is a ref, not React state.** `storeRef` is a plain `Map` mutated in place.
+1. **The store is a memoized map, not React state.** `slots` is an account-scoped `Map` mutated in place.
    Re-renders happen only because `notify(sessionId)` bumps a counter — and only when
    `sessionId` matches `activeSessionIdRef`. A background session can absorb a thousand
    frames without rendering anything.
@@ -49,15 +52,18 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
    which lives inside the mounted content, so it can only ever anchor on a mounted row. That
    is safe: `captureScrollRestoreState` takes the first such row at or below the container's
    top edge, and rows at the viewport edge are inside the mounted band by definition.
-8. **No message is persisted client-side.** No localStorage, no IndexedDB for transcripts
-   (composer drafts, in `chatStorage.ts`, are the only chat state that touches localStorage).
-   The provider's transcript file is the source of truth and a reload re-fetches the tail page.
+8. **Only confirmed server history is persisted client-side.** IndexedDB holds the loaded
+   contiguous window, pagination handle and viewport, never optimistic or partial streaming
+   rows. Returning to any hydrated slot preserves all its pages. A remount restores disk
+   history before networking; a stale cache refreshes the tail in the background without
+   replacing the older window. The provider remains authoritative.
 
 ## The pieces
 
 | File | Role |
 | --- | --- |
 | `src/modules/chat/hooks/useSessionStore.ts` | The `Map<sessionId, SessionSlot>`, the merge, and every mutator. |
+| `src/shared/utils.ts` | `createSessionHistoryCache` and auth's `clearSessionHistoryCache`: bounded node/account-scoped IndexedDB. |
 | `src/modules/chat/utils/sessionMessagePagination.ts` | Pure page-stitching helpers: overlap detection, bridge planning, prepend merge. |
 | `src/modules/chat/utils/sessionMessageReconciliation.ts` | `removeOptimisticUserEchoes` — retires a locally-appended user row once its persisted copy arrives. |
 | `src/modules/chat/hooks/useChatMessages.ts` | `normalizedToChatMessages` — `NormalizedMessage[]` to `ChatMessage[]`, with a `WeakMap` projection cache. |
@@ -69,9 +75,10 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
 | `src/modules/chat/hooks/useLazyRowObserver.ts` | One shared `IntersectionObserver` per pane, rooted at the scroll container. |
 | `src/modules/chat/transcript/LoadAllMessagesOverlay.tsx` | The "Load all (N)" pill shown at the top of a partially-loaded transcript. |
 | `src/modules/chat/transcript/ChatExportMenu.tsx` | Calls `onLoadFullTranscript` before building a file. |
-| `server/modules/providers/provider.routes.ts` | `GET /api/providers/sessions/:sessionId/messages` — parses `limit`/`offset`. |
+| `server/modules/providers/provider.routes.ts` | `GET /api/providers/sessions/:sessionId/messages` — validates `limit`/`offset` and optional `snapshotId`/`before`. |
 | `server/modules/providers/services/sessions.service.ts` | `fetchHistory` — cache lookup, tail slice, stamps the app session id on every row. |
 | `server/modules/providers/services/session-history-cache.service.ts` | Full-transcript LRU validated by `stat`. |
+| `server/modules/providers/services/session-history-snapshots.service.ts` | Native snapshot LRU, coalesced cold reads, stable row-anchor pagination. |
 | `server/shared/message-unification.ts` | `prepareTranscriptMessages` — reduces a Claude or Codex transcript to renderable rows before it is paged. |
 | `server/shared/utils.ts` | `sliceTailPage` — the one definition of what a page is. |
 
@@ -93,16 +100,19 @@ runtime.
 | `ESTIMATED_ROW_HEIGHT_PX` | 100 | `src/modules/chat/transcript/LazyMessageRow.tsx` | Placeholder height for a row that has never been measured. |
 | `MAX_CACHED_TRANSCRIPT_FILE_BYTES` | 256 MB | `server/modules/providers/services/session-history-cache.service.ts` | Source-file bytes held by the server's full-transcript cache. |
 | `MAX_CACHE_ENTRIES` | 8 | `server/modules/providers/services/session-history-cache.service.ts` | Sessions held by that cache. |
+| Native snapshot limits | 128 MiB serialized / 16 snapshots / 30 min idle | `session-history-snapshots.service.ts` | Retained native snapshots; oversized histories are served but not retained. |
+| Persistent history limits | 64 MiB / 40 sessions / 16 MiB per session / 7 days | `src/shared/utils.ts` | IndexedDB transcripts, evicted using a small metadata index. |
+| `STORAGE_TIMEOUT_MS` | 1500 | `src/shared/utils.ts` | Each IndexedDB open/transaction; blocked or denied storage falls back to the network. |
 
 ---
 
 ## The slot
 
-**RULE: one slot per session, created on first touch, never removed.**
+**RULE: one slot per session within the active authenticated account.**
 
 `createEmptySlot` in `src/modules/chat/hooks/useSessionStore.ts` builds it; `getSlot` creates
 one lazily. A slot's arrays can be emptied — `truncateAt` does exactly that — but the entry
-itself is never deleted from the `Map`. Switching sessions only moves `activeSessionIdRef`.
+itself is retained until account change/logout. Switching sessions only moves `activeSessionIdRef`.
 Old slots stay warm, which is why returning to a session is instant, and why
 `setActiveSession(null)` — what a hidden Chat tab does — lets frames accumulate with zero
 renders.
@@ -121,9 +131,17 @@ renders.
 | `offset` | Tail-relative oldest boundary (`requestedOffset + page.length`), including any not-yet-reconciled newer rows. |
 | `tokenUsage` | Last usage payload seen on a history page. `undefined` means "never reported"; `null` means "reported as none". |
 
-`status` has exactly one writer: `fetchFromServer` sets `loading` before it queues, then
-`idle` or `error` when it settles (also `idle` when `canRequest` refuses). Nothing else in the
-store touches it. `'streaming'` is declared in the `SessionStatus` union but no code path
+`snapshotId` pins a native snapshot; `view` retains the render window (`-1` means unlimited),
+scroll position and scrolled-up state. `historyError` records failed reads for visible retry
+controls, never as end-of-history.
+
+Auth clears both memory and the deployment's IndexedDB cache on logout/expiry. A synchronous
+generation tombstone fences late old-account writes even if an unload interrupts database
+clearing. Disk keys contain the account; node prefixes partition databases. Quota refusal,
+malformed records or blocked storage are cache misses, not loading hangs.
+
+`fetchFromServer` sets `status` to `loading` before it queues, then `idle` or `error` when
+it settles (also `idle` when `canRequest` refuses). Disk-cache hydration restores `idle`. `'streaming'` is declared in the `SessionStatus` union but no code path
 assigns it — streaming is visible through the `__streaming_<sessionId>` row instead, and busy
 state lives in the processing map described in [the realtime stream](./02-realtime-stream.md).
 
@@ -221,13 +239,13 @@ and a hidden tab fails it — except export, which is allowed to finish.**
 
 | Trigger | Call | Notes |
 | --- | --- | --- |
-| Session selected (not already hydrated) | `fetchFromServer(limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0)` | Guarded by `lastLoadedSessionKeyRef` = `sessionId:projectId` plus `slot.fetchedAt`, so tab switches do not refetch. |
+| Session selected (not already hydrated) | `restoreFromCache`, then `fetchFromServer(limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0)` on a miss | Every warm slot is reused, not only the last-opened session; concurrent opens join the same read. |
 | Session re-activated and stale | `requestLatestMessages` | Only when `isStale`. |
 | `complete` frame for the viewed session | `requestLatestMessages` | In `useChatRealtimeHandlers`. |
 | `websocket_reconnected` | `requestLatestMessages`, awaited, then `chat.subscribe` | `ChatInterface.tsx` `handleWebSocketReconnect`. |
 | `externalMessageUpdate` bumped by the sidebar | `requestLatestMessages` | Skipped while the session is processing. |
-| Scroll within 100 px of the top | `fetchMore` | Locked by `topLoadLockRef` until `scrollTop > 20`. |
-| "Load all" clicked | `fetchFromServer(limit: null)` | Also sets `visibleMessageCount = Infinity`. |
+| Scroll within 100 px of the top / "Load earlier" | Reveal cached rows first, otherwise `fetchMore` | Wheel/touch intent re-arms the lock even if collapsed tool pages add zero height. A persistent button is always available. |
+| "Load all" clicked | Reuse complete cache, otherwise `fetchFromServer(limit: null, snapshotId)` | Also sets `visibleMessageCount = Infinity`; an expired handle retries one fresh snapshot. |
 | Search jump, unless the transcript is already fully loaded | `fetchFromServer(limit: null)` | Fetches everything; widens the window only as far as the hit needs. |
 | Export | `loadFullTranscript` → `fetchFromServer(limit: null)` | Does not touch the render window. |
 
@@ -264,11 +282,13 @@ page, and `limit: 0` returns nothing but still reports `hasMore: true`.
 Why this way round: a chat opens at the bottom. If pages were counted from the start, opening
 a 5000-row session would have to know its length before it could ask for the last 20 rows, and
 every appended turn would shift every page boundary. With tail pages, `offset: 0` is always
-"what the user is about to look at", and appends only affect the page nobody has scrolled to.
+"what the user is about to look at". Appends still shift tail-relative offsets: native reads
+therefore pin a snapshot and anchor, while older nodes retain the overlap-checked offset
+compatibility path.
 
 ```mermaid
 flowchart TD
-  A["Session selected in the chat pane"] --> B["fetchFromServer limit 20 offset 0"]
+  A["Session selected; memory and disk cache miss"] --> B["fetchFromServer limit 20 offset 0"]
   B --> C["GET sessions id messages"]
   C --> D["sliceTailPage returns the newest 20 rows and hasMore"]
   D --> E["slot.serverMessages set, offset set to rows held"]
@@ -277,12 +297,32 @@ flowchart TD
   G -->|"no"| Z["nothing is fetched"]
   G -->|"yes"| H{"slot.hasMore"}
   H -->|"false"| K["allMessagesLoaded, pager stops"]
-  H -->|"true"| I["fetchMore at the cached oldest boundary's tail offset"]
+  H -->|"true"| I["fetchMore using snapshotId + oldest row anchor (legacy: offset)"]
   I --> J["mergeOlderServerPage prepends, offset grows, window grows by 20"]
   J --> L["layout effect re-pins the anchor row, no scroll to bottom"]
-  L --> M["top-load lock closes until scrollTop passes 20"]
+  L --> M["top-load lock closes until scrollTop passes 20 or wheel/touch intent"]
   M --> G
 ```
+
+### Native snapshot boundaries
+
+A cold native read still traverses read-only `thread/turns/list` and `thread/items/list`.
+The normalized transcript is retained once, with an opaque `snapshotId` and row-ID index.
+Every older request sends that handle plus `before` = its oldest persisted message ID.
+The server echoes the anchor and computes the offset in that snapshot. New live rows cannot
+move it, and dozens of older pages do not repeat the expensive native traversal.
+
+Snapshots are bounded by bytes, count and idle age. After eviction/restart an anchored request
+reconstructs the snapshot and locates the same row. A deleted anchor fails explicitly with
+409 instead of guessing across a gap. A handle without an anchor fails as expired; "Load all"
+can retry once without it. Every request still resolves the session/project/provider mapping;
+a snapshot token is not authorization. A fresh tail read (no handle) always revalidates native
+history, and its bridge pages use the same newly returned handle.
+
+`session-history-snapshots.test.ts` walks 1601 rows to the first record with one provider read;
+`historyNavigation.test.tsx` covers repeated zero-height pages, A → B → A, IndexedDB remount,
+read failures and late responses. Storage refusal and auth isolation are covered separately
+in `src/shared/tests/sessionHistoryCache.test.ts`.
 
 ### Prepending an older page
 
@@ -496,11 +536,10 @@ fetched, and `findSearchTargetIndex` resolves against the loaded transcript rath
 DOM. Export needs it because otherwise exporting a long conversation silently produced a file
 containing only its last page.
 
-There is a fourth way the window grows, and it fetches nothing. Once `hasMoreMessages` is
-false but the projected list is still longer than `visibleMessageCount`, `ChatMessagesPane`
-shows a "showing last N" line with a "load earlier" link. It calls `loadEarlierMessages`,
-which adds 100 to `visibleMessageCount`. That is the only widener that is not paired with a
-fetch, because by then the store already holds everything.
+There is a fourth way the window grows, and it fetches nothing. Whenever the projected list
+is longer than `visibleMessageCount`, `loadEarlierMessages` reveals up to 100 cached rows
+before requesting another page. The persistent "Load earlier" / "Load all" controls remain
+available whenever either older network pages or hidden cached rows exist.
 
 ## Why the transcript is not virtualized
 
@@ -584,12 +623,13 @@ of ~1 GB with seven thousand.
   reach back to or past the cached tail's newest timestamp (a rewritten transcript would
   otherwise be walked to its start). The test *"tool-result totals walk bounded bridge chunks
   until a contiguous anchor"* is that whole sequence.
-- **The top-load lock releases at `scrollTop > 20`, not on a full scroll cycle.** Requiring a
-  down-and-up cycle made repeated upward pagination lock up (`fadbcc82`).
+- **The top-load lock also releases on deliberate wheel/touch intent.** Collapsed tool pages
+  can add zero height; waiting for `scrollTop > 20` then deadlocks. Persistent earlier/all
+  buttons remain available even after the transient overlay fades.
 - **Hidden tabs never fetch.** `canRequest` returns false, the coordinator marks the session
   dirty, and activation flushes exactly one request (`6e8d4087`). An initial page load
   supersedes a pending refresh for an unhydrated slot via `discardPending`.
-- **The history cache has no invalidation API on purpose.** Every mutation path already
+- **The file-backed history cache has no invalidation API on purpose.** Every mutation path already
   touches the transcript file, so the `stat` comparison covers all of them; an explicit hook
   would be one more thing to forget to call.
 - **The store keys sessions directly, with no alias table.** The app session id is allocated by

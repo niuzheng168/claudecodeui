@@ -4,14 +4,15 @@
  * Holds per-session state in a Map keyed by sessionId.
  * Session switch = change activeSessionId pointer. No clearing. Old data stays.
  * WebSocket handler = store.appendRealtime(msg.sessionId, msg). One line.
- * No localStorage for messages. Backend JSONL is the source of truth.
+ * Confirmed history and viewport persist in account/node-scoped IndexedDB.
+ * Provider history remains authoritative; realtime/optimistic rows stay in memory.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
-import type { LLMProvider, NormalizedMessage } from '@/shared/types';
-import { compareNativeTranscriptPositions } from '@/shared/utils';
+import type { LLMProvider, NormalizedMessage, SessionHistoryView } from '@/shared/types';
+import { compareNativeTranscriptPositions, createSessionHistoryCache } from '@/shared/utils';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
 import { orderNativeTranscriptMessages } from '@/modules/chat/utils/nativeTranscriptOrder';
 import {
@@ -50,6 +51,10 @@ export type SessionSlot = {
   /** Tail-relative oldest boundary; includes new tail rows not yet reconciled. */
   offset: number;
   tokenUsage: unknown;
+  snapshotId?: string;
+  view?: SessionHistoryView;
+  /** Last failed read; a failed request must not look like completed/empty history. */
+  historyError?: string;
 };
 
 const EMPTY: NormalizedMessage[] = [];
@@ -83,6 +88,9 @@ type SessionHistoryPage = {
   total: number;
   hasMore: boolean;
   tokenUsage?: unknown;
+  snapshotId?: string;
+  before?: string;
+  offset?: number;
 };
 
 function enqueueHistoryMutation<T>(
@@ -104,9 +112,13 @@ async function requestSessionHistoryPage(
   const response = await api.providers.sessionMessages(sessionId, options, {
     signal: AbortSignal.timeout(SESSION_HISTORY_REQUEST_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
   const body = await response.json();
+  if (!response.ok || body?.success === false) {
+    const detail = typeof body?.error === 'string' ? body.error : body?.error?.message;
+    throw Object.assign(new Error(detail || `HTTP ${response.status}`), {
+      code: typeof body?.error === 'object' ? body.error.code : body?.code,
+    });
+  }
   const data = body?.data ?? body;
   const messages: NormalizedMessage[] = Array.isArray(data.messages) ? data.messages : [];
 
@@ -114,6 +126,9 @@ async function requestSessionHistoryPage(
     messages,
     total: typeof data.total === 'number' ? data.total : messages.length,
     hasMore: Boolean(data.hasMore),
+    ...(typeof data.snapshotId === 'string' ? { snapshotId: data.snapshotId } : {}),
+    ...(typeof data.before === 'string' ? { before: data.before } : {}),
+    ...(Number.isSafeInteger(data.offset) && data.offset >= 0 ? { offset: data.offset } : {}),
     ...(
       data && typeof data === 'object' && 'tokenUsage' in data
         ? { tokenUsage: data.tokenUsage }
@@ -511,7 +526,10 @@ async function refreshLatestSlotFromServer(
         return { applied: false, changed: false, deferred: true };
       }
 
-      const bridgePage = await requestSessionHistoryPage(sessionId, bridgeRequest);
+      const bridgePage = await requestSessionHistoryPage(sessionId, {
+        ...bridgeRequest,
+        ...(latestPage.snapshotId ? { snapshotId: latestPage.snapshotId } : {}),
+      });
       if (bridgePage.total !== latestPage.total) {
         console.warn(`[SessionStore] History changed while bridging ${sessionId}; retaining cached suffix.`);
         return { applied: false, changed: false, deferred: false };
@@ -570,6 +588,8 @@ async function refreshLatestSlotFromServer(
   slot.total = latestPage.total;
   slot.offset = nextServerMessages.length;
   slot.hasMore = nextHasMore;
+  slot.snapshotId = latestPage.snapshotId;
+  slot.historyError = undefined;
   slot.fetchedAt = Date.now();
   slot.realtimeMessages = pruneRealtimeSupersededByServer(
     slot.serverMessages,
@@ -588,30 +608,96 @@ const MAX_REALTIME_MESSAGES = 500;
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
-export function useSessionStore() {
-  const storeRef = useRef(new Map<string, SessionSlot>());
+export function useSessionStore(cacheOwner: string | null = null) {
+  const persistence = useMemo(() => createSessionHistoryCache(cacheOwner), [cacheOwner]);
+  // Old async callbacks retain the old account's map, never the newly signed-in account's.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- The account identity intentionally invalidates this external store.
+  const slots = useMemo(() => new Map<string, SessionSlot>(), [cacheOwner]);
+  // An account transition invalidates both its in-memory slots and late disk writes.
+  const previousPersistenceRef = useRef(persistence);
+  useEffect(() => {
+    if (previousPersistenceRef.current !== persistence) {
+      previousPersistenceRef.current.dispose();
+      previousPersistenceRef.current = persistence;
+    }
+  }, [persistence]);
   const activeSessionIdRef = useRef<string | null>(null);
   // Bump to force re-render — only when the active session's data changes.
   // Session ids are stable for the whole conversation lifetime (the backend
   // allocates them before the first send), so slots are keyed directly with
   // no alias/redirect indirection.
   const [, setTick] = useState(0);
+  useEffect(() => persistence.onReset(() => {
+    slots.clear();
+    setTick(value => value + 1);
+  }), [persistence, slots]);
+
+  const persist = useCallback((sessionId: string, slot: SessionSlot) => {
+    if (!slot.fetchedAt) return;
+    void persistence.write({
+      sessionId, messages: slot.serverMessages, total: slot.total, hasMore: slot.hasMore,
+      offset: slot.offset, fetchedAt: slot.fetchedAt, snapshotId: slot.snapshotId,
+      tokenUsage: slot.tokenUsage, view: slot.view,
+    });
+  }, [persistence]);
+
+  // Scroll position changes frequently; persist only the last view per burst.
+  const viewSaveTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => () => {
+    for (const timer of viewSaveTimersRef.current.values()) clearTimeout(timer);
+    viewSaveTimersRef.current.clear();
+    for (const [sessionId, slot] of slots) persist(sessionId, slot);
+  }, [persist, slots]);
   const notify = useCallback((sessionId: string) => {
     if (sessionId === activeSessionIdRef.current) {
       setTick(n => n + 1);
     }
   }, []);
 
-  const setActiveSession = useCallback((sessionId: string | null) => {
-    activeSessionIdRef.current = sessionId;
-  }, []);
-
   const getSlot = useCallback((sessionId: string): SessionSlot => {
-    const store = storeRef.current;
+    const store = slots;
     if (!store.has(sessionId)) {
+      // eslint-disable-next-line react/immutability -- This is an external mutable store; notify() explicitly schedules its React readers.
       store.set(sessionId, createEmptySlot());
     }
     return store.get(sessionId)!;
+  }, [slots]);
+
+  const restoreFromCache = useCallback(async (sessionId: string) => {
+    const slot = getSlot(sessionId);
+    if (slot.fetchedAt) return slot;
+    return enqueueHistoryMutation(slot, async () => {
+      if (slot.fetchedAt) return slot;
+      const cached = await persistence.read(sessionId);
+      if (!cached) return null;
+      slot.serverMessages = cached.messages;
+      slot.total = cached.total;
+      slot.hasMore = cached.hasMore;
+      slot.offset = cached.offset;
+      slot.fetchedAt = cached.fetchedAt;
+      slot.snapshotId = cached.snapshotId;
+      slot.tokenUsage = cached.tokenUsage;
+      slot.view = cached.view;
+      slot.status = 'idle';
+      recomputeMergedIfNeeded(slot);
+      notify(sessionId);
+      return slot;
+    });
+  }, [getSlot, notify, persistence]);
+
+  const saveView = useCallback((sessionId: string, view: SessionHistoryView) => {
+    const slot = getSlot(sessionId);
+    slot.view = view;
+    const timers = viewSaveTimersRef.current;
+    if (timers.has(sessionId)) clearTimeout(timers.get(sessionId));
+    timers.set(sessionId, setTimeout(() => {
+      timers.delete(sessionId);
+      persist(sessionId, slot);
+    }, 300));
+  }, [getSlot, persist]);
+
+  const setActiveSession = useCallback((sessionId: string | null) => {
+    activeSessionIdRef.current = sessionId;
   }, []);
 
   /**
@@ -625,6 +711,7 @@ export function useSessionStore() {
     opts: {
       limit?: number | null;
       offset?: number;
+      snapshotId?: string;
       canRequest?: CanRequestHistory;
     } = {},
   ) => {
@@ -641,10 +728,20 @@ export function useSessionStore() {
       }
 
       try {
-        const data = await requestSessionHistoryPage(sessionId, requestOptions);
+        let data: SessionHistoryPage;
+        try {
+          data = await requestSessionHistoryPage(sessionId, requestOptions);
+        } catch (error) {
+          if (!requestOptions.snapshotId || (error as { code?: string }).code !== 'HISTORY_SNAPSHOT_EXPIRED') throw error;
+          // "Load all" is explicit; after a node restart it can safely obtain a
+          // fresh whole snapshot instead of retrying an expired handle forever.
+          data = await requestSessionHistoryPage(sessionId, { ...requestOptions, snapshotId: undefined });
+        }
         slot.serverMessages = data.messages;
         slot.total = data.total;
         slot.hasMore = data.hasMore;
+        slot.snapshotId = data.snapshotId;
+        slot.historyError = undefined;
         slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
         slot.fetchedAt = Date.now();
         slot.status = 'idle';
@@ -658,15 +755,17 @@ export function useSessionStore() {
         }
 
         notify(sessionId);
+        persist(sessionId, slot);
         return slot;
       } catch (error) {
         console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
         slot.status = 'error';
+        slot.historyError = error instanceof Error ? error.message : String(error);
         notify(sessionId);
         return slot;
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, persist]);
 
   /**
    * Load older (paginated) messages and prepend to serverMessages.
@@ -686,6 +785,33 @@ export function useSessionStore() {
       if (!slot.hasMore || !canRequest()) return { slot, prependedCount };
 
       try {
+        slot.historyError = undefined;
+        if (slot.snapshotId && slot.serverMessages.length > 0) {
+          const before = slot.serverMessages[0].id;
+          const data = await requestSessionHistoryPage(sessionId, {
+            limit: opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
+            offset: slot.offset, snapshotId: slot.snapshotId, before,
+          });
+          // Only the new server's explicit anchor acknowledgement allows this
+          // stable path. Older nodes continue through the offset compatibility
+          // path below rather than silently skipping or duplicating history.
+          if (data.snapshotId && data.before === before && data.offset !== undefined) {
+            const older = mergeOlderServerPage(slot.serverMessages, data.messages);
+            if (older.prependedCount === 0 && data.hasMore) throw new Error('History page made no progress. Retry loading earlier messages.');
+            slot.serverMessages = older.messages;
+            slot.hasMore = data.hasMore;
+            slot.snapshotId = data.snapshotId;
+            slot.total = Math.max(slot.total, data.total);
+            slot.offset = Math.max(slot.serverMessages.length,
+              data.offset + data.messages.length + Math.max(0, slot.total - data.total));
+            prependedCount = older.prependedCount;
+            recomputeMergedIfNeeded(slot);
+            notify(sessionId);
+            persist(sessionId, slot);
+            return { slot, prependedCount };
+          }
+          slot.snapshotId = undefined;
+        }
         const pageSize = opts.limit ?? SESSION_MESSAGES_PAGE_SIZE;
         let requestedOffset = slot.offset;
         let requestedLimit = pageSize;
@@ -761,15 +887,20 @@ export function useSessionStore() {
           break;
         }
 
-        if (changed) notify(sessionId);
+        if (!prependedCount && slot.hasMore) {
+          slot.historyError = 'History changed while loading. Retry loading earlier messages.';
+        }
+        if (changed || slot.historyError) notify(sessionId);
+        if (changed) persist(sessionId, slot);
         return { slot, prependedCount };
       } catch (error) {
         console.error(`[SessionStore] fetchMore failed for ${sessionId}:`, error);
-        if (changed) notify(sessionId);
+        slot.historyError = error instanceof Error ? error.message : String(error);
+        notify(sessionId);
         return { slot, prependedCount };
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, persist]);
 
   /**
    * Drops the message carrying `anchorId` and everything after it.
@@ -780,7 +911,7 @@ export function useSessionStore() {
    * just the one that made the edit.
    */
   const truncateAt = useCallback((sessionId: string, anchorId: string) => {
-    const slot = storeRef.current.get(sessionId);
+    const slot = slots.get(sessionId);
     if (!slot) return;
 
     const cutIndex = slot.serverMessages.findIndex(
@@ -810,9 +941,11 @@ export function useSessionStore() {
     // anyway, but leaving it high makes the pager offer pages that do not exist.
     slot.total = slot.serverMessages.length;
     slot.offset = slot.serverMessages.length;
+    slot.snapshotId = undefined;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
-  }, [notify]);
+    persist(sessionId, slot);
+  }, [notify, persist, slots]);
 
   /**
    * Upsert realtime snapshots in the correct session, including background
@@ -876,23 +1009,26 @@ export function useSessionStore() {
           opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
           opts.canRequest,
         );
-        if (result.changed) notify(sessionId);
+        if (result.changed) {
+          notify(sessionId);
+          persist(sessionId, slot);
+        }
         return { slot, ...result };
       } catch (error) {
         console.error(`[SessionStore] latest refresh failed for ${sessionId}:`, error);
         return { slot, applied: false, changed: false, deferred: false };
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, persist]);
 
   /**
    * Check if a session's data is stale (>30s old).
    */
   const isStale = useCallback((sessionId: string) => {
-    const slot = storeRef.current.get(sessionId);
+    const slot = slots.get(sessionId);
     if (!slot) return true;
     return Date.now() - slot.fetchedAt > STALE_THRESHOLD_MS;
-  }, []);
+  }, [slots]);
 
   /**
    * Update or create a streaming message (accumulated text so far).
@@ -925,7 +1061,7 @@ export function useSessionStore() {
    * The well-known streaming ID is replaced with a unique text message ID.
    */
   const finalizeStreaming = useCallback((sessionId: string) => {
-    const slot = storeRef.current.get(sessionId);
+    const slot = slots.get(sessionId);
     if (!slot) return;
     const streamId = `__streaming_${sessionId}`;
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
@@ -941,25 +1077,27 @@ export function useSessionStore() {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     }
-  }, [notify]);
+  }, [notify, slots]);
 
   /**
    * Get merged messages for a session (for rendering).
    */
   const getMessages = useCallback((sessionId: string): NormalizedMessage[] => {
-    return storeRef.current.get(sessionId)?.merged ?? EMPTY;
-  }, []);
+    return slots.get(sessionId)?.merged ?? EMPTY;
+  }, [slots]);
 
   /**
    * Get session slot (for status, pagination info, etc.).
    */
   const getSessionSlot = useCallback((sessionId: string): SessionSlot | undefined => {
-    return storeRef.current.get(sessionId);
-  }, []);
+    return slots.get(sessionId);
+  }, [slots]);
 
   return useMemo(() => ({
     fetchFromServer,
     fetchMore,
+    restoreFromCache,
+    saveView,
     appendRealtime,
     truncateAt,
     refreshLatestFromServer,
@@ -970,7 +1108,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, truncateAt, refreshLatestFromServer,
+    fetchFromServer, fetchMore, restoreFromCache, saveView, appendRealtime, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     getMessages, getSessionSlot,
   ]);

@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, ComposerHistoryMessage, LLMProvider, NativeTranscriptPosition, NormalizedMessage, Project, ProjectSession, SlashCommand } from '@/shared/types';
+import type { CachedSessionHistory, ChatMessage, ComposerHistoryMessage, LLMProvider, NativeTranscriptPosition, NormalizedMessage, Project, ProjectSession, SlashCommand } from '@/shared/types';
 
 //----------------- NATIVE TRANSCRIPT ORDER ------------
 
@@ -452,3 +452,178 @@ export const getPageTitle = (
 
   return displayName ? `${displayName} - ${DEFAULT_PAGE_TITLE}` : DEFAULT_PAGE_TITLE;
 };
+
+// ---------------------------
+
+//----------------- PERSISTENT SESSION HISTORY ------------
+
+const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
+const MAX_CACHE_ENTRIES = 40;
+const CACHE_AGE_MS = 7 * 24 * 60 * 60_000;
+const STORAGE_TIMEOUT_MS = 1500;
+
+type CacheMetadata = { key: string; bytes: number; usedAt: number };
+type CacheRecord = { key: string; owner: string; value: CachedSessionHistory; savedAt: number };
+
+// Auth invalidation also fences delayed IndexedDB opens/writes from a prior login.
+let epoch = 0;
+const resetListeners = new Set<() => void>();
+
+function databaseName(): string {
+  return deploymentStorageKey('session-history-v1');
+}
+
+function generation(name: string): string {
+  try { return localStorage.getItem(`${name}:generation`) ?? '0'; }
+  catch { return '0'; }
+}
+
+function openDatabase(name: string): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (database: IDBDatabase | null) => {
+      if (settled) { database?.close(); return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve(database);
+    };
+    const timer = setTimeout(() => finish(null), STORAGE_TIMEOUT_MS);
+    try {
+      const request = indexedDB.open(name, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('history', { keyPath: 'key' });
+        request.result.createObjectStore('metadata', { keyPath: 'key' });
+      };
+      request.onsuccess = () => finish(request.result);
+      request.onerror = () => finish(null);
+      request.onblocked = () => finish(null);
+    } catch { finish(null); }
+  });
+}
+
+function validHistory(value: CachedSessionHistory, sessionId: string): boolean {
+  return Boolean(value && value.sessionId === sessionId && Array.isArray(value.messages)
+    && value.messages.every(message => message && message.sessionId === sessionId
+      && typeof message.id === 'string' && typeof message.kind === 'string'
+      && typeof message.timestamp === 'string')
+    && Number.isFinite(value.fetchedAt) && value.fetchedAt > 0
+    && Number.isSafeInteger(value.total) && value.total >= 0
+    && Number.isSafeInteger(value.offset) && value.offset >= value.messages.length
+    && typeof value.hasMore === 'boolean'
+    && (value.snapshotId === undefined || (typeof value.snapshotId === 'string' && value.snapshotId.length <= 64))
+    && (value.view === undefined || (Number.isFinite(value.view.visibleCount) && value.view.visibleCount >= -1
+      && Number.isFinite(value.view.scrollTop) && value.view.scrollTop >= 0 && typeof value.view.scrolledUp === 'boolean')));
+}
+
+/**
+ * Used by chat's session store. Cached transcripts are partitioned by the active
+ * node deployment and authenticated account. Storage refusal/quota/corruption
+ * must degrade to memory/network, never prevent opening a conversation.
+ */
+export function createSessionHistoryCache(owner: string | null) {
+  const name = databaseName();
+  const createdEpoch = epoch;
+  const createdGeneration = generation(name);
+  let disposed = false;
+  const active = () => !disposed && owner !== null && createdEpoch === epoch && generation(name) === createdGeneration;
+  const keyFor = (sessionId: string) => JSON.stringify([createdGeneration, owner, sessionId]);
+
+  async function transaction<T>(
+    mode: IDBTransactionMode,
+    fallback: T,
+    run: (tx: IDBTransaction, finish: (value: T) => void) => void,
+  ): Promise<T> {
+    if (!active()) return fallback;
+    const db = await openDatabase(name);
+    if (!db || !active()) { db?.close(); return fallback; }
+    return new Promise(resolve => {
+      let value = fallback, settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        db.close();
+        resolve(active() ? value : fallback);
+      };
+      let tx: IDBTransaction | undefined;
+      const timer = setTimeout(() => {
+        value = fallback;
+        try { tx?.abort(); } catch { /* Already finished. */ }
+        finish();
+      }, STORAGE_TIMEOUT_MS);
+      try {
+        tx = db.transaction(['history', 'metadata'], mode);
+        tx.oncomplete = finish;
+        tx.onabort = tx.onerror = () => { value = fallback; finish(); };
+        run(tx, next => { value = next; });
+      } catch { finish(); }
+    });
+  }
+
+  return {
+    dispose(): void { disposed = true; },
+    async read(sessionId: string): Promise<CachedSessionHistory | null> {
+      return transaction('readonly', null as CachedSessionHistory | null, (tx, finish) => {
+        const request = tx.objectStore('history').get(keyFor(sessionId));
+        request.onsuccess = () => {
+          const record = request.result as CacheRecord | undefined;
+          if (record?.owner === owner && Date.now() - record.savedAt < CACHE_AGE_MS
+            && validHistory(record.value, sessionId)) finish(record.value);
+        };
+      });
+    },
+    async write(value: CachedSessionHistory): Promise<void> {
+      if (owner === null || !active() || !validHistory(value, value.sessionId)) return;
+      let bytes: number;
+      try { bytes = new TextEncoder().encode(JSON.stringify(value)).length; }
+      catch { return; }
+      if (bytes > MAX_ENTRY_BYTES) return;
+      await transaction('readwrite', undefined, tx => {
+        const key = keyFor(value.sessionId), savedAt = Date.now();
+        const history = tx.objectStore('history'), metadata = tx.objectStore('metadata');
+        history.put({ key, owner, value, savedAt } satisfies CacheRecord);
+        metadata.put({ key, bytes, usedAt: savedAt } satisfies CacheMetadata);
+        // Read only the tiny metadata list, never deserialize every transcript
+        // merely to enforce the shared node's LRU/byte budget.
+        const request = metadata.getAll();
+        request.onsuccess = () => {
+          const entries = (request.result as CacheMetadata[]).sort((a, b) => a.usedAt - b.usedAt);
+          let total = entries.reduce((sum, entry) => sum + entry.bytes, 0), count = entries.length;
+          for (const entry of entries) {
+            if (count <= MAX_CACHE_ENTRIES && total <= MAX_CACHE_BYTES && savedAt - entry.usedAt < CACHE_AGE_MS) continue;
+            history.delete(entry.key);
+            metadata.delete(entry.key);
+            total -= entry.bytes;
+            count--;
+          }
+        };
+      });
+    },
+    onReset(listener: () => void): () => void {
+      resetListeners.add(listener);
+      return () => { resetListeners.delete(listener); };
+    },
+  };
+}
+
+/** Auth clears node-local transcript data on logout/expiry and fences in-flight old-account writes. */
+export function clearSessionHistoryCache(): void {
+  const name = databaseName();
+  // Tombstone synchronously before a redirect/unload. Even if the asynchronous
+  // database clear is interrupted, the next login cannot resurrect old records.
+  try { localStorage.setItem(`${name}:generation`, `${Date.now()}-${Math.random()}`); }
+  catch { /* In-memory epoch and IndexedDB clearing still apply. */ }
+  epoch++;
+  for (const listener of resetListeners) listener();
+  void openDatabase(name).then(db => {
+    if (!db) return;
+    try {
+      const tx = db.transaction(['history', 'metadata'], 'readwrite');
+      tx.objectStore('history').clear();
+      tx.objectStore('metadata').clear();
+      tx.oncomplete = tx.onabort = tx.onerror = () => db.close();
+    } catch { db.close(); }
+  });
+}

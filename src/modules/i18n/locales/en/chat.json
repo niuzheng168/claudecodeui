@@ -320,6 +320,7 @@
       "scrollToLoad": "Scroll up to load more",
       "showingLast": "Showing last {{count}} messages ({{total}} total)",
       "loadEarlier": "Load earlier messages",
+      "loadFailed": "History could not be loaded. Retry, or reload the full conversation.",
       "loadAll": "Load all messages",
       "loadingAll": "Loading all messages...",
       "allLoaded": "All messages loaded",

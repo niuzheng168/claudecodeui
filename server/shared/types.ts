@@ -603,6 +603,10 @@ export type FetchHistoryOptions = {
   limit?: number | null;
   offset?: number;
   providerSessionId?: string;
+  /** Optional node-local immutable snapshot; always checked against the authenticated session. */
+  snapshotId?: string;
+  /** Persisted oldest row ID. Reconstructs an evicted snapshot without skipping older rows. */
+  before?: string;
 };
 
 /**
@@ -617,6 +621,10 @@ export type FetchHistoryResult = {
   offset: number;
   limit: number | null;
   tokenUsage?: unknown;
+  /** Snapshot handle for subsequent older pages; not an authorization credential. */
+  snapshotId?: string;
+  /** Echoes the persisted boundary only when the server found and paged before it. */
+  before?: string;
 };
 
 // ---------------------------

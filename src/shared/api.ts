@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { CodeyVoicePreferences, ComposerCompletionRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
+import type { CodeyVoicePreferences, ComposerCompletionRequest, SessionHistoryRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -113,14 +113,15 @@ const del = withBody('DELETE');
  */
 export const sessionMessagesUrl = (
   sessionId: string,
-  { limit = null, offset = 0 }: { limit?: number | null; offset?: number } = {},
+  { limit = null, offset = 0, snapshotId, before }: SessionHistoryRequest = {},
 ): string => {
   const base = withDeploymentBasePath(
     `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`,
   );
-  return limit === null || limit === undefined
-    ? base
-    : `${base}${query({ limit, offset: offset ?? 0 })}`;
+  return `${base}${query({
+    ...(limit === null || limit === undefined ? {} : { limit, offset: offset ?? 0 }),
+    snapshotId, before,
+  })}`;
 };
 
 const fileContentPath = (projectId: string, filePath: string) =>
@@ -354,7 +355,7 @@ export const api = {
     }) => post('/api/providers/sessions', payload),
     sessionMessages: (
       sessionId: string,
-      pagination: { limit?: number | null; offset?: number } = {},
+      pagination: SessionHistoryRequest = {},
       options: ApiRequestOptions = {},
     ) => get(sessionMessagesUrl(sessionId, pagination), options),
     sessionTokenUsage: (sessionId: string) =>
