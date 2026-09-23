@@ -198,3 +198,34 @@ test('rapid growth exhausts only two older-page attempts and a later retry can r
   });
   assert.deepEqual(result.current.getMessages('session').map(message => message.id), ids(60, 100));
 });
+
+test('snapshot tail refresh bridges a long new turn without dropping cached older pages or losing the next anchor', async () => {
+  let total = 100;
+  const snapshots = new Map<string, number>();
+  sessionMessages.mockImplementation(async (_sessionId, { limit, offset = 0, snapshotId, before }) => {
+    const id = snapshotId ?? `snapshot-${snapshots.size}`;
+    if (!snapshots.has(id)) snapshots.set(id, total);
+    const count = snapshots.get(id)!;
+    const end = before ? history.findIndex(message => message.id === before) : count - offset;
+    const start = Math.max(0, end - limit);
+    return { ok: true, json: async () => ({ data: {
+      messages: history.slice(start, end), total: count, hasMore: start > 0,
+      snapshotId: id, offset: count - end, ...(before ? { before } : {}),
+    } }) };
+  });
+  const { result } = await openSession();
+  await act(async () => {
+    await result.current.fetchMore('session');
+    await result.current.fetchMore('session');
+  });
+  total = 165;
+  await act(async () => {
+    assert.equal((await result.current.refreshLatestFromServer('session')).applied, true);
+  });
+  assert.deepEqual(result.current.getMessages('session').map(message => message.id), ids(40, 165));
+  assert.equal(result.current.getSessionSlot('session')?.snapshotId, 'snapshot-1');
+  await act(async () => { await result.current.fetchMore('session'); });
+  assert.deepEqual(result.current.getMessages('session').map(message => message.id), ids(20, 165));
+  assert.equal(sessionMessages.mock.calls.at(-1)?.[1].before, 'item-40');
+  assert.equal(sessionMessages.mock.calls.at(-1)?.[1].snapshotId, 'snapshot-1');
+});

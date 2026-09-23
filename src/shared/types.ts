@@ -2,6 +2,38 @@ import type { TFunction } from 'i18next';
 import type { CSSProperties } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
+//----------------- PERSISTED SESSION HISTORY ------------
+
+/** Chat's authenticated history request, with optional stable native snapshot/row boundaries. */
+export type SessionHistoryRequest = {
+  limit?: number | null;
+  offset?: number;
+  snapshotId?: string;
+  before?: string;
+};
+
+/** Per-session transcript viewport retained across session/tab switches and browser reloads. */
+export type SessionHistoryView = {
+  visibleCount: number;
+  scrollTop: number;
+  scrolledUp: boolean;
+};
+
+/** IndexedDB stores confirmed history and paging/view metadata, excluding auth state and transient streams. */
+export type CachedSessionHistory = {
+  sessionId: string;
+  messages: NormalizedMessage[];
+  total: number;
+  hasMore: boolean;
+  offset: number;
+  fetchedAt: number;
+  snapshotId?: string;
+  tokenUsage?: unknown;
+  view?: SessionHistoryView;
+};
+
+// ---------------------------
+
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
 /** Identifies which coding-agent CLI backs a session, project selection or model list. */

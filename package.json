@@ -232,6 +232,7 @@
     "eslint-plugin-boundaries": "^6.0.2",
     "eslint-plugin-import-x": "^4.16.1",
     "eslint-plugin-tailwindcss": "^3.18.2",
+    "fake-indexeddb": "6.2.4",
     "husky": "^9.1.7",
     "jsdom": "^26.1.0",
     "lint-staged": "^16.3.2",

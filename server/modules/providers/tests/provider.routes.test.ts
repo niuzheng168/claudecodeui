@@ -79,6 +79,19 @@ test('session creation route names a CloudCLI session from the initial message',
   });
 });
 
+test('history boundaries reject malformed, repeated and oversized query parameters', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createAppSession('history-route-test', 'codex', workspacePath);
+    for (const query of [
+      'snapshotId=', `snapshotId=${'x'.repeat(65)}`, 'before=', `before=${'x'.repeat(4097)}`,
+      'before=a&before=b', 'snapshotId=a&snapshotId=b', 'before=%00', 'offset=-1',
+    ]) {
+      const response = await fetch(`${baseUrl}/api/providers/sessions/history-route-test/messages?${query}`);
+      assert.equal(response.status, 400, query.slice(0, 80));
+    }
+  });
+});
+
 test('explicit session rename validates input and protects the local title from provider updates', async () => {
   await withProviderServer(async (baseUrl, workspacePath) => {
     sessionsDb.createSession('rename-session', 'codex', workspacePath, 'Imported title');

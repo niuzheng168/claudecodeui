@@ -398,6 +398,14 @@ const parseBoundedIntegerQuery = <T extends number | null>(
   return parsed;
 };
 
+function parseHistoryBoundary(value: unknown, name: string, maxLength: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value || value.length > maxLength || /[\u0000-\u001f]/.test(value)) {
+    throw new AppError(`Invalid history ${name}.`, { code: 'INVALID_QUERY_PARAMETER', statusCode: 400 });
+  }
+  return value;
+}
+
 const parseSessionModelPayload = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
@@ -839,10 +847,13 @@ router.get(
     const sessionId = parseSessionId(req.params.sessionId);
     const limit = parseBoundedIntegerQuery(req.query.limit, 'limit', null, 0);
     const offset = parseBoundedIntegerQuery(req.query.offset, 'offset', 0, 0);
-
+    const snapshotId = parseHistoryBoundary(req.query.snapshotId, 'snapshotId', 64);
+    const before = parseHistoryBoundary(req.query.before, 'before', 4096);
     const result = await sessionsService.fetchHistory(sessionId, {
       limit,
       offset,
+      ...(snapshotId ? { snapshotId } : {}),
+      ...(before ? { before } : {}),
     });
     res.json(createApiSuccessResponse(result));
   }),

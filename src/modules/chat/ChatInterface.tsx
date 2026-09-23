@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
 import { useTasksSettings } from '@/modules/task-master';
+import { useAuth } from '@/modules/auth';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { api } from '@/shared/api';
@@ -80,7 +81,8 @@ function ChatInterface({
     markSessionIdle: onSessionIdle,
   } = useSessionProtectionActions();
 
-  const sessionStore = useSessionStore();
+  const { user } = useAuth();
+  const sessionStore = useSessionStore(user ? JSON.stringify([user.id ?? null, user.username]) : null);
   const streamTimerRef = useRef<number | null>(null);
   const accumulatedStreamRef = useRef('');
   // When each session's `chat.subscribe` was last sent; idle acks older than
@@ -156,7 +158,8 @@ function ChatInterface({
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
-    handleScroll,
+    handleHistoryScrollIntent,
+    historyError,
     requestLatestMessages,
   } = useChatSessionState({
     isActive,
@@ -451,8 +454,8 @@ function ChatInterface({
           // hidden while more pages exist — so a short transcript is often not
           // scrollable at all and never emits `scroll`. Wheel and touch are
           // then the only way to reach the top pager or the "load all" overlay.
-          onWheel={handleScroll}
-          onTouchMove={handleScroll}
+          onWheel={handleHistoryScrollIntent}
+          onTouchMove={handleHistoryScrollIntent}
           isLoadingSessionMessages={isLoadingSessionMessages}
           isProcessing={isProcessing}
           hasActivityIndicator={hasActivityIndicator}
@@ -472,6 +475,7 @@ function ChatInterface({
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
           isLoadingMoreMessages={isLoadingMoreMessages}
+          historyError={historyError}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
           sessionMessagesCount={chatMessages.length}

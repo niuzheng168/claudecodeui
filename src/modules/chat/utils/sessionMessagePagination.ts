@@ -3,10 +3,7 @@ import { compareNativeTranscriptPositions, nativeTranscriptPositionOf } from '@/
 
 export const SESSION_MESSAGES_PAGE_SIZE = 20;
 
-export type SessionMessagesRequestOptions = {
-  limit?: number | null;
-  offset?: number;
-};
+export type { SessionHistoryRequest as SessionMessagesRequestOptions } from '@/shared/types';
 
 export type LatestPageMergeResult = {
   messages: NormalizedMessage[];

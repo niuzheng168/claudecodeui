@@ -50,6 +50,7 @@ type ChatMessagesPaneProps = {
   onShowAllTasks?: (() => void) | null;
   setInput: Dispatch<SetStateAction<string>>;
   isLoadingMoreMessages: boolean;
+  historyError?: string | null;
   hasMoreMessages: boolean;
   totalMessages: number;
   sessionMessagesCount: number;
@@ -104,6 +105,7 @@ function ChatMessagesPane({
   onShowAllTasks,
   setInput,
   isLoadingMoreMessages,
+  historyError,
   hasMoreMessages,
   totalMessages,
   sessionMessagesCount,
@@ -189,6 +191,15 @@ function ChatMessagesPane({
         </div>
       )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
+      {historyError && (
+        <div role="alert" className="rounded-md border border-amber-300 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+          <p>{t('session.messages.loadFailed', { defaultValue: 'History could not be loaded. Retry, or reload the full conversation.' })}</p>
+          <p className="mt-1 break-words text-xs">{historyError}</p>
+          <button type="button" className="mt-2 underline" disabled={isLoadingAllMessages || isLoadingMoreMessages} onClick={loadAllMessages}>
+            {t('session.messages.loadAll')}
+          </button>
+        </div>
+      )}
       {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">
@@ -225,8 +236,8 @@ function ChatMessagesPane({
             </div>
           )}
 
-          {/* Indicator showing there are more messages to load (hide when all loaded) */}
-          {hasMoreMessages && !isLoadingMoreMessages && !allMessagesLoaded && (
+          {/* Persistent controls still work when tool grouping adds no scroll height. */}
+          {(hasMoreMessages || chatMessages.length > visibleMessageCount) && (
             <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
               {totalMessages > 0 && (
                 <span>
@@ -234,6 +245,16 @@ function ChatMessagesPane({
                   <span className="text-xs">{t('session.messages.scrollToLoad')}</span>
                 </span>
               )}
+              <div className="mt-2 flex justify-center gap-4">
+                <button type="button" className="text-blue-600 underline disabled:opacity-50 dark:text-blue-400"
+                  disabled={isLoadingMoreMessages || isLoadingAllMessages} onClick={loadEarlierMessages}>
+                  {t('session.messages.loadEarlier')}
+                </button>
+                <button type="button" className="text-blue-600 underline disabled:opacity-50 dark:text-blue-400"
+                  disabled={isLoadingMoreMessages || isLoadingAllMessages} onClick={loadAllMessages}>
+                  {t('session.messages.loadAll')}
+                </button>
+              </div>
             </div>
           )}
 
@@ -244,23 +265,6 @@ function ChatMessagesPane({
             totalMessages={totalMessages}
             onLoadAllMessages={loadAllMessages}
           />
-
-          {/* Legacy message count indicator (for non-paginated view) */}
-          {!hasMoreMessages && chatMessages.length > visibleMessageCount && (
-            <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {t('session.messages.showingLast', { count: visibleMessageCount, total: chatMessages.length })} |
-              <button className="ml-1 text-blue-600 underline hover:text-blue-700" onClick={loadEarlierMessages}>
-                {t('session.messages.loadEarlier')}
-              </button>
-              {' | '}
-              <button
-                className="text-blue-600 underline hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                onClick={loadAllMessages}
-              >
-                {t('session.messages.loadAll')}
-              </button>
-            </div>
-          )}
 
           {(() => {
             let prevMessage: ChatMessage | null = null;

@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { getDatabasePath, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import { sessionHistorySnapshots } from '@/modules/providers/services/session-history-snapshots.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -413,7 +414,7 @@ export const sessionsService = {
 
   async fetchHistory(
     sessionId: string,
-    options: Pick<FetchHistoryOptions, 'limit' | 'offset'> = {},
+    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before'> = {},
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -449,6 +450,21 @@ export const sessionsService = {
     // says nothing about their history — they stay on the direct path.
     const codexMode = provider === 'codex' ? await readCodexHistoryMode(providerSessionId) : null;
     const nativeCodexHistory = Boolean(codexMode && codexMode !== 'legacy');
+    if (nativeCodexHistory) {
+      // Resolve the current database mapping before trusting a cached handle.
+      // A cursor from another project/node mapping is never a fallback.
+      const result = await sessionHistorySnapshots.page({
+        ...options,
+        source: JSON.stringify([getDatabasePath(), sessionId, provider, providerSessionId, projectPath, session.jsonl_path]),
+        load: () => providerSessions.fetchHistory(sessionId, {
+          limit: null, offset: 0, projectPath, providerSessionId,
+        }),
+      });
+      return {
+        ...result,
+        messages: result.messages.map(message => ({ ...message, sessionId })),
+      };
+    }
     // An exported JSONL is not the native history's invalidation signal.
     // Otherwise a desktop turn could remain invisible until that export
     // changes, even though the daemon already returned the newer messages.
