@@ -32,6 +32,22 @@ const isExternalHref = (href?: string): boolean =>
 // Strip a trailing `:line` / `:line:col` suffix (e.g. `src/foo.ts:130`).
 const stripLineSuffix = (value: string): string => value.replace(/:\d+(?::\d+)?$/, '');
 
+// Markdown encodes Unicode/spaces in hrefs, but editor/API paths are literal.
+// Decode only this URL boundary, once; link text must never be URL-decoded.
+const filePathFromHref = (href?: string): string | undefined => {
+  if (!href || isExternalHref(href)) {
+    return undefined;
+  }
+  // Remove source locations before decoding so an encoded colon stays literal.
+  const filePath = stripLineSuffix(href);
+  try {
+    return decodeURIComponent(filePath);
+  } catch {
+    // Malformed escapes must not break rendering or prevent a literal lookup.
+    return filePath;
+  }
+};
+
 // A usable file path contains a separator or a filename with an extension.
 const looksLikeFilePath = (value?: string): value is string => {
   if (!value) {
@@ -284,7 +300,10 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         // Prefer the href when it is a real path; otherwise fall back to the
         // link text, since models often emit `[src/foo.ts]()` with an empty href.
         const linkText = childrenToText(linkChildren);
-        const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
+        const hrefPath = filePathFromHref(href);
+        const fileRef = looksLikeFilePath(hrefPath)
+          ? hrefPath
+          : looksLikeFilePath(linkText) ? stripLineSuffix(linkText) : undefined;
 
         if (fileRef && !isExternalHref(href)) {
           return (
@@ -293,7 +312,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
               className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
               onClick={(event) => {
                 event.preventDefault();
-                openFileInEditor(stripLineSuffix(fileRef));
+                openFileInEditor(fileRef);
               }}
             >
               {linkChildren}
