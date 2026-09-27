@@ -353,6 +353,8 @@ export function useChatSessionState({
     });
     const slot = result.slot;
     if (slot && activeSessionIdRef.current === sessionId) {
+      setHistoryError(slot.historyError ?? null);
+      setIsLoadingSessionMessages(false);
       setHasMoreMessages(slot.hasMore);
       setTotalMessages(slot.total);
       messagesOffsetRef.current = slot.offset;
@@ -374,6 +376,25 @@ export function useChatSessionState({
   const requestLatestMessages = useCallback((sessionId: string, allowNetwork = isActiveRef.current) => (
     refreshCoordinatorRef.current?.request(sessionId, allowNetwork) ?? Promise.resolve()
   ), []);
+
+  useEffect(() => {
+    // A failed first read has no cached timestamp. It must still recover when
+    // the node/network returns, independently of the optional Goal poller.
+    const retryHistory = () => {
+      const sessionId = activeSessionIdRef.current;
+      if (!isActiveRef.current || !sessionId || document.visibilityState === 'hidden') return;
+      const slot = sessionStore.getSessionSlot(sessionId);
+      if (slot?.status === 'error') void requestLatestMessages(sessionId);
+    };
+    window.addEventListener('online', retryHistory);
+    window.addEventListener('focus', retryHistory);
+    document.addEventListener('visibilitychange', retryHistory);
+    return () => {
+      window.removeEventListener('online', retryHistory);
+      window.removeEventListener('focus', retryHistory);
+      document.removeEventListener('visibilitychange', retryHistory);
+    };
+  }, [requestLatestMessages, sessionStore]);
 
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */

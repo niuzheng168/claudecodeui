@@ -4,6 +4,7 @@ import { Loader2, PencilIcon, XIcon, ZapIcon } from 'lucide-react';
 
 type QueuedMessageCardProps = {
   content: string;
+  position?: number;
   attachmentCount?: number;
   onEdit: () => void;
   onDelete: () => void;
@@ -22,6 +23,7 @@ type QueuedMessageCardProps = {
  */
 export default function QueuedMessageCard({
   content,
+  position,
   attachmentCount = 0,
   onEdit,
   onDelete,
@@ -44,7 +46,7 @@ export default function QueuedMessageCard({
 
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-primary/70">
-            <span className="shrink-0">{held ? t('input.queue.review') : t('input.queue.label', { defaultValue: 'Queued' })}</span>
+            <span className="shrink-0">{held ? t('input.queue.review') : t('input.queue.label', { defaultValue: 'Queued' })}{position ? ` ${position}` : ''}</span>
             <span className="truncate normal-case text-muted-foreground/60">
               · {isSteering ? t('input.steer.sending') : held ? t('input.queue.paused') : t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
             </span>

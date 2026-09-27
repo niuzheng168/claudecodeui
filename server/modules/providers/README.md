@@ -152,7 +152,10 @@ import the service from `server/modules/providers/index.ts`.
 Linux, macOS and Windows share `connectCodexNativeClient` for execution,
 discovery and native history. Prefer the existing app-server socket. If its
 default socket is absent, use the absolute `CODEY_CODEX_EXECUTABLE` with the
-same `CODEX_HOME`. Explicit `CODEY_CODEX_RUNTIME_TRANSPORT=stdio` is supported
+same `CODEX_HOME`. On Windows the default Unix filesystem socket is not probed:
+Node's Windows IPC transport uses named pipes, and the desktop `.sock` can fail
+`lstat` with `EACCES`. Windows instead selects the configured native stdio CLI;
+an explicitly selected owner still fails closed. Explicit `CODEY_CODEX_RUNTIME_TRANSPORT=stdio` is supported
 on every platform; an explicit socket and stdio selection are mutually
 exclusive. An unavailable explicit socket or failed native handshake never
 selects another runtime.

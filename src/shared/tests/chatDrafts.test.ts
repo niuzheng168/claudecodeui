@@ -75,6 +75,26 @@ test('a draft is readable synchronously and reaches the server after the debounc
   ]);
 });
 
+test('multiple queued receipts survive reload, while per-message actions leave their neighbours untouched', async () => {
+  let store = await loadStore();
+  for (const id of ['one', 'two', 'three']) store.enqueueQueuedMessage('session-a', { id, content: id, attachments: [] });
+  await store.flushChatDraft('session-a');
+  assert.deepEqual(store.readQueuedMessages('session-a').map(message => message.id), ['one', 'two', 'three']);
+  const writes = savedDrafts as Array<SavedDraft & { queueOperations?: unknown }>;
+  assert.deepEqual(writes.map(write => write.queueOperations), ['one', 'two', 'three'].map(id => [
+    { kind: 'append', message: { id, content: id, attachments: [] } },
+  ]));
+  store = await loadStore();
+  assert.deepEqual(store.readQueuedMessages('session-a').map(message => message.id), ['one', 'two', 'three']);
+  const second = store.readQueuedMessages('session-a')[1];
+  assert.equal(store.forgetQueuedMessage('session-a', second), true);
+  assert.deepEqual(store.readQueuedMessages('session-a').map(message => message.id), ['one', 'three']);
+  store.clearQueuedMessage('session-a', store.readQueuedMessages('session-a')[1]);
+  await store.flushChatDraft('session-a');
+  assert.deepEqual(store.readQueuedMessages('session-a').map(message => message.id), ['one']);
+  assert.deepEqual(writes.at(-1)?.queueOperations, [{ kind: 'remove', message: { id: 'three', content: 'three', attachments: [] } }]);
+});
+
 test('each session keeps its own draft', async () => {
   const store = await loadStore();
 

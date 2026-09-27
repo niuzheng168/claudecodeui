@@ -19,15 +19,15 @@ import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions'
 import { isComposerModeShortcut, isNativeCodexCommand } from '@/shared/utils';
 import {
   clearQueuedMessage,
+  enqueueQueuedMessage,
   flushChatDraft,
   forgetQueuedMessage,
   holdQueuedMessage,
   hydrateChatDrafts,
   readDraftText,
-  readQueuedMessage,
+  readQueuedMessages,
   subscribeToChatDrafts,
   writeDraftText,
-  writeQueuedMessage,
 } from '@/shared/chatDrafts';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 import { useFileMentions } from '@/modules/chat/hooks/useFileMentions';
@@ -129,19 +129,15 @@ const uploadAttachmentFiles = async (files: File[]): Promise<unknown[]> => {
 };
 
 
-const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
-  const saved = readQueuedMessage(sessionKey);
-  return saved
-    ? {
-        id: saved.id,
-        content: saved.content,
-        attachments: [],
-        uploadedAttachments: saved.attachments ?? saved.images,
-        options: saved.options,
-        steerHold: saved.steerHold,
-      }
-    : null;
-};
+const restoreQueuedDrafts = (sessionKey: string): QueuedDraft[] =>
+  readQueuedMessages(sessionKey).map(saved => ({
+    id: saved.id,
+    content: saved.content,
+    attachments: [],
+    uploadedAttachments: saved.attachments ?? saved.images,
+    options: saved.options,
+    steerHold: saved.steerHold,
+  }));
 
 function storedQueuedDraft(draft: QueuedDraft): StoredQueuedMessage {
   return {
@@ -273,12 +269,16 @@ export function useChatComposerState({
   sessionKeyRef.current = sessionKey;
 
   // The displayed server-owned queue retains local File previews until its receipt changes.
-  const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
+  const [queuedDrafts, setQueuedDrafts] = useState<QueuedDraft[]>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
-      return null;
+      return [];
     }
-    return restoreQueuedDraft(sessionKey);
+    return restoreQueuedDrafts(sessionKey);
   });
+  const queuedDraft = queuedDrafts[0] ?? null;
+  // Serialize uploads within a session so repeated Send cannot duplicate or
+  // reorder the same textarea contents before its first upload finishes.
+  const queueUploadsRef = useRef(new Set<string>());
   // Prevent a card from the previous render/session being promoted in the new session.
   const queuedDraftSessionRef = useRef<string | null>(sessionKey);
 
@@ -649,8 +649,10 @@ export function useChatComposerState({
     ) => {
       event.preventDefault();
       let nativeCommandScope: string | null = null;
+      let queueUploadScope: string | null = null;
       try {
       if (steeringInFlightRef.current === sessionKey && sessionKey) return;
+      if (sessionKey && queueUploadsRef.current.has(sessionKey)) return;
       setSteeringState((current) => current?.scope === sessionKey ? null : current);
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
@@ -766,19 +768,23 @@ export function useChatComposerState({
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
-      if (isLoading) {
+      if (isLoading || (sessionKey && readQueuedMessages(sessionKey).length > 0)) {
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
         if (queuedSubmission) {
-          if (sessionKey) writeQueuedMessage(sessionKey, storedQueuedDraft(queuedSubmission));
+          if (sessionKey) enqueueQueuedMessage(sessionKey, storedQueuedDraft(queuedSubmission));
           queuedDraftSessionRef.current = sessionKey;
-          setQueuedDraft(queuedSubmission);
+          if (sessionKey) setQueuedDrafts(restoreQueuedDrafts(sessionKey));
           return;
         }
 
-        const queuedOptions = buildSendOptions(currentInput);
+        const queuedOptions = { ...buildSendOptions(currentInput), ...nativeSendOptions };
         const queuedSessionKey = sessionKey;
+        if (queuedSessionKey) {
+          queueUploadScope = queuedSessionKey;
+          queueUploadsRef.current.add(queuedSessionKey);
+        }
         let uploadedAttachments: unknown[] = [];
         try {
           uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
@@ -802,7 +808,7 @@ export function useChatComposerState({
         };
         if (queuedSessionKey) {
           // Only explicit Send/Edit/Delete actions write the server-owned queue.
-          writeQueuedMessage(queuedSessionKey, storedQueuedDraft(durableDraft));
+          enqueueQueuedMessage(queuedSessionKey, storedQueuedDraft(durableDraft));
         }
 
         // The server owns dispatch after persistence. If the user changed
@@ -813,7 +819,7 @@ export function useChatComposerState({
         }
 
         queuedDraftSessionRef.current = queuedSessionKey;
-        setQueuedDraft(durableDraft);
+        setQueuedDrafts(current => [...current.filter(draft => draft.id !== durableDraft.id), durableDraft]);
         setInput('');
         inputValueRef.current = '';
         setAttachedFiles([]);
@@ -1006,6 +1012,7 @@ export function useChatComposerState({
       }
       } finally {
         if (nativeCommandScope) nativeCommandsInFlightRef.current.delete(nativeCommandScope);
+        if (queueUploadScope) queueUploadsRef.current.delete(queueUploadScope);
       }
     },
     [
@@ -1034,12 +1041,13 @@ export function useChatComposerState({
     ],
   );
 
-  const handleSteerQueued = useCallback(async () => {
+  const handleSteerQueued = useCallback(async (messageId?: string) => {
     const scope = sessionKey;
-    const saved = scope ? readQueuedMessage(scope) : null;
+    const saved = scope ? readQueuedMessages(scope).find((message, index) => messageId ? message.id === messageId : index === 0) : null;
+    const draft = queuedDrafts.find(candidate => matchesQueuedDraft(candidate, saved ?? null));
     if (!scope || !isLoading || provider !== 'codex' || !steerMessage || editingAnchorId
       || steeringInFlightRef.current || queuedDraftSessionRef.current !== scope
-      || !saved || saved.steerHold || queuedDraft?.steerHold || !matchesQueuedDraft(queuedDraft, saved)) return;
+      || !saved || saved.steerHold || !draft || draft.steerHold) return;
 
     steeringInFlightRef.current = scope;
     setSteeringState({ scope, message: saved, pending: true, error: null });
@@ -1050,7 +1058,7 @@ export function useChatComposerState({
       await steerMessage(scope, saved.content, saved.attachments ?? saved.images ?? [], saved);
       forgetQueuedMessage(scope, saved);
       if (sessionKeyRef.current === scope) {
-        setQueuedDraft((current) => matchesQueuedDraft(current, saved) ? restoreQueuedDraft(scope) : current);
+        setQueuedDrafts(current => current.filter(candidate => !matchesQueuedDraft(candidate, saved)));
         setIsUserScrolledUp(false);
         scrollToBottom();
       }
@@ -1063,8 +1071,8 @@ export function useChatComposerState({
       if (error && typeof error === 'object' && 'queueHeld' in error && error.queueHeld === true) {
         holdQueuedMessage(scope, saved);
         if (sessionKeyRef.current === scope) {
-          setQueuedDraft((current) => matchesQueuedDraft(current, saved)
-            ? { ...current!, steerHold: 'unconfirmed' } : current);
+          setQueuedDrafts(current => current.map(candidate => matchesQueuedDraft(candidate, saved)
+            ? { ...candidate, steerHold: 'unconfirmed' } : candidate));
         }
       }
       setSteeringState({
@@ -1077,7 +1085,7 @@ export function useChatComposerState({
       void hydrateChatDrafts();
     }
   }, [
-    editingAnchorId, isLoading, provider, queuedDraft,
+    editingAnchorId, isLoading, provider, queuedDrafts,
     scrollToBottom, sessionKey, setIsUserScrolledUp, steerMessage,
   ]);
 
@@ -1095,26 +1103,29 @@ export function useChatComposerState({
     return () => clearInterval(timer);
   }, [queuedDraft, sessionKey]);
 
-  const editQueuedDraft = useCallback(() => {
-    if (!queuedDraft || !sessionKey || queuedDraftSessionRef.current !== sessionKey
+  const editQueuedDraft = useCallback((messageId?: string) => {
+    const draft = queuedDrafts.find((candidate, index) => messageId ? candidate.id === messageId : index === 0);
+    if (!draft || !sessionKey || queuedDraftSessionRef.current !== sessionKey
       || steeringInFlightRef.current === sessionKey) {
       return;
     }
-    clearQueuedMessage(sessionKey);
+    clearQueuedMessage(sessionKey, storedQueuedDraft(draft));
     setSteeringState(null);
-    setQueuedDraft(null);
-    setInput(queuedDraft.content);
-    inputValueRef.current = queuedDraft.content;
-    setAttachedFiles(queuedDraft.attachments);
+    setQueuedDrafts(current => current.filter(candidate => candidate !== draft));
+    setInput(draft.content);
+    inputValueRef.current = draft.content;
+    setAttachedFiles(draft.attachments);
     textareaRef.current?.focus();
-  }, [queuedDraft, sessionKey, setInput]);
+  }, [queuedDrafts, sessionKey, setInput]);
 
-  const deleteQueuedDraft = useCallback(() => {
+  const deleteQueuedDraft = useCallback((messageId?: string) => {
     if (!sessionKey || steeringInFlightRef.current === sessionKey) return;
-    clearQueuedMessage(sessionKey);
+    const draft = queuedDrafts.find((candidate, index) => messageId ? candidate.id === messageId : index === 0);
+    if (!draft) return;
+    clearQueuedMessage(sessionKey, storedQueuedDraft(draft));
     setSteeringState(null);
-    setQueuedDraft(null);
-  }, [sessionKey]);
+    setQueuedDrafts(current => current.filter(candidate => candidate !== draft));
+  }, [queuedDrafts, sessionKey]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
@@ -1186,19 +1197,20 @@ export function useChatComposerState({
     let switched = queuedDraftSessionRef.current !== sessionKey;
     queuedDraftSessionRef.current = sessionKey;
     if (!sessionKey) {
-      setQueuedDraft(null);
+      setQueuedDrafts([]);
       return;
     }
     const restoreQueue = () => {
       if (steeringInFlightRef.current === sessionKey) return;
-      const saved = readQueuedMessage(sessionKey);
+      const saved = readQueuedMessages(sessionKey);
       const retainFiles = !switched;
       switched = false;
-      setQueuedDraft((current) => {
-        if (retainFiles && matchesQueuedDraft(current, saved)) {
-          return current?.steerHold === saved?.steerHold ? current : { ...current!, steerHold: saved?.steerHold };
-        }
-        return restoreQueuedDraft(sessionKey);
+      setQueuedDrafts(current => {
+        const restored = restoreQueuedDrafts(sessionKey);
+        return restored.map((draft, index) => {
+          const existing = retainFiles ? current.find(candidate => matchesQueuedDraft(candidate, saved[index])) : undefined;
+          return existing ? { ...existing, steerHold: draft.steerHold } : draft;
+        });
       });
     };
     restoreQueue();
@@ -1431,9 +1443,11 @@ export function useChatComposerState({
     handleSubmit,
     handleSteerQueued,
     isSteering: steeringState?.scope === sessionKey && steeringState.pending,
-    steerError: steeringState?.scope === sessionKey && matchesQueuedDraft(queuedDraft, steeringState.message)
+    steeringMessageId: steeringState?.scope === sessionKey ? steeringState.message.id : undefined,
+    steerError: steeringState?.scope === sessionKey && queuedDrafts.some(draft => matchesQueuedDraft(draft, steeringState.message))
       ? steeringState.error : null,
     queuedDraft,
+    queuedDrafts,
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,

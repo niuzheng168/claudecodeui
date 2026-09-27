@@ -64,6 +64,28 @@ const writeCodexTranscript = async (
   return filePath;
 };
 
+test('unreadable history reports a retryable failure instead of a successful empty conversation', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-history-failure-'));
+  const restoreHomeDir = patchHomeDir(root);
+  try {
+    const transcript = await writeCodexTranscript(root, 'native-id', root, 'Existing history');
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-id', 'codex', root);
+      sessionsDb.assignProviderSessionId('app-id', 'native-id');
+      await new CodexSessionSynchronizer().synchronize();
+      await rm(transcript);
+      await assert.rejects(new CodexSessionsProvider().fetchHistory('app-id'), {
+        code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 503,
+      });
+      await writeCodexTranscript(root, 'native-id', root, 'Existing history');
+      assert.equal((await new CodexSessionsProvider().fetchHistory('app-id')).messages[0]?.content, 'Existing history');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('legacy Codex history retains client input identities for intentionally identical messages', { concurrency: false }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-user-receipts-'));
   const workspace = path.join(root, 'workspace');

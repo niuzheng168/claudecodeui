@@ -329,7 +329,7 @@ function queuedStore(t: TestContext, message: AnyRecord = { id: 'queue-a', conte
   let stored: QueuedSessionMessageRecord | null = {
     userId: 1, sessionId: 'session-a', queuedMessage: message, claimToken: JSON.stringify(message),
   };
-  t.mock.method(sessionDraftsDb, 'getQueuedMessage', (userId: number, sessionId: string) =>
+  const get = t.mock.method(sessionDraftsDb, 'getQueuedMessage', (userId: number, sessionId: string) =>
     stored?.userId === userId && stored?.sessionId === sessionId ? stored : null);
   const claim = t.mock.method(sessionDraftsDb, 'claimQueuedMessage', (candidate: QueuedSessionMessageRecord) => {
     if (!stored || stored.claimToken !== candidate.claimToken) return false;
@@ -343,12 +343,24 @@ function queuedStore(t: TestContext, message: AnyRecord = { id: 'queue-a', conte
   });
   t.mock.method(sessionDraftsDb, 'deleteEmptyDraft', () => {});
   return {
-    message, claim, restore, read: () => stored,
+    message, get, claim, restore, read: () => stored,
     replace: (next: AnyRecord) => {
       stored = { userId: 1, sessionId: 'session-a', queuedMessage: next, claimToken: JSON.stringify(next) };
     },
   };
 }
+
+test('immediate append looks up the selected queued identity rather than the head of the queue', async t => {
+  await fixture(t, async ({ runtime, run, calls }) => {
+    const queue = queuedStore(t, { id: 'queue-middle', content: 'Append the middle message' });
+    const result = await steerQueuedChatMessage(1, {
+      sessionId: 'session-a', requestId: 'middle', expectedRunId: run.id, queuedMessage: queue.message,
+    }, { runtime: runtime as never });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(queue.get.mock.calls[0].arguments, [1, 'session-a', 'queue-middle']);
+    assert.equal(calls[0][3], queue.message.content);
+  });
+});
 
 test('HTTP promotion claims the queued receipt before awaiting native acceptance, blocking a duplicate request', async (t) => {
   await fixture(t, async ({ runtime, run, observer, calls }) => {

@@ -14,6 +14,52 @@ import {
 
 const USER_ID = 1;
 
+test('queue operations preserve FIFO across stale devices, claims and a non-head restore', async () => {
+  await withDatabase(() => {
+    const messages = ['first', 'second', 'third', 'fourth'].map(id => ({ id, content: id, attachments: [] }));
+    const append = (index: number) => sessionDraftsDb.saveDraft(USER_ID, 'session-a', {
+      text: 'new typing', queueOperations: [{ kind: 'append', message: messages[index] }],
+    });
+    append(0);
+    append(1);
+    append(2);
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID)[0].queuedMessage, messages.slice(0, 3));
+    const second = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a', 'second')!;
+    assert.equal(sessionDraftsDb.claimQueuedMessage(second), true);
+    assert.equal(sessionDraftsDb.claimQueuedMessage(second), false, 'one receipt can only be accepted once');
+    const first = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    assert.equal(sessionDraftsDb.claimQueuedMessage(first), true);
+    append(3);
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(second), true);
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID)[0].queuedMessage, messages.slice(1));
+    assert.equal(sessionDraftsDb.getDrafts(USER_ID)[0].text, 'new typing');
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', {
+      text: 'still typing',
+      // A stale snapshot from another device is deliberately ignored.
+      queuedMessage: messages,
+      queueOperations: [{ kind: 'remove', message: messages[2] }],
+    });
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID)[0].queuedMessage, [messages[1], messages[3]]);
+    assert.equal(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a', 'first'), null);
+  });
+});
+
+test('appending to a legacy queue migrates it without replacing or duplicating its first receipt', async () => {
+  await withDatabase(() => {
+    const first = { id: 'old', content: 'old message' };
+    const next = { id: 'new', content: 'new message' };
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '', queuedMessage: first });
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', {
+      text: '', queueOperations: [{ kind: 'append', message: next }, { kind: 'append', message: next }],
+    });
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID)[0].queuedMessage, [first, next]);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', {
+      text: '', queueOperations: [{ kind: 'remove', message: { ...next, content: 'stale edit' } }],
+    });
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID)[0].queuedMessage, [first, next]);
+  });
+});
+
 async function withDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'user-prefs-db-'));

@@ -2282,9 +2282,11 @@ export class CodexSessionsProvider implements IProviderSessions {
       }
     } catch (error) {
       if (error instanceof AppError) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[CodexProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      // A missing/unreadable transcript or failed connection is not an empty
+      // conversation. Returning [] would cache the failure as successful history.
+      throw new AppError('Cannot read this Codex conversation. Check the node and retry loading its history.', {
+        code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 503,
+      });
     }
 
     const normalized: NormalizedMessage[] = [];

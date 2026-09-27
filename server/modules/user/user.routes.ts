@@ -1,5 +1,7 @@
 import express from 'express';
 
+import { AppError } from '@/shared/index.js';
+
 import type { createUserService } from './user.service.js';
 
 type AuthenticatedRequest = express.Request & { user?: { id?: number | string } };
@@ -76,6 +78,18 @@ export function createUserRouter(service: ReturnType<typeof createUserService>):
     try {
       const body = req.body as { scope?: unknown };
       res.json(service.saveDraft(readUserId(req), body?.scope, req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put('/drafts/queue', (req, res, next) => {
+    try {
+      const body = req.body as { scope?: unknown; queueOperations?: unknown };
+      if (!Array.isArray(body?.queueOperations)) {
+        throw new AppError('Queue operations are required', { code: 'INVALID_QUEUE_OPERATIONS', statusCode: 400 });
+      }
+      res.json(service.saveDraft(readUserId(req), body.scope, req.body));
     } catch (error) {
       next(error);
     }

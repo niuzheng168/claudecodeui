@@ -59,11 +59,12 @@ type ChatComposerProps = {
   isLoading: boolean;
   onAbortSession: () => void;
   /** Promotes the queued card, never the textarea; the run must advertise queued steering. */
-  onSteerQueued?: () => void;
+  onSteerQueued?: (messageId?: string) => void;
   canSteer?: boolean;
   steerUnavailableReason?: string | null;
   isSteering?: boolean;
   steerError?: string | null;
+  steeringMessageId?: string;
   permissionMode: PermissionMode;
   availablePermissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
@@ -84,6 +85,7 @@ type ChatComposerProps = {
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
+  queuedDrafts?: QueuedDraft[];
   /** Set while the composer is replacing an already-sent message. */
   isEditingSentMessage: boolean;
   onCancelEditMessage: () => void;
@@ -91,8 +93,8 @@ type ChatComposerProps = {
   scheduledMessages: ScheduledMessage[];
   onScheduleMessage: (scheduledFor: Date) => void;
   onCancelScheduledMessage: (id: string) => void;
-  onEditQueuedDraft: () => void;
-  onDeleteQueuedDraft: () => void;
+  onEditQueuedDraft: (messageId?: string) => void;
+  onDeleteQueuedDraft: (messageId?: string) => void;
   attachedFiles: File[];
   onRemoveAttachment: (index: number) => void;
   fileErrors: Map<string, string>;
@@ -151,6 +153,7 @@ export default function ChatComposer({
   steerUnavailableReason = null,
   isSteering = false,
   steerError = null,
+  steeringMessageId,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -171,6 +174,7 @@ export default function ChatComposer({
   onSubmit,
   isDragActive,
   queuedDraft,
+  queuedDrafts,
   isEditingSentMessage,
   onCancelEditMessage,
   scheduledMessages,
@@ -363,19 +367,16 @@ export default function ChatComposer({
       : rewrite.busy
         ? t('input.steer.rewriteBusy')
         : null;
-  const hasQueuedDraft = Boolean(queuedDraft);
-  const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const queue = queuedDrafts ?? (queuedDraft ? [queuedDraft] : []);
+  const hasQueuedDraft = queue.length > 0;
+  const canQueueDraft = (isLoading || hasQueuedDraft) && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
-    ? hasQueuedDraft
-      ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
-      : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
+    ? t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
   const submitAriaLabel = canQueueDraft
-    ? hasQueuedDraft
-      ? t('input.queue.update', { defaultValue: 'Update queued message' })
-      : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
+    ? t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading
       ? t('input.stop')
       : isRecording && rewriteConfigured ? t('voice.rewrite.stopPreview') : t('input.send');
@@ -421,25 +422,29 @@ export default function ChatComposer({
         </div>
       )}
 
-      {queuedDraft && (
+      {queue.length > 0 && <div className="max-h-60 overflow-y-auto" data-slot="queued-messages">
+      {queue.map((draft, index) => (
         <QueuedMessageCard
-          content={queuedDraft.content}
+          key={draft.id ?? index}
+          position={index + 1}
+          content={draft.content}
           attachmentCount={
-            queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length
+            draft.uploadedAttachments?.length ?? draft.attachments.length
           }
           onEdit={() => {
             setIsMobileComposerCollapsed(false);
-            onEditQueuedDraft();
+            onEditQueuedDraft(draft.id);
           }}
-          onDelete={onDeleteQueuedDraft}
-          onSteer={isLoading && !isEditingSentMessage ? onSteerQueued : undefined}
-          canSteer={canSteer && voiceState === 'idle' && !rewrite.busy}
+          onDelete={() => onDeleteQueuedDraft(draft.id)}
+          onSteer={isLoading && !isEditingSentMessage && onSteerQueued ? () => onSteerQueued(draft.id) : undefined}
+          canSteer={canSteer && !isSteering && voiceState === 'idle' && !rewrite.busy}
           steerUnavailableReason={queuedSteerUnavailableReason}
-          isSteering={isSteering}
-          steerError={steerError}
-          held={queuedDraft.steerHold === 'unconfirmed'}
+          isSteering={isSteering && (steeringMessageId ? draft.id === steeringMessageId : index === 0)}
+          steerError={!steeringMessageId || draft.id === steeringMessageId ? steerError : null}
+          held={draft.steerHold === 'unconfirmed'}
         />
-      )}
+      ))}
+      </div>}
 
       {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
         {isComposerCollapsed && (

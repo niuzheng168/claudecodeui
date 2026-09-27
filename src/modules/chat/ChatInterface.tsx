@@ -225,7 +225,9 @@ function ChatInterface({
     handleSteerQueued,
     isSteering,
     steerError,
+    steeringMessageId,
     queuedDraft,
+    queuedDrafts,
     editQueuedDraft,
     deleteQueuedDraft,
     handleVoiceTranscript,
@@ -529,6 +531,7 @@ function ChatInterface({
           steerUnavailableReason={steering.queuedUnavailableReason}
           isSteering={isSteering}
           steerError={steerError}
+          steeringMessageId={steeringMessageId}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={selectPermissionMode}
@@ -554,6 +557,7 @@ function ChatInterface({
           onSubmit={handleSubmit}
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
+          queuedDrafts={queuedDrafts}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
           attachedFiles={attachedFiles}

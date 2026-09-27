@@ -668,6 +668,12 @@ export type StoredQueuedMessage = {
   steerHold?: 'unconfirmed';
 };
 
+/** Atomic queue actions shared by the draft mirror and draft API; no whole-list overwrite. */
+export type QueuedMessageOperation = {
+  kind: 'append' | 'remove';
+  message: StoredQueuedMessage;
+};
+
 /** Adds input to the running turn; a queued snapshot must be atomically claimed before native acceptance. */
 export type SteerChatMessage = (
   sessionId: string, content: string, attachments: unknown[], queuedMessage?: StoredQueuedMessage,
