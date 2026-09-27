@@ -120,7 +120,10 @@ async function requestSessionHistoryPage(
     });
   }
   const data = body?.data ?? body;
-  const messages: NormalizedMessage[] = Array.isArray(data.messages) ? data.messages : [];
+  if (!data || !Array.isArray(data.messages)) {
+    throw new Error('The node returned an invalid conversation history. Retry loading the conversation.');
+  }
+  const messages: NormalizedMessage[] = data.messages;
 
   return {
     messages,

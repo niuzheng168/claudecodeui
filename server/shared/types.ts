@@ -90,6 +90,17 @@ export type QueuedSessionMessageRecord = {
   sessionId: string;
   queuedMessage: unknown;
   claimToken: string;
+  /** FIFO position for list-backed queues; legacy single-slot receipts omit it. */
+  queueIndex?: number;
+  /** Earlier receipt identities keep restores ordered even if other entries were deleted in flight. */
+  queuePredecessors?: string[];
+};
+
+/** Explicit per-message draft mutations. Append is idempotent by message id;
+ * removal compares the entire receipt and never rewrites another device's queue. */
+export type QueuedMessageOperation = {
+  kind: 'append' | 'remove';
+  message: Record<string, unknown>;
 };
 
 // ---------------------------

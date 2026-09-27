@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
-import { flushChatDraft, hydrateChatDrafts, readDraftText, readQueuedMessage, resetChatDrafts, writeDraftText, writeQueuedMessage } from '@/shared/chatDrafts';
+import { flushChatDraft, hydrateChatDrafts, readDraftText, readQueuedMessage, readQueuedMessages, resetChatDrafts, writeDraftText, writeQueuedMessage } from '@/shared/chatDrafts';
 import type { LLMProvider, SteerChatMessage, StoredQueuedMessage } from '@/shared/types';
 
 const mocks = vi.hoisted(() => ({
@@ -90,6 +90,44 @@ async function queue(view: ReturnType<typeof fixture>, content = 'Focus on tests
   await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
   return readQueuedMessage('a')!;
 }
+
+test('three sends append FIFO cards and any individual card can be promoted without consuming its neighbours', async () => {
+  const steer = vi.fn(async (scope: string, _content: string, _attachments: unknown[], message?: StoredQueuedMessage) => {
+    const draft = mocks.drafts.get(scope)!;
+    const stored = draft.queuedMessage as StoredQueuedMessage | StoredQueuedMessage[];
+    const remaining = (Array.isArray(stored) ? stored : [stored]).filter(entry => entry.id !== message?.id);
+    mocks.drafts.set(scope, { ...draft, queuedMessage: remaining as unknown as StoredQueuedMessage });
+  });
+  const view = fixture(steer);
+  for (const content of ['First', 'Second', 'Third']) await queue(view, content);
+  expect(view.result.current.queuedDrafts.map(draft => draft.content)).toEqual(['First', 'Second', 'Third']);
+  const second = readQueuedMessages('a')[1];
+  act(() => { view.result.current.setInput('Unsent next draft'); });
+  await act(async () => { await view.result.current.handleSteerQueued(second.id); });
+  expect(steer).toHaveBeenCalledWith('a', 'Second', [], second);
+  expect(readQueuedMessages('a').map(draft => draft.content)).toEqual(['First', 'Third']);
+  expect(view.result.current.queuedDrafts.map(draft => draft.content)).toEqual(['First', 'Third']);
+  expect(view.result.current.input).toBe('Unsent next draft');
+  act(() => { view.result.current.deleteQueuedDraft(readQueuedMessages('a')[1].id); });
+  expect(readQueuedMessages('a').map(draft => draft.content)).toEqual(['First']);
+});
+
+test('a new send cannot overtake an existing queue during the idle interval between turns', async () => {
+  const view = fixture();
+  await queue(view, 'Already waiting');
+  view.rerender({ sessionId: 'a', provider: 'codex', busy: false });
+  await queue(view, 'Must go last');
+  expect(readQueuedMessages('a').map(draft => draft.content)).toEqual(['Already waiting', 'Must go last']);
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('editing one queued message preserves the other queued cards', async () => {
+  const view = fixture();
+  for (const content of ['One', 'Two', 'Three']) await queue(view, content);
+  act(() => { view.result.current.editQueuedDraft(readQueuedMessages('a')[1].id); });
+  expect(view.result.current.input).toBe('Two');
+  expect(readQueuedMessages('a').map(draft => draft.content)).toEqual(['One', 'Three']);
+});
 
 test('each ordinary Codex send binds its optimistic row to the wire input, including repeated text', async () => {
   const view = fixture();

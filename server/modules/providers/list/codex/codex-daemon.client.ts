@@ -1,4 +1,4 @@
-import { lstat } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -83,12 +83,17 @@ export class CodexDaemonClient implements ICodexRpcClient {
         code: 'CODEX_DAEMON_UNAVAILABLE', statusCode: 503,
       });
     }
+    // Node's Windows IPC transport uses named pipes, not filesystem Unix
+    // sockets. Desktop's default .sock can even fail lstat with EACCES there.
+    // Do not probe that Unix-only discovery path: the shared connector can
+    // select the configured native stdio CLI. Explicit owners remain strict.
+    if (process.platform === 'win32' && !explicitSocket) return null;
     const unavailable = () => new AppError('The configured Codex backend is unavailable. Wait for its local service; no exec fallback was started.', {
       code: 'CODEX_DAEMON_UNAVAILABLE', statusCode: 503,
     });
     const socketPath = explicitSocket || path.join(options.home ?? resolveCodexHomeDirectory(), 'app-server-control', 'app-server-control.sock');
     try {
-      if (!(await lstat(socketPath)).isSocket()) {
+      if (!(await fs.lstat(socketPath)).isSocket()) {
         if (explicitSocket) throw unavailable();
         return null;
       }

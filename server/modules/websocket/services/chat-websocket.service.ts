@@ -257,7 +257,7 @@ async function performChatSteer(
           code: 'INVALID_STEER_REQUEST', statusCode: 400,
         });
       }
-      queued = sessionDraftsDb.getQueuedMessage(Number(userId), sessionId);
+      queued = sessionDraftsDb.getQueuedMessage(Number(userId), sessionId, expected.id);
       const stored = queuedSnapshot(queued?.queuedMessage);
       if (!queued || !stored || !isDeepStrictEqual(stored, expected)) {
         throw new AppError('This queued message changed or was already sent. The current queue was not modified.', {

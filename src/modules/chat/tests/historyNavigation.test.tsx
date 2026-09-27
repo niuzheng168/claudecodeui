@@ -4,19 +4,24 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { useSessionGoal } from '@/modules/chat/hooks/useSessionGoal';
 import { createSessionHistoryCache } from '@/shared/utils';
 import type { NormalizedMessage, Project, ProjectSession } from '@/shared/types';
 
 const historyRequest = vi.fn();
+const goalRequest = vi.fn();
+vi.mock('@/shared/context/WebSocketContext', () => ({
+  useWebSocket: () => ({ subscribe: noop }),
+}));
 vi.mock('@/shared/api', () => ({
-  api: { providers: {
+  api: { commands: { goal: (...args: unknown[]) => goalRequest(...args) }, providers: {
     sessionMessages: (...args: unknown[]) => historyRequest(...args),
     sessionTokenUsage: async () => ({ ok: true, json: async () => ({ data: null }) }),
   } },
 }));
 
 const project = { projectId: 'project', path: '/repo', fullPath: '/repo', displayName: 'Repo', isStarred: false } as Project;
-const noop = () => {};
+const noop = () => () => {};
 const session = (id: string) => ({ id } as ProjectSession);
 const rows = (sessionId: string, count: number): NormalizedMessage[] => Array.from({ length: count }, (_, index) => ({
   id: `${sessionId}-${index}`, sessionId, kind: 'tool_use', provider: 'codex',
@@ -30,11 +35,12 @@ function setup(owner: string | null = null, height = 500) {
   const lastSeqRef = { current: new Map<string, number>() };
   const view = renderHook(({ selected }: { selected: ProjectSession }) => {
     const store = useSessionStore(owner);
+    const goal = useSessionGoal(selected.id, true);
     const state = useChatSessionState({
       isActive: true, selectedProject: project, selectedSession: selected, ws: null,
       sendMessage: noop, resetStreamingState: noop, statusCheckSentAtRef, lastSeqRef, sessionStore: store,
     });
-    return { store, state };
+    return { store, state, goal };
   }, { initialProps: { selected: session('a') } });
   const container = document.createElement('div');
   Object.defineProperties(container, { scrollHeight: { value: height }, clientHeight: { value: 500 } });
@@ -47,6 +53,8 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 0);
   vi.stubGlobal('cancelAnimationFrame', noop);
   historyRequest.mockReset();
+  goalRequest.mockReset();
+  goalRequest.mockResolvedValue(new Response(JSON.stringify({ goal: null })));
   historyRequest.mockImplementation(async (id, options) => {
     const history = rows(id, id === 'a' ? 181 : 10);
     const end = options.before ? history.findIndex(message => message.id === options.before) : Math.max(0, history.length - (options.offset ?? 0));
@@ -59,6 +67,36 @@ beforeEach(() => {
   });
 });
 afterEach(() => vi.unstubAllGlobals());
+
+test('Goal failure never prevents opening or retrying the conversation transcript', async () => {
+  goalRequest.mockRejectedValue(new Error('Goal status unavailable'));
+  const { result } = setup();
+  await waitFor(() => expect(result.current.goal.error).toBe('unavailable'));
+  await waitFor(() => expect(result.current.state.chatMessages.length).toBe(20));
+  expect(result.current.state.historyError).toBeNull();
+});
+
+test.each(['online', 'focus', 'visibilitychange'])('a failed initial history read recovers on %s and clears its error', async (event) => {
+  historyRequest.mockRejectedValueOnce(new Error('node temporarily unreachable'));
+  const { result } = setup();
+  await waitFor(() => expect(result.current.state.historyError).toContain('unreachable'));
+  expect(result.current.state.isLoadingSessionMessages).toBe(false);
+  expect(result.current.store.getSessionSlot('a')?.fetchedAt).toBe(0);
+  await act(async () => { (event === 'visibilitychange' ? document : window).dispatchEvent(new Event(event)); });
+  await waitFor(() => expect(result.current.state.chatMessages.length).toBe(20));
+  expect(result.current.state.historyError).toBeNull();
+  expect(historyRequest).toHaveBeenCalledTimes(2);
+});
+
+test('an invalid history response is not cached as an empty conversation', async () => {
+  historyRequest.mockResolvedValueOnce({ ok: true, json: async () => ({ goal: null }) });
+  const { result } = setup();
+  await waitFor(() => expect(result.current.state.historyError).toContain('invalid conversation history'));
+  expect(result.current.store.getSessionSlot('a')?.fetchedAt).toBe(0);
+  await act(async () => { await result.current.state.requestLatestMessages('a'); });
+  expect(result.current.state.chatMessages.length).toBe(20);
+  expect(result.current.state.historyError).toBeNull();
+});
 
 test('repeated upward gestures reach the first row even when every fetched page collapses into one tool group', async () => {
   const { result, container } = setup();

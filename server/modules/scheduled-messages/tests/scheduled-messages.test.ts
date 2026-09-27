@@ -11,6 +11,40 @@ import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 const SESSION_ID = 'scheduled-session';
 
+test('multiple queued turns wait for the current run and dispatch in FIFO order one at a time', async () => {
+  await withIsolatedDatabase(async userId => {
+    for (const id of ['one', 'two', 'three']) {
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+        text: '', queueOperations: [{ kind: 'append', message: { id, content: id, options: { model: `model-${id}` } } }],
+      });
+    }
+    chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+    chatRunRegistry.clearAll();
+    for (const [index, content] of ['one', 'two', 'three'].entries()) {
+      assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+      assert.equal(runs[index].command, content);
+      assert.equal(runs[index].options.model, `model-${content}`);
+    }
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+    assert.equal(sessionDraftsDb.getDrafts(userId).length, 0);
+  });
+});
+
+test('a held head blocks automatic FIFO delivery without losing its following messages', async () => {
+  await withIsolatedDatabase(async userId => {
+    const messages = [
+      { id: 'held', content: 'Check receipt', steerHold: 'unconfirmed' },
+      { id: 'next', content: 'Run after that' },
+    ];
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: messages });
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0].queuedMessage, messages);
+  });
+});
+
 async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const tempDirectory = await mkdtemp(path.join(tmpdir(), 'scheduled-messages-'));

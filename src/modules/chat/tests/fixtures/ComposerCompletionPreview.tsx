@@ -143,7 +143,7 @@ function ComposerCompletionPreview() {
             onSelectModel={() => {}} modelsLoading={false} tokenBudget={null} onShowTokenUsage={() => {}}
             slashCommandsCount={composer.slashCommandsCount} onToggleCommandMenu={composer.handleToggleCommandMenu}
             hasInput={Boolean(composer.input.trim())} onClearInput={composer.handleClearInput} onSubmit={composer.handleSubmit}
-            isDragActive={composer.isDragActive} queuedDraft={composer.queuedDraft}
+            isDragActive={composer.isDragActive} queuedDraft={composer.queuedDraft} queuedDrafts={composer.queuedDrafts}
             isEditingSentMessage={Boolean(composer.editingAnchorId)} onCancelEditMessage={composer.cancelEditMessage}
             scheduledMessages={[]} onScheduleMessage={() => {}} onCancelScheduledMessage={() => {}}
             onEditQueuedDraft={composer.editQueuedDraft} onDeleteQueuedDraft={composer.deleteQueuedDraft}

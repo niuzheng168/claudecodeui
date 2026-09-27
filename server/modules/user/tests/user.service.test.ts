@@ -164,6 +164,21 @@ test('text-only draft saves opt out of replacing the server-owned queue', () => 
   assert.deepEqual(saved, [[5, 'session-1', { text: 'typing' }], [5, 'session-1', { text: '' }]]);
 });
 
+test('per-message queue operations supersede stale snapshots and validate every receipt', () => {
+  const saved: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    drafts: { getDrafts: () => [], saveDraft: (...args) => saved.push(args), deleteDraft: () => {} },
+  }));
+  const operation = { kind: 'append', message: { id: 'next', content: 'next' } };
+  service.saveDraft(5, 'session-1', { text: 'typing', queuedMessage: null, queueOperations: [operation] });
+  assert.deepEqual(saved, [[5, 'session-1', { text: 'typing', queueOperations: [operation] }]]);
+  for (const queueOperations of [{}, [null], [{ ...operation, kind: 'replace' }],
+    [{ kind: 'append', message: { content: 'missing id' } }], [{ kind: 'remove', message: null }]]) {
+    assert.throws(() => service.saveDraft(5, 'session-1', { queueOperations }), { code: 'INVALID_QUEUE_OPERATIONS' });
+  }
+  assert.equal(saved.length, 1);
+});
+
 test('queued steering delegates with the authenticated user and validated scope, not body overrides', async () => {
   const calls: unknown[][] = [];
   const service = createUserService(createDependencies({
@@ -183,6 +198,35 @@ test('queued steering delegates with the authenticated user and validated scope,
 test('an unconfigured queued transport rejects without mutating the queue', async () => {
   const service = createUserService(createDependencies());
   await assert.rejects(service.steerQueuedDraft(5, 'session-1', {}), (error: Error & { code?: string }) => error.code === 'STEER_UNSUPPORTED');
+});
+
+test('PUT drafts/queue accepts only explicit operations for the authenticated owner', async t => {
+  const saved: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    drafts: { getDrafts: () => [], saveDraft: (...args) => saved.push(args), deleteDraft: () => {} },
+  }));
+  const app = express();
+  app.use(express.json(), (request, _response, next) => {
+    Object.assign(request, { user: { id: 5 } });
+    next();
+  });
+  app.use('/api/user', createUserRouter(service));
+  const errors: express.ErrorRequestHandler = (error, _request, response, _next) => {
+    response.status(error.statusCode ?? 500).json({ code: error.code });
+  };
+  app.use(errors);
+  const server = createServer(app);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const send = (body: unknown) => fetch(`http://127.0.0.1:${address.port}/api/user/drafts/queue`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal((await send({ scope: 'session-1', queuedMessage: null })).status, 400);
+  const queueOperations = [{ kind: 'append', message: { id: 'next', content: 'next' } }];
+  assert.equal((await send({ scope: 'session-1', userId: 99, text: 'draft', queueOperations })).status, 200);
+  assert.deepEqual(saved, [[5, 'session-1', { text: 'draft', queueOperations }]]);
 });
 
 test('POST drafts/steer returns its correlated result and forwards scope validation errors', async (t) => {

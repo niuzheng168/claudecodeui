@@ -179,7 +179,7 @@ test.each([320, 390, 1024])('queued steering sits beside Edit/Delete outside the
   expect(onSteerQueued).toHaveBeenCalledTimes(1);
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
   expect(f.props.onSubmit).toHaveBeenCalledTimes(1);
   expect(onSteerQueued).toHaveBeenCalledTimes(1);
 });
@@ -190,13 +190,32 @@ test('even supported runs have no immediate action before a message is queued', 
   expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
 });
 
+test.each([320, 1024])('each FIFO card at %ipx has independent actions targeting its own receipt', (width) => {
+  resizeViewport(width);
+  const queuedDrafts = ['one', 'two', 'three'].map(id => ({ id, content: `Message ${id}`, attachments: [] }));
+  const onSteerQueued = vi.fn();
+  const f = fixture({ isLoading: true, canSteer: true, onSteerQueued, queuedDrafts });
+  const cards = [...f.container.querySelectorAll<HTMLElement>('[data-slot="queued-message"]')];
+  expect(cards).toHaveLength(3);
+  cards.forEach((card, index) => {
+    expect(card.textContent).toContain(`Queued ${index + 1}`);
+    fireEvent.click(within(card).getByRole('button', { name: 'Steer now' }));
+    expect(onSteerQueued).toHaveBeenLastCalledWith(queuedDrafts[index].id);
+  });
+  fireEvent.click(within(cards[1]).getByRole('button', { name: 'Delete queued message' }));
+  expect(f.props.onDeleteQueuedDraft).toHaveBeenCalledExactlyOnceWith('two');
+  fireEvent.click(within(cards[2]).getByRole('button', { name: 'Edit queued message' }));
+  expect(f.props.onEditQueuedDraft).toHaveBeenCalledExactlyOnceWith('three');
+  expect(f.container.querySelector('[data-slot="queued-messages"]')?.className).toContain('overflow-y-auto');
+});
+
 test('steering submission disables duplicate sends, Edit and Delete without changing the textarea', () => {
   const onSteerQueued = vi.fn();
   const f = fixture({ isLoading: true, isSteering: true, onSteerQueued, canSteer: true, queuedDraft: { content: 'Queued correction', attachments: [] } });
   fireEvent.click(screen.getByRole('button', { name: 'Sending correction…' }));
   fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
   fireEvent.click(screen.getByRole('button', { name: 'Delete queued message' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
   expect(onSteerQueued).not.toHaveBeenCalled();
   expect(f.props.onEditQueuedDraft).not.toHaveBeenCalled();
   expect(f.props.onDeleteQueuedDraft).not.toHaveBeenCalled();
@@ -221,7 +240,7 @@ test.each([320, 390, 1024])('an old node at %ipx explains the disabled immediate
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(f.props.input);
-  fireEvent.click(screen.getByRole('button', { name: 'Update queued message' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
   expect(f.props.onSubmit).toHaveBeenCalledOnce();
 });
 
@@ -238,7 +257,7 @@ test('steering is disabled until advertised and enables in place without removin
   expect(screen.queryByText(reason)).toBeNull();
   fireEvent.click(immediate);
   expect(onSteerQueued).toHaveBeenCalledOnce();
-  expect(screen.getByRole('button', { name: 'Update queued message' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
   expect(f.props.onSubmit).not.toHaveBeenCalled();
   expect(f.props.onAbortSession).not.toHaveBeenCalled();
 });

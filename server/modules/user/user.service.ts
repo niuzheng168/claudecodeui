@@ -1,4 +1,5 @@
 import { AppError, readObjectRecord } from '@/shared/index.js';
+import type { QueuedMessageOperation } from '@/shared/index.js';
 
 type GitConfig = {
   git_name: string | null;
@@ -26,7 +27,7 @@ type UserDependencies = {
   };
   drafts: {
     getDrafts(userId: number): DraftRecord[];
-    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage?: unknown | null }): void;
+    saveDraft(userId: number, scope: string, draft: { text: string; queuedMessage?: unknown | null; queueOperations?: QueuedMessageOperation[] }): void;
     deleteDraft(userId: number, scope: string): void;
   };
   steerQueuedDraft?: (userId: number, input: unknown) => Promise<unknown>;
@@ -166,7 +167,7 @@ export function createUserService(dependencies: UserDependencies) {
 
     saveDraft(userId: number, scopeInput: unknown, body: unknown) {
       const scope = readDraftScope(scopeInput);
-      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown; preserveQueuedMessage?: unknown };
+      const payload = (body ?? {}) as { text?: unknown; queuedMessage?: unknown; preserveQueuedMessage?: unknown; queueOperations?: unknown };
       const text = typeof payload.text === 'string' ? payload.text : '';
 
       if (text.length > MAX_DRAFT_TEXT_LENGTH) {
@@ -176,9 +177,23 @@ export function createUserService(dependencies: UserDependencies) {
         });
       }
 
+      let queueOperations: QueuedMessageOperation[] | undefined;
+      if (payload.queueOperations !== undefined) {
+        if (!Array.isArray(payload.queueOperations) || payload.queueOperations.length > 100
+          || payload.queueOperations.some(value => {
+            const operation = readObjectRecord(value), message = readObjectRecord(operation?.message);
+            return !operation || !['append', 'remove'].includes(operation.kind) || !message
+              || typeof message.content !== 'string' || message.content.length > MAX_DRAFT_TEXT_LENGTH
+              || (operation.kind === 'append' && (typeof message.id !== 'string' || !message.id || message.id.length > 128));
+          })) {
+          throw new AppError('Invalid queued message operations', { code: 'INVALID_QUEUE_OPERATIONS', statusCode: 400 });
+        }
+        queueOperations = payload.queueOperations as QueuedMessageOperation[];
+      }
       dependencies.drafts.saveDraft(userId, scope, {
         text,
-        ...(payload.preserveQueuedMessage === true ? {} : { queuedMessage: payload.queuedMessage ?? null }),
+        ...(queueOperations ? { queueOperations }
+          : payload.preserveQueuedMessage === true ? {} : { queuedMessage: payload.queuedMessage ?? null }),
       });
       return { success: true };
     },

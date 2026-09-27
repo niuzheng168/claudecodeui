@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { CodeyVoicePreferences, ComposerCompletionRequest, SessionHistoryRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
+import type { CodeyVoicePreferences, ComposerCompletionRequest, QueuedMessageOperation, SessionHistoryRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -448,8 +448,10 @@ export const api = {
     savePreferences: (updates: Record<string, unknown>) =>
       patch('/api/user/preferences', updates),
     drafts: () => get('/api/user/drafts'),
-    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown; preserveQueuedMessage?: boolean }) =>
-      put('/api/user/drafts', { scope, ...draft }),
+    saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown; preserveQueuedMessage?: boolean; queueOperations?: QueuedMessageOperation[] }) =>
+      // An older node must reject list mutations, not mistake their fallback
+      // snapshot for its single slot and silently discard other queued input.
+      put(draft.queueOperations ? '/api/user/drafts/queue' : '/api/user/drafts', { scope, ...draft }),
     deleteDraft: (scope: string) => del('/api/user/drafts', { scope }),
     steerQueuedDraft: (scope: string, request: {
       requestId: string; expectedRunId: string; queuedMessage: StoredQueuedMessage;

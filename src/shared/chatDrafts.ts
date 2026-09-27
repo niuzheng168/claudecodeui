@@ -1,5 +1,5 @@
 import { api } from '@/shared/api';
-import type { StoredQueuedMessage } from '@/shared/types';
+import type { QueuedMessageOperation, StoredQueuedMessage } from '@/shared/types';
 import { deploymentStorageKey } from '@/shared/utils';
 
 /**
@@ -19,7 +19,7 @@ import { deploymentStorageKey } from '@/shared/utils';
 
 type DraftRecord = {
   text: string;
-  queuedMessage: StoredQueuedMessage | null;
+  queuedMessage: StoredQueuedMessage | StoredQueuedMessage[] | null;
 };
 
 /** Fired after any draft changes, from a local write or from a hydrate. */
@@ -43,11 +43,14 @@ let drafts = new Map<string, DraftRecord>();
 const pendingScopes = new Set<string>();
 // Only explicit queue actions may replace server-owned queued input; typing must never resurrect it.
 const pendingQueuedScopes = new Set<string>();
+// Explicit list edits are sent as operations so stale clients cannot resurrect
+// consumed entries or overwrite messages appended by another device.
+const pendingQueueOperations = new Map<string, QueuedMessageOperation[]>();
 // Writes are ordered per session, and immediate steering waits for its queue receipt to reach the server.
 const serverWrites = new Map<string, Promise<void>>();
 // A lost queue-save response must not be retried by a later textarea autosave:
 // the server might already have consumed it. Explicit edits or a matching hydrate resolve it.
-const queuedWriteFailures = new Map<string, { message: StoredQueuedMessage | null; error: Error }>();
+const queuedWriteFailures = new Map<string, { message: DraftRecord['queuedMessage']; error: Error }>();
 // Hydration and failed writes must not roll back a newer edit or a confirmed server-side queue claim.
 const revisions = new Map<string, number>();
 // Deferred writes from a previous login must not start using the next login's credentials.
@@ -57,6 +60,23 @@ let serverWriteTimer: ReturnType<typeof setTimeout> | null = null;
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
+
+function queueValues(value: unknown): StoredQueuedMessage[] {
+  return (Array.isArray(value) ? value : value ? [value] : [])
+    .filter((entry): entry is StoredQueuedMessage => isRecord(entry) && typeof entry.content === 'string');
+}
+
+function packQueue(messages: StoredQueuedMessage[]): DraftRecord['queuedMessage'] {
+  return messages.length > 1 ? messages : messages[0] ?? null;
+}
+
+function sameReceipt(left: StoredQueuedMessage, right: StoredQueuedMessage): boolean {
+  const normalize = (message: StoredQueuedMessage) => ({
+    id: message.id ?? null, content: message.content, options: message.options ?? {},
+    attachments: message.attachments ?? message.images ?? [], steerHold: message.steerHold ?? null,
+  });
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
 
 const isEmptyDraft = (draft: DraftRecord): boolean => (
   draft.text === '' && draft.queuedMessage === null
@@ -81,9 +101,7 @@ function readMirror(): Map<string, DraftRecord> {
       }
       restored.set(scope, {
         text: typeof value.text === 'string' ? value.text : '',
-        queuedMessage: isRecord(value.queuedMessage)
-          ? (value.queuedMessage as StoredQueuedMessage)
-          : null,
+        queuedMessage: packQueue(queueValues(value.queuedMessage)),
       });
     }
     return restored;
@@ -118,6 +136,8 @@ function flushServerWrites(): void {
   for (const scope of scopes) {
     const draft = drafts.get(scope) ?? EMPTY_DRAFT;
     const writesQueue = pendingQueuedScopes.delete(scope);
+    const queueOperations = pendingQueueOperations.get(scope);
+    pendingQueueOperations.delete(scope);
     const revision = revisions.get(scope);
     const epoch = draftEpoch;
     const payload = {
@@ -125,6 +145,7 @@ function flushServerWrites(): void {
       // Older nodes still receive the complete snapshot. New nodes ignore this
       // field for text-only saves, so a late autosave cannot undo a queue claim.
       queuedMessage: draft.queuedMessage,
+      ...(queueOperations ? { queueOperations } : {}),
       ...(!writesQueue ? { preserveQueuedMessage: true } : {}),
     };
     const save = async () => {
@@ -173,7 +194,7 @@ function flushServerWritesNow(): void {
   flushServerWrites();
 }
 
-function updateDraft(scope: string, update: Partial<DraftRecord>, persist = true): void {
+function updateDraft(scope: string, update: Partial<DraftRecord>, persist = true, operations?: QueuedMessageOperation[]): void {
   const current = drafts.get(scope) ?? EMPTY_DRAFT;
   const next: DraftRecord = { ...current, ...update };
 
@@ -193,7 +214,11 @@ function updateDraft(scope: string, update: Partial<DraftRecord>, persist = true
   writeMirror();
   if (Object.prototype.hasOwnProperty.call(update, 'queuedMessage')) queuedWriteFailures.delete(scope);
   if (persist) {
-    if (Object.prototype.hasOwnProperty.call(update, 'queuedMessage')) pendingQueuedScopes.add(scope);
+    if (Object.prototype.hasOwnProperty.call(update, 'queuedMessage')) {
+      pendingQueuedScopes.add(scope);
+      if (operations) pendingQueueOperations.set(scope, [...(pendingQueueOperations.get(scope) ?? []), ...operations]);
+      else pendingQueueOperations.delete(scope);
+    }
     queueServerWrite(scope);
   }
   notifyListeners();
@@ -209,21 +234,23 @@ export function writeDraftText(scope: string, text: string): void {
 }
 
 export function readQueuedMessage(scope: string): StoredQueuedMessage | null {
-  const queued = drafts.get(scope)?.queuedMessage ?? null;
-  if (!queued) {
-    return null;
-  }
+  return readQueuedMessages(scope)[0] ?? null;
+}
 
-  const attachments = Array.isArray(queued.attachments)
-    ? queued.attachments
-    : Array.isArray(queued.images)
-      ? queued.images
-      : [];
+/** Composer reads the entire FIFO, including legacy single-message drafts. */
+export function readQueuedMessages(scope: string): StoredQueuedMessage[] {
+  return queueValues(drafts.get(scope)?.queuedMessage).map(queued => ({
+    ...queued, attachments: Array.isArray(queued.attachments) ? queued.attachments
+      : Array.isArray(queued.images) ? queued.images : [],
+  })).filter(queued => queued.content.trim() || queued.attachments.length > 0);
+}
 
-  // A queued message with neither text nor attachments has nothing to send.
-  return queued.content.trim() || attachments.length > 0
-    ? { ...queued, attachments }
-    : null;
+/** Composer appends one durable receipt without replacing any existing queued turn. */
+export function enqueueQueuedMessage(scope: string, message: StoredQueuedMessage): void {
+  const messages = readQueuedMessages(scope);
+  if (message.id && messages.some(entry => entry.id === message.id)) return;
+  updateDraft(scope, { queuedMessage: packQueue([...messages, message]) }, true, [{ kind: 'append', message }]);
+  flushServerWritesNow();
 }
 
 export function writeQueuedMessage(scope: string, message: StoredQueuedMessage): void {
@@ -232,8 +259,15 @@ export function writeQueuedMessage(scope: string, message: StoredQueuedMessage):
   flushServerWritesNow();
 }
 
-export function clearQueuedMessage(scope: string): void {
-  updateDraft(scope, { queuedMessage: null });
+export function clearQueuedMessage(scope: string, expected?: StoredQueuedMessage): void {
+  if (expected) {
+    const messages = readQueuedMessages(scope);
+    const remaining = messages.filter(message => !sameReceipt(message, expected));
+    if (remaining.length === messages.length) return;
+    updateDraft(scope, { queuedMessage: packQueue(remaining) }, true, [{ kind: 'remove', message: expected }]);
+  } else {
+    updateDraft(scope, { queuedMessage: null });
+  }
   // Editing or cancelling must beat the server's next dispatcher poll.
   flushServerWritesNow();
 }
@@ -248,15 +282,19 @@ export async function flushChatDraft(scope: string): Promise<void> {
 
 /** Chat forgets only the receipt consumed by the server; it must not issue a second queue deletion. */
 export function forgetQueuedMessage(scope: string, expected: StoredQueuedMessage): boolean {
-  if (JSON.stringify(readQueuedMessage(scope)) !== JSON.stringify(expected)) return false;
-  updateDraft(scope, { queuedMessage: null }, false);
+  const messages = readQueuedMessages(scope);
+  const remaining = messages.filter(message => !sameReceipt(message, expected));
+  if (remaining.length === messages.length) return false;
+  updateDraft(scope, { queuedMessage: packQueue(remaining) }, false);
   return true;
 }
 
 /** Chat marks an uncertain local receipt for review without resurrecting it on the server. */
 export function holdQueuedMessage(scope: string, expected: StoredQueuedMessage): void {
-  if (JSON.stringify(readQueuedMessage(scope)) !== JSON.stringify(expected)) return;
-  updateDraft(scope, { queuedMessage: { ...expected, steerHold: 'unconfirmed' } }, false);
+  const messages = readQueuedMessages(scope);
+  if (!messages.some(message => sameReceipt(message, expected))) return;
+  updateDraft(scope, { queuedMessage: packQueue(messages.map(message =>
+    sameReceipt(message, expected) ? { ...message, steerHold: 'unconfirmed' } : message)) }, false);
 }
 
 /** Subscribes to any draft change; returns the unsubscribe function. */
@@ -304,7 +342,7 @@ export async function hydrateChatDrafts(): Promise<void> {
   for (const draft of serverDrafts) {
     const scope = typeof draft.scope === 'string' ? draft.scope : '';
     const failedQueue = queuedWriteFailures.get(scope);
-    if (failedQueue && JSON.stringify(draft.queuedMessage) === JSON.stringify(failedQueue.message)) {
+    if (failedQueue && JSON.stringify(queueValues(draft.queuedMessage)) === JSON.stringify(queueValues(failedQueue.message))) {
       queuedWriteFailures.delete(scope); // An authoritative read confirms the earlier save reached the server.
     }
     if (!scope || locallyChanged(scope)) {
@@ -313,9 +351,7 @@ export async function hydrateChatDrafts(): Promise<void> {
 
     merged.set(scope, {
       text: typeof draft.text === 'string' ? draft.text : '',
-      queuedMessage: isRecord(draft.queuedMessage)
-        ? (draft.queuedMessage as StoredQueuedMessage)
-        : null,
+      queuedMessage: packQueue(queueValues(draft.queuedMessage)),
     });
   }
 
@@ -337,6 +373,7 @@ export function resetChatDrafts(): void {
   drafts = new Map();
   pendingScopes.clear();
   pendingQueuedScopes.clear();
+  pendingQueueOperations.clear();
   serverWrites.clear();
   queuedWriteFailures.clear();
   revisions.clear();
