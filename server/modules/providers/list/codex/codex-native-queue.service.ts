@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { CodexNativeTurnReader } from '@/modules/providers/list/codex/codex-native-turns.service.js';
 import { AppError, readObjectRecord } from '@/shared/index.js';
 import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
 
@@ -20,6 +21,7 @@ type QueueObserver = {
  */
 export class CodexNativeQueueRun {
   private readonly clientId: string;
+  private readonly turnReader: CodexNativeTurnReader;
   private queuedId: string | null = null;
   private turnId: string | null = null;
   private cancelled = false;
@@ -49,6 +51,7 @@ export class CodexNativeQueueRun {
     } = {},
   ) {
     this.clientId = options.clientMessageId ?? randomUUID();
+    this.turnReader = new CodexNativeTurnReader(client, threadId);
   }
 
   async run(input: AnyRecord[]): Promise<{ turn: AnyRecord | null; cancelled: boolean }> {
@@ -57,9 +60,10 @@ export class CodexNativeQueueRun {
       if (snapshot.thread?.id !== this.threadId || (!this.options.owner && snapshot.thread.source !== 'vscode')) {
         throw this.error('The native desktop thread identity could not be verified.', 'CODEX_DESKTOP_QUEUE_UNAVAILABLE');
       }
-      const baseline = await this.turns(null, 1);
-      this.baselineTurnId = baseline.data[0]?.id ?? null;
-      this.latestObservedTurn = baseline.data[0] ?? null;
+      const baseline = await this.turnReader.page();
+      this.latestObservedTurn = baseline.data[0]
+        ? await this.turnReader.hydrate(baseline.data[0], null) : null;
+      this.baselineTurnId = this.latestObservedTurn?.id ?? null;
       // Probe support before submitting anything. An older CLI must fail closed.
       const queued = await this.queuePage(null);
       await this.assertReaderOnly();
@@ -206,32 +210,28 @@ export class CodexNativeQueueRun {
     }
   }
 
-  private async turns(cursor: string | null, limit = 20): Promise<AnyRecord> {
-    const result = await this.client.request('thread/turns/list', {
-      threadId: this.threadId, cursor, limit, sortDirection: 'desc', itemsView: 'full',
-    });
-    // Full turn pages work for both legacy and paginated histories. In
-    // particular, legacy owners may not implement thread/items/list at all.
-    // Verify this read capability before enqueueing, not after sending input.
-    if (!Array.isArray(result.data) || result.data.some((turn: AnyRecord) =>
-      typeof turn?.id !== 'string' || !turn.id || !Array.isArray(turn.items)
-      || (turn.itemsView != null && turn.itemsView !== 'full'))) {
-      throw this.error('Codex returned an incomplete native turn page.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
-    }
-    return result;
-  }
-
   private async findOwnTurn(): Promise<AnyRecord | null> {
     let cursor: string | null = null;
     const seen = new Set<string>();
-    for (let page = 0; page < 20; page++) {
-      const response = await this.turns(cursor);
+    const turnIds = new Set<string>();
+    const deadline = Date.now() + 60_000;
+    // Preserve the old 20 x 20 turn lookup window, not its oversized RPC pages.
+    for (let page = 0; page < 400; page++) {
+      if (Date.now() > deadline) break;
+      const response = await this.turnReader.page(cursor);
+      if (Date.now() > deadline) break;
       if (page === 0) this.latestObservedTurn = response.data[0] ?? null;
       for (const turn of response.data) {
-        if (typeof turn?.id !== 'string') throw this.error('Codex returned an invalid turn identity.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
-        if (turn.id === this.turnId) return turn;
+        if (turnIds.has(turn.id)) throw this.error('Codex repeated a native turn.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
+        turnIds.add(turn.id);
+        if (turn.id === this.turnId) return this.turnReader.hydrate(turn, cursor);
         if (turn.id === this.baselineTurnId) return null;
-        if (turn.items.some((item: AnyRecord) => item.type === 'userMessage' && item.clientId === this.clientId)) return turn;
+        // Once bound, never hydrate somebody else's screenshot-heavy turn.
+        if (this.turnId) continue;
+        const full = await this.turnReader.hydrate(turn, cursor);
+        if (Date.now() > deadline) throw this.error('The desktop turn lookup exceeded its deadline.',
+          'CODEX_DESKTOP_QUEUE_UNCONFIRMED');
+        if (full.items.some((item: AnyRecord) => item.type === 'userMessage' && item.clientId === this.clientId)) return full;
       }
       cursor = this.nextCursor(response, seen);
       if (!cursor) return null;

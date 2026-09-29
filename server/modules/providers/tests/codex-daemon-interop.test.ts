@@ -516,7 +516,7 @@ test('an active desktop turn accepts same-turn input and buffers early output wi
       threadId: THREAD_ID, includeTurns: false,
     });
     assert.deepEqual(requests.find((request) => request.method === 'thread/turns/list')?.params, {
-      threadId: THREAD_ID, limit: 1, sortDirection: 'desc', itemsView: 'full',
+      threadId: THREAD_ID, cursor: null, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded',
     });
     assert.deepEqual(fallbackCalls, []);
     assert.ok(messages.some((message) => message.id === 'active-reply' && message.content === 'Already continued.'));
@@ -773,7 +773,8 @@ for (const [name, thread] of Object.entries({
       await new CodexSharedRuntime(fallback).run('Do not guess the turn', { sessionId: APP_ID }, writer, context);
       assert.deepEqual(fallbackCalls, []);
       assert.ok(!requests.some((request) => ['turn/steer', 'turn/start', 'turn/interrupt', 'thread/fork'].includes(request.method)));
-      assert.match(messages.find((message) => message.kind === 'error')?.content, /active Codex turn.*No message was submitted/);
+      assert.match(messages.find((message) => message.kind === 'error')?.content,
+        /active Codex turn.*No message was submitted|incomplete or invalid live turn history.*No input was retried/);
       assert.equal(messages.at(-1)?.success, false);
     }, (request, socket) => {
       if (request.method === 'thread/turns/list') {

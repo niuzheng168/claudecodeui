@@ -106,6 +106,42 @@ async function ready(runtime: CodexSharedRuntime): Promise<void> {
   }
 }
 
+test('shared-daemon attachment hydrates a large active turn without requesting a full-turn frame', async () => {
+  const f = fixture();
+  const calls: Array<{ method: string; params: AnyRecord }> = [];
+  const payload = 'x'.repeat(1024 * 1024);
+  const client: ICodexRpcClient = {
+    ...f.helper, ownsProcess: false,
+    async request(method, params) {
+      calls.push({ method, params });
+      assert.equal(params.threadId, 'desktop-thread');
+      if (method === 'thread/read') {
+        assert.equal(params.includeTurns, false);
+        return { thread: { id: 'desktop-thread', status: { type: 'active' } } };
+      }
+      if (method === 'thread/turns/list') {
+        assert.equal(params.itemsView, 'notLoaded', 'A full active turn exceeds the frame limit');
+        assert.equal(params.limit, 1);
+        return { data: [{ id: 'desktop-turn', status: 'inProgress', completedAt: null,
+          itemsView: 'notLoaded', items: [] }], nextCursor: null };
+      }
+      assert.equal(method, 'thread/items/list', 'Attachment must not mutate the desktop');
+      assert.equal(params.turnId, 'desktop-turn');
+      assert.equal(params.limit, 1);
+      const index = Number(params.cursor || 0);
+      return { data: [{ turnId: params.turnId,
+        item: { id: `screenshot-${index}`, type: 'mcpToolCall', result: { data: payload } } }],
+      nextCursor: index < 19 ? String(index + 1) : null };
+    },
+  };
+  const runtime = new CodexSharedRuntime(undefined, async () => client);
+  const observation = await runtime.prepareObservation('app', f.context);
+  assert.ok(observation);
+  await observation.dispose();
+  assert.equal(calls.filter(call => call.method === 'thread/items/list').length, 20);
+  assert.equal(f.closed(), true);
+});
+
 test('joining a private-stdio desktop turn enables queue/steer/Stop without loading its writer', async () => {
   const f = fixture();
   f.context.resolveResumeModel = async () => assert.fail('Observation must not select a model');
