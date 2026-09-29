@@ -6,6 +6,7 @@ import { CodexDesktopPeerClient } from '@/modules/providers/list/codex/codex-des
 import { CodexStdioClient } from '@/modules/providers/list/codex/codex-stdio.client.js';
 import { CodexStdioPermissions } from '@/modules/providers/list/codex/codex-stdio-permissions.service.js';
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
+import { CodexNativeTurnReader } from '@/modules/providers/list/codex/codex-native-turns.service.js';
 import { CodexGoalRun } from '@/modules/providers/list/codex/codex-goal-run.service.js';
 import { controlCodexGoal, formatCodexGoalResult, getCodexGoal, parseCodexGoalCommand } from '@/modules/providers/list/codex/codex-goal.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
@@ -77,9 +78,8 @@ async function readActiveDesktopTurn(
   snapshot ??= await client.request('thread/read', { threadId, includeTurns: false });
   // Paginated threads require the native turns API. Never pick an old
   // unfinished turn, infer activity from a lock, or follow a different thread.
-  const page = await client.request('thread/turns/list', {
-    threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
-  });
+  const reader = new CodexNativeTurnReader(client, threadId);
+  const page = await reader.page();
   const turns = Array.isArray(page.data) ? page.data : [];
   if (snapshot.thread?.id !== threadId || snapshot.thread?.status?.type !== 'active'
     || turns.length !== 1 || turns[0]?.status !== 'inProgress'
@@ -88,7 +88,7 @@ async function readActiveDesktopTurn(
       code: 'CODEX_ACTIVE_TURN_UNCONFIRMED', statusCode: 409,
     });
   }
-  return turns[0];
+  return reader.hydrate(turns[0], null);
 }
 
 /**

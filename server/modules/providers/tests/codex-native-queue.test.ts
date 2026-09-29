@@ -40,8 +40,8 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
         if (acknowledged) deleted = true;
         return options.deleteAck === null ? {} : { deleted: acknowledged };
       }
-      if (method === 'thread/turns/list') return {
-        data: [
+      if (method === 'thread/turns/list') {
+        const turns = [
           ...(created && !pending ? [
             { id: 'foreign-turn', status: 'completed', items: [{ type: 'userMessage', id: 'other-user', clientId: 'another-client' }] },
             {
@@ -52,8 +52,11 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
             },
           ] : []),
           { id: 'baseline', status: 'completed', items: [] },
-        ], nextCursor: null,
-      };
+        ];
+        const index = Number(params.cursor || 0);
+        return { data: turns.slice(index, index + params.limit),
+          nextCursor: index + params.limit < turns.length ? String(index + params.limit) : null };
+      }
       assert.fail(`Unexpected RPC: ${method}`);
     },
     onNotification: () => () => {}, onServerRequest: () => () => {},
@@ -93,7 +96,8 @@ test('desktop queue preserves images and native identity without starting/resumi
   assert.deepEqual(f.calls.find(call => call.method === 'thread/queue/add')?.params.input, input);
   assert.ok(f.calls.every(call => call.params.threadId === 'desktop' || call.method === 'thread/loaded/list'));
   assert.ok(!f.calls.some(call => ['thread/start', 'thread/resume', 'thread/fork', 'turn/start', 'turn/interrupt'].includes(call.method)));
-  assert.ok(f.calls.filter(call => call.method === 'thread/turns/list').every(call => call.params.itemsView === 'full'));
+  assert.ok(f.calls.filter(call => call.method === 'thread/turns/list')
+    .every(call => call.params.itemsView === 'notLoaded' && call.params.limit === 1));
   assert.ok(!f.calls.some(call => call.method === 'thread/items/list'), 'Legacy owners need no item pagination support');
 });
 
@@ -179,7 +183,9 @@ test('wrong desktop identity is rejected before queue mutation', async () => {
 test('an observer that loaded a writer or returns incomplete turn items cannot report success', async () => {
   for (const options of [{ loaded: true }, { incompleteItems: true }]) {
     const f = fixture(options);
-    await assert.rejects(f.run.run([{ type: 'text', text: 'Bounded observation' }]), { code: 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR' });
+    await assert.rejects(f.run.run([{ type: 'text', text: 'Bounded observation' }]), {
+      code: options.loaded ? 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR' : 'CODEX_NATIVE_TURN_PROTOCOL_ERROR',
+    });
     assert.deepEqual(f.items, []);
   }
 });
@@ -209,8 +215,8 @@ function ownerFixture(options: {
         if (options.active) started = true;
         return { queuedSubmission: { id: 'new-queued-input', clientUserMessageId: clientId } };
       }
-      if (method === 'thread/turns/list') return {
-        data: [
+      if (method === 'thread/turns/list') {
+        const turns = [
           ...(started && !options.neverStarts ? [{
             id: 'desktop-owner-turn', status: 'completed', completedAt: 200, items: [
               { id: 'desktop-user', type: 'userMessage', clientId },
@@ -219,8 +225,11 @@ function ownerFixture(options: {
           }] : []),
           { id: 'stopped-turn', status: options.previousStatus ?? 'interrupted',
             completedAt: options.active ? null : 100, items: [] },
-        ], nextCursor: null,
-      };
+        ];
+        const index = Number(params.cursor || 0);
+        return { data: turns.slice(index, index + params.limit),
+          nextCursor: index + params.limit < turns.length ? String(index + params.limit) : null };
+      }
       assert.fail(`Unsafe or unexpected observer operation: ${method}`);
     },
     onNotification: () => () => {}, onServerRequest: () => () => {},

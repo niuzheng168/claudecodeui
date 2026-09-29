@@ -53,7 +53,12 @@ jobs:
         run: >-
           node node_modules/tsx/dist/cli.mjs --tsconfig server/tsconfig.json --test
           server/modules/providers/tests/codex-large-history.test.ts
+          server/modules/providers/tests/codex-live-history.test.ts
+          server/modules/providers/tests/codex-native-queue.test.ts
+          server/modules/providers/tests/codex-desktop-control.test.ts
           server/modules/providers/tests/codex-windows-history.test.ts
           server/modules/providers/tests/codex-macos-transport.test.ts
           server/modules/providers/tests/codex-desktop-peer.test.ts
+        env:
+          DATABASE_PATH: ":memory:"
       - run: npm run typecheck
