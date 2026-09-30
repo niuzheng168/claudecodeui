@@ -349,6 +349,7 @@ export function useChatSessionState({
       canRequest: () => (
         isActiveRef.current
         && activeSessionIdRef.current === sessionId
+        && document.visibilityState !== 'hidden'
       ),
     });
     const slot = result.slot;
@@ -369,7 +370,9 @@ export function useChatSessionState({
   if (!refreshCoordinatorRef.current) {
     refreshCoordinatorRef.current = createMessageHistoryRefreshCoordinator(
       (sessionId) => latestRefreshExecutorRef.current(sessionId),
-      (sessionId) => isActiveRef.current && activeSessionIdRef.current === sessionId,
+      (sessionId) => isActiveRef.current
+        && activeSessionIdRef.current === sessionId
+        && document.visibilityState !== 'hidden',
     );
   }
 
@@ -378,13 +381,22 @@ export function useChatSessionState({
   ), []);
 
   useEffect(() => {
-    // A failed first read has no cached timestamp. It must still recover when
-    // the node/network returns, independently of the optional Goal poller.
+    // Resume persisted replies without waiting for the websocket handshake.
+    // A completion received while backgrounded is deferred by the coordinator
+    // above; focus/visibility bursts consume the same foreground transition.
+    // Failed initial reads must also recover independently of the Goal poller.
+    let wasHidden = document.visibilityState === 'hidden';
     const retryHistory = () => {
+      if (document.visibilityState === 'hidden') {
+        wasHidden = true;
+        return;
+      }
+      const resumed = wasHidden;
+      wasHidden = false;
       const sessionId = activeSessionIdRef.current;
-      if (!isActiveRef.current || !sessionId || document.visibilityState === 'hidden') return;
+      if (!isActiveRef.current || !sessionId) return;
       const slot = sessionStore.getSessionSlot(sessionId);
-      if (slot?.status === 'error') void requestLatestMessages(sessionId);
+      if (resumed || slot?.status === 'error') void requestLatestMessages(sessionId);
     };
     window.addEventListener('online', retryHistory);
     window.addEventListener('focus', retryHistory);
@@ -741,20 +753,24 @@ export function useChatSessionState({
     };
   }, [chatMessages.length, isActive, isLoadingSessionMessages, scrollToBottom]);
 
-  // Session replay/subscription remains active regardless of which main tab is
-  // visible. Only persisted-history HTTP traffic is visibility-gated below.
+  // Sole owner of subscriptions on session selection and socket replacement.
+  // Replay/status must not wait for persisted-history HTTP, and same-session
+  // sidebar object refreshes must not send a second subscription/replay.
+  // Keep live subscriptions even when another main tab is selected.
+  const subscriptionSessionId = selectedSession?.id;
+  const subscriptionProjectId = selectedProject?.projectId;
   useEffect(() => {
-    if (!selectedSession || !selectedProject || !ws) return;
+    if (!subscriptionSessionId || !subscriptionProjectId || ws?.readyState !== WebSocket.OPEN) return;
 
-    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
+    statusCheckSentAtRef.current.set(subscriptionSessionId, Date.now());
     sendMessage({
       type: 'chat.subscribe',
       sessions: [{
-        sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        sessionId: subscriptionSessionId,
+        lastSeq: lastSeqRef.current.get(subscriptionSessionId) ?? 0,
       }],
     });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
+  }, [lastSeqRef, subscriptionProjectId, subscriptionSessionId, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based.
   //
