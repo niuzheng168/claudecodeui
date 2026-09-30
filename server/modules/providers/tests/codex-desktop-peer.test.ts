@@ -152,12 +152,68 @@ test('desktop peer discovers and pins the native owner, keeping the input identi
     assert.deepEqual(start?.params, {
       conversationId: 'desktop-thread',
       turnStart: {
-        request: { threadId: 'desktop-thread', clientUserMessageId: 'browser-input-id', input },
+        request: {
+          threadId: 'desktop-thread', clientUserMessageId: 'browser-input-id',
+          input: [{ ...input[0], text_elements: [] }, input[1]],
+        },
         context: { inheritThreadSettings: true },
       },
     });
     assert.deepEqual(f.calls.find(x => x.type === 'client-discovery-response')?.response, { canHandle: false });
     assert.ok(!f.calls.some(x => ['thread/resume', 'thread/queue/add', 'thread/start'].includes(x.method)));
+  });
+});
+
+test('desktop input renders before native defaults, preserving rich text and leaving caller input unchanged', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    const elements = [{ byteRange: { start: 0, end: 6 }, placeholder: 'a-file' }];
+    const input = [
+      { type: 'text', text: 'continue' },
+      { type: 'localImage', path: '/workspace/image.png' },
+      { type: 'text', text: 'a-file', text_elements: elements },
+      { type: 'text', text: 'more', text_elements: undefined },
+    ];
+    const before = structuredClone(input);
+    try {
+      await client.startTurn(input, 'start-input');
+      await client.steerTurn('own-turn', input, 'steer-input');
+      const start = f.calls.find(x => x.method === 'thread-follower-start-turn')!;
+      const steer = f.calls.find(x => x.method === 'thread-follower-steer-turn')!;
+      const expected = [
+        { type: 'text', text: 'continue', text_elements: [] },
+        input[1], input[2],
+        { type: 'text', text: 'more', text_elements: [] },
+      ];
+      for (const received of [start.params.turnStart.request.input, steer.params.input, steer.params.restoreMessage.input]) {
+        assert.deepEqual(received, expected);
+        // Desktop renders optimistic/restored input before app-server parsing
+        // can supply defaults. These are the accesses that crashed its UI.
+        assert.equal(received.some((item: AnyRecord) => item.type === 'text'
+          && item.text_elements.some((element: AnyRecord) => element.placeholder === 'aeon-continuation')), false);
+        assert.equal(received.filter((item: AnyRecord) => item.type === 'text')
+          .reduce((count: number, item: AnyRecord) => count + item.text_elements.length, 0), 1);
+      }
+      assert.deepEqual(input, before);
+      assert.deepEqual(elements, before[2].text_elements);
+    } finally { client.close(); }
+  });
+});
+
+test('malformed desktop text elements are refused locally rather than sent or silently erased', async () => {
+  await fixture(async f => {
+    const client = await f.connect();
+    assert.ok(client);
+    try {
+      for (const text_elements of [null, 'not-an-array', {}, 1]) {
+        const input = [{ type: 'text', text: 'must not send', text_elements }];
+        await assert.rejects(client.startTurn(input, 'bad-start'), { code: 'CODEX_DESKTOP_INPUT_INVALID' });
+        await assert.rejects(client.steerTurn('own-turn', input, 'bad-steer'), { code: 'CODEX_DESKTOP_INPUT_INVALID' });
+      }
+      assert.ok(!f.calls.some(x => ['thread-follower-start-turn', 'thread-follower-steer-turn',
+        'thread-stream-following-changed', 'thread/queue/add', 'turn/start'].includes(x.method)));
+    } finally { client.close(); }
   });
 });
 
@@ -266,9 +322,10 @@ test('a live desktop snapshot is read-only, owner-bound and requested afresh for
       const steer = f.calls.find(x => x.method === 'thread-follower-steer-turn');
       assert.equal(steer?.version, 1);
       assert.equal(steer?.targetClientId, 'desktop-owner');
+      const desktopInput = [{ ...input[0], text_elements: [] }, input[1]];
       assert.deepEqual(steer?.params, {
-        conversationId: 'desktop-thread', input, clientUserMessageId: 'correction-id',
-        restoreMessage: { input, context: {} },
+        conversationId: 'desktop-thread', input: desktopInput, clientUserMessageId: 'correction-id',
+        restoreMessage: { input: desktopInput, context: {} },
       });
       assert.equal(await client.interruptTurn('own-turn'), true);
       const stop = f.calls.find(x => x.method === 'thread-follower-interrupt-turn');

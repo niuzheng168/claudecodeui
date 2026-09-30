@@ -153,12 +153,13 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
     if (!this.ownerClientId || !clientUserMessageId || !input.length) {
       throw this.error('The desktop submission is incomplete; no prompt was sent.', 'CODEX_DESKTOP_OWNER_UNAVAILABLE');
     }
+    const desktopInput = this.prepareInput(input);
     let response: AnyRecord;
     try {
       response = await this.request('thread-follower-start-turn', 2, {
         conversationId: this.threadId,
         turnStart: {
-          request: { threadId: this.threadId, clientUserMessageId, input },
+          request: { threadId: this.threadId, clientUserMessageId, input: desktopInput },
           context: { inheritThreadSettings: true },
         },
       }, this.ownerClientId);
@@ -205,15 +206,16 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
     if (!expectedTurnId || !input.length || !clientUserMessageId) {
       throw this.error('The correction is incomplete. No input was sent.', 'STEER_UNAVAILABLE');
     }
+    const desktopInput = this.prepareInput(input);
     await this.assertActiveTurn(expectedTurnId);
     let response: AnyRecord;
     try {
       response = await this.request('thread-follower-steer-turn', 1, {
-        conversationId: this.threadId, input, clientUserMessageId,
+        conversationId: this.threadId, input: desktopInput, clientUserMessageId,
         // The desktop requires a restoration envelope for its pending input.
         // No model, effort, permissions, mode or service-tier overrides belong
         // in a correction. These settings remain with the existing owner.
-        restoreMessage: { input, context: {} },
+        restoreMessage: { input: desktopInput, context: {} },
       }, this.ownerClientId);
     } catch {
       throw this.steerUnconfirmed();
@@ -251,6 +253,22 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
   close(): void {
     if (this.following && !this.closedError) this.sendFollowing(false);
     this.fail(this.disconnected());
+  }
+
+  private prepareInput(input: AnyRecord[]): AnyRecord[] {
+    // Peer input is rendered optimistically before app-server deserialization.
+    // Unlike native RPC/SDK input, desktop text must already have this array:
+    // its navigation and continuation checks call .length/.some directly.
+    // Normalize both submission and restoration without mutating caller data
+    // or discarding supplied rich-text elements.
+    return input.map(item => {
+      if (item.type !== 'text') return item;
+      if (item.text_elements !== undefined && !Array.isArray(item.text_elements)) {
+        throw this.error('The desktop text elements must be an array. No input was sent.',
+          'CODEX_DESKTOP_INPUT_INVALID');
+      }
+      return { ...item, text_elements: item.text_elements ?? [] };
+    });
   }
 
   private async assertActiveTurn(expectedTurnId: string): Promise<void> {

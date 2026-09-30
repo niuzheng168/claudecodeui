@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import net from 'node:net';
@@ -26,6 +27,8 @@ for (const historyMode of ['paginated', 'legacy'] as const) {
     assert.ok(ownerExecutable && path.isAbsolute(ownerExecutable));
     const root = await mkdtemp(path.join(os.tmpdir(), 'codey-peer-native-'));
     const workspace = path.join(root, 'workspace');
+    const endpoint = process.platform === 'win32'
+      ? `\\\\.\\pipe\\codey-peer-native-${randomUUID()}` : path.join(root, 'ipc/ipc.sock');
     const clients: ICodexRpcClient[] = [];
     const sockets = new Set<net.Socket>();
     const helperCalls: string[] = [], peerCalls: AnyRecord[] = [], messages: AnyRecord[] = [];
@@ -137,10 +140,16 @@ enabled = false
           } else if (message.method === 'thread-follower-start-turn') {
             assert.equal(message.targetClientId, 'native-owner');
             assert.deepEqual(message.params.turnStart.context, { inheritThreadSettings: true });
+            // The real UI reads this array before native parsing adds defaults.
+            assert.ok(message.params.turnStart.request.input.every((item: AnyRecord) =>
+              item.type !== 'text' || Array.isArray(item.text_elements)));
             send({ ...response, result: { result: await owner.request('turn/start', message.params.turnStart.request) } });
           } else if (message.method === 'thread-follower-steer-turn') {
             assert.equal(message.version, 1);
             assert.equal(message.targetClientId, 'native-owner');
+            assert.ok(message.params.input.every((item: AnyRecord) =>
+              item.type !== 'text' || Array.isArray(item.text_elements)));
+            assert.deepEqual(message.params.restoreMessage.input, message.params.input);
             const active = (await turns()).at(-1)!;
             const result = await owner.request('turn/steer', {
               threadId, expectedTurnId: active.id, input: message.params.input,
@@ -166,7 +175,7 @@ enabled = false
         });
       });
       await new Promise<void>((resolve, reject) => {
-        peerServer!.once('error', reject); peerServer!.listen(path.join(root, 'ipc/ipc.sock'), resolve);
+        peerServer!.once('error', reject); peerServer!.listen(endpoint, resolve);
       });
       runtime = new CodexSharedRuntime({
         run: async () => assert.fail('Never use exec for peer interoperability'), abort: () => false,
@@ -177,7 +186,12 @@ enabled = false
         client.request = (method, params) => { helperCalls.push(method); return request(method, params); };
         return client;
       }, async () => assert.fail('Never start an alternate writer'),
-      id => CodexDesktopPeerClient.connect(id, { home: root }));
+      id => CodexDesktopPeerClient.connect(id, {
+        home: process.platform === 'win32' ? path.join(os.homedir(), '.codex') : root,
+        // Windows discovery normally requires the shared profile. This fixture
+        // injects only its random test pipe; it never connects to the real UI.
+        connectSocket: () => net.createConnection({ path: endpoint }),
+      }));
       const provider = new CodexSessionsProvider();
       const context: ProviderRuntimeContext = {
         resolveProviderSessionId: () => threadId,
@@ -276,6 +290,8 @@ enabled = false
       await new Promise<void>(resolve => model.close(() => resolve()));
       // Native bootstrap helpers may finish writing their plugin cache just
       // after the app-server exits. Retry only cleanup of this fixture's home.
+      assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(root).startsWith('codey-peer-native-'));
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
