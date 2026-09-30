@@ -207,7 +207,15 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
       throw this.error('The correction is incomplete. No input was sent.', 'STEER_UNAVAILABLE');
     }
     const desktopInput = this.prepareInput(input);
-    await this.assertActiveTurn(expectedTurnId);
+    try {
+      await this.assertActiveTurn(expectedTurnId);
+    } catch {
+      // A timeout/disconnect while reading state happens before dispatch.
+      // Report a definite non-delivery so the gateway restores the queue
+      // without a permanent "check delivery" hold. Never retry here.
+      throw this.error('The desktop active turn could not be verified. No input was sent; refresh before trying again.',
+        'STEER_UNAVAILABLE');
+    }
     let response: AnyRecord;
     try {
       response = await this.request('thread-follower-steer-turn', 1, {

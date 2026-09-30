@@ -424,6 +424,38 @@ test('a definite native refusal restores the original queued message without a f
   });
 });
 
+test('a failed desktop preflight keeps the queued message sendable without automatically retrying', async (t) => {
+  await fixture(t, async ({ runtime, run, observer, calls }) => {
+    const queue = queuedStore(t);
+    let attempts = 0;
+    runtime.steer = async () => {
+      attempts++;
+      throw new AppError('The desktop state could not be verified. No input was sent.', {
+        code: 'STEER_UNAVAILABLE',
+      });
+    };
+    const request = { sessionId: 'session-a', requestId: 'preflight', expectedRunId: run.id, queuedMessage: queue.message };
+    const result = await steerQueuedChatMessage(1, request, { runtime: runtime as never });
+    assert.equal(result.accepted, false);
+    assert.equal(result.code, 'STEER_UNAVAILABLE');
+    assert.equal(result.queueRestored, true);
+    assert.equal(result.queueHeld, false);
+    assert.deepEqual(queue.read()?.queuedMessage, queue.message);
+    assert.equal(attempts, 1);
+    assert.equal(observer.frames.length, 0);
+    assert.equal(calls.length, 0);
+    assert.equal(run.status, 'running');
+
+    // Only a new explicit request may promote the same receipt after recovery.
+    runtime.steer = async () => { attempts++; };
+    assert.equal((await steerQueuedChatMessage(1, { ...request, requestId: 'retry' },
+      { runtime: runtime as never })).accepted, true);
+    assert.equal(attempts, 2);
+    assert.equal(queue.read(), null);
+    assert.equal(observer.frames.filter(frame => frame.role === 'user').length, 1);
+  });
+});
+
 test('ambiguous native failure restores a held queue that cannot immediately be retried', async (t) => {
   await fixture(t, async ({ runtime, run, observer }) => {
     const queue = queuedStore(t);
