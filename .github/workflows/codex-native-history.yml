@@ -56,6 +56,8 @@ jobs:
           server/modules/providers/tests/codex-live-history.test.ts
           server/modules/providers/tests/codex-native-queue.test.ts
           server/modules/providers/tests/codex-desktop-control.test.ts
+          server/modules/providers/tests/codex-daemon-socket.test.ts
+          server/modules/providers/tests/codex-native-transport.test.ts
           server/modules/providers/tests/codex-windows-history.test.ts
           server/modules/providers/tests/codex-macos-transport.test.ts
           server/modules/providers/tests/codex-desktop-peer.test.ts
