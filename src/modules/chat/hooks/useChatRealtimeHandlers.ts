@@ -36,7 +36,6 @@ type UseChatRealtimeHandlersArgs = {
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
-  onWebSocketReconnect?: () => void;
   requestLatestMessages: (sessionId: string, allowNetwork?: boolean) => Promise<void>;
   sessionStore: SessionStore;
 };
@@ -69,7 +68,6 @@ export function useChatRealtimeHandlers({
   statusCheckSentAtRef,
   onSessionProcessing,
   onSessionIdle,
-  onWebSocketReconnect,
   requestLatestMessages,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
@@ -110,7 +108,13 @@ export function useChatRealtimeHandlers({
 
       switch (msg.kind) {
         case 'websocket_reconnected':
-          onWebSocketReconnect?.();
+          // Completed runs are read over REST; live replay/status comes from
+          // useChatSessionState's socket subscription independently. Never
+          // make that subscription wait for (or repeat after) a slow history
+          // read, and refresh even if the old UI still says "processing".
+          if (activeViewSessionId) {
+            void requestLatestMessages(activeViewSessionId, isActiveRef.current);
+          }
           return;
 
         // Settled by useChatSteering; neither accepted nor refused corrections
@@ -375,7 +379,6 @@ export function useChatRealtimeHandlers({
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
-    onWebSocketReconnect,
     requestLatestMessages,
     sessionStore,
   ]);
