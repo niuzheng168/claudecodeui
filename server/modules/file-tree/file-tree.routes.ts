@@ -5,8 +5,8 @@ import type {
   FileTreeLogger,
   FileTreeServices,
   FileTreeUploadedFile,
-} from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError } from '@/shared/index.js';
 
 type FileTreeUploadLimits = {
   maximumFileSizeMegabytes: number;
@@ -133,14 +133,21 @@ export function createFileTreeRouter(
   router.get('/projects/:projectId/files/content', createRouteHandler(async (request, response) => {
     const filePath = readRequiredString(request.query.path, 'path', 'Invalid file path');
     const file = await services.openFile(readProjectId(request), filePath);
+    if (response.destroyed) {
+      file.stream.destroy();
+      return;
+    }
     response.setHeader('Content-Type', file.contentType);
-    file.stream.pipe(response);
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.on('close', () => file.stream.destroy());
     file.stream.on('error', (error) => {
       logger.error('Error streaming File Tree content', error);
       if (!response.headersSent) {
         response.status(500).json({ error: 'Error reading file' });
       }
     });
+    file.stream.pipe(response);
   }, logger));
 
   router.put('/projects/:projectId/file', createRouteHandler(async (request, response) => {

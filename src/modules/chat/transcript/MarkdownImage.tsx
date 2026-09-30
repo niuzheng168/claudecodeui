@@ -12,7 +12,8 @@ type MarkdownImageProps = {
 
 /**
  * Only HTTP(S) images go directly to the browser. Everything file-like is read
- * by the existing project API, which enforces its project-root boundary.
+ * by the existing project API, which enforces project/worktree boundaries and
+ * permits only verified session-owned Codex visualization images outside them.
  * Do not turn arbitrary schemes into browser sources or credentialed requests.
  */
 function resolveImageSource(src?: string): { kind: 'remote' | 'file'; value: string } | null {

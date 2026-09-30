@@ -5,7 +5,8 @@ import os from 'node:os';
 import mime from 'mime-types';
 import multer from 'multer';
 
-import { projectsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { createCodexVisualizationImageService } from '@/modules/file-tree/codex-visualization-image.service.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
 import { resolveRelatedWorktreeRoot } from '@/modules/worktrees/index.js';
@@ -16,7 +17,7 @@ import type {
   FileTreeWorkspaceGateway,
   FileTreeWorktreeGateway,
 } from '@/shared/index.js';
-import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/index.js';
+import { WORKSPACES_ROOT, resolveCodexHomeDirectory, validateWorkspacePath } from '@/shared/index.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -90,6 +91,17 @@ const fileTreeServices = createFileTreeService({
   fileSystem: fileTreeFileSystem,
   projects: fileTreeProjects,
   worktrees: fileTreeWorktrees,
+  transcriptImages: createCodexVisualizationImageService({
+    resolveHomeDirectory: resolveCodexHomeDirectory,
+    findSession: (nativeSessionId) => {
+      const session = sessionsDb.getSessionByProviderSessionId(nativeSessionId);
+      return session ? {
+        provider: session.provider,
+        nativeSessionId: session.provider_session_id,
+        projectPath: session.project_path,
+      } : null;
+    },
+  }),
   workspace: fileTreeWorkspace,
   resolveMimeType: (filePath) => mime.lookup(filePath) || 'application/octet-stream',
   fileSystemConcurrency: readFileSystemConcurrency(),

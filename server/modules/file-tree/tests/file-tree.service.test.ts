@@ -80,6 +80,9 @@ function createDependencies(
     worktrees: {
       resolveRoot: async () => null,
     },
+    transcriptImages: {
+      openImage: async () => null,
+    },
     workspace: {
       rootPath: path.dirname(projectRoot),
       validatePath: async (candidatePath) => ({ valid: true, resolvedPath: candidatePath }),
@@ -366,6 +369,52 @@ test('ordinary project files need no Git lookup and use their canonical path', a
     await createFileTreeService(dependencies).readTextFile('project-1', 'linked.txt'),
     { content: 'project notes', path: requestedPath },
   );
+});
+
+test('only raw external images may use the session-owned transcript image capability', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const imagePath = path.resolve('codex-home/visualizations/2026/09/29/thread/screenshot.png');
+  const calls: Array<[string, string]> = [];
+  const dependencies = createDependencies(createFakeFileSystem(), projectRoot);
+  dependencies.transcriptImages.openImage = async (...input) => {
+    calls.push(input);
+    return { contentType: 'image/jpeg', stream: Readable.from(['fixture-image']) };
+  };
+  const service = createFileTreeService(dependencies);
+  const image = await service.openFile('project-1', imagePath);
+  assert.equal(image.contentType, 'image/jpeg');
+  for await (const _chunk of image.stream) { /* consume and close */ }
+  assert.deepEqual(calls, [[projectRoot, imagePath]]);
+  await assert.rejects(service.readTextFile('project-1', imagePath), { statusCode: 403 });
+  await assert.rejects(service.saveTextFile('project-1', imagePath, 'no'), { statusCode: 403 });
+  await assert.rejects(service.openFile('project-1', '../codex-home/screenshot.png'), { statusCode: 403 });
+  assert.equal(calls.length, 1);
+});
+
+test('unknown projects and in-project symlink escapes cannot invoke the transcript image reader', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const dependencies = createDependencies(createFakeFileSystem({
+    realpath: async (candidate) => candidate === projectRoot ? candidate : path.resolve('secret.png'),
+  }), projectRoot);
+  dependencies.transcriptImages.openImage = async () => { throw new Error('must not run'); };
+  const service = createFileTreeService(dependencies);
+  await assert.rejects(service.openFile('project-1', path.join(projectRoot, 'escape.png')), { statusCode: 403 });
+  dependencies.projects.getProjectPathById = async () => null;
+  await assert.rejects(service.openFile('unknown', path.resolve('external.png')), { statusCode: 404 });
+});
+
+test('missing or unreadable authorized transcript images retain the existing HTTP error mapping', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  for (const [code, statusCode] of [['ENOENT', 404], ['EACCES', 403], ['EPERM', 403]] as const) {
+    const dependencies = createDependencies(createFakeFileSystem(), projectRoot);
+    dependencies.transcriptImages.openImage = async () => {
+      throw Object.assign(new Error('fixture filesystem error'), { code });
+    };
+    await assert.rejects(
+      createFileTreeService(dependencies).openFile('project-1', path.resolve('external.png')),
+      { code, statusCode },
+    );
+  }
 });
 
 test('related worktree text, media and saves share the verified file boundary', async () => {

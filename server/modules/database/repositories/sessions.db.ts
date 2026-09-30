@@ -73,7 +73,7 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
   return normalizeProjectPath(projectPath);
 }
 
-/** Used by Providers, Projects and WebSocket to persist session metadata and native-id mappings. */
+/** Providers, Projects and WebSocket persist sessions; File Tree verifies native image ownership. */
 export const sessionsDb = {
   /**
    * Upserts one session row discovered on disk by a provider synchronizer.
