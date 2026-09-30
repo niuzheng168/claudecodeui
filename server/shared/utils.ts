@@ -41,9 +41,9 @@ import type {
 export const IS_PLATFORM = process.env.VITE_IS_PLATFORM === 'true';
 
 /**
- * Resolves the Codex storage root for provider discovery, history, and daemon
- * connections. Honor the same CODEX_HOME override as the SDK; compute it at
- * call time so isolated runs never connect to another home directory's daemon.
+ * Resolves the Codex storage root for provider discovery, history, daemon
+ * connections and File Tree's session-owned images. Honor CODEX_HOME at call
+ * time so isolated runs never read another home's artifacts or daemon.
  */
 export function resolveCodexHomeDirectory(): string {
   return path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'));

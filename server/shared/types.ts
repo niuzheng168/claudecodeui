@@ -1266,6 +1266,21 @@ export type FileTreeWorktreeGateway = {
 };
 
 /**
+ * Read-only transcript image capability used by File Tree's raw-content path.
+ *
+ * Implementations must verify the native session's ownership of the selected
+ * project, canonical containment in its artifact directory, and raster-image
+ * bytes. Null means no additional access is granted. This capability must not
+ * be used by text reads, saves, listing, uploads or filesystem mutations.
+ */
+export type FileTreeTranscriptImageGateway = {
+  openImage(projectPath: string, filePath: string): Promise<{
+    contentType: string;
+    stream: Readable;
+  } | null>;
+};
+
+/**
  * Workspace validation boundary used by browsing, creation, and related worktrees.
  *
  * The injected validator enforces the configured workspace root and resolves
@@ -1303,14 +1318,15 @@ export type FileTreeLogger = {
 /**
  * Required production dependencies for the File Tree application service.
  *
- * Filesystem, project lookup, related-worktree lookup, workspace policy, MIME
- * detection, concurrency, and logging are all explicit so service construction
- * has no hidden process, repository, or machine-wide defaults.
+ * Filesystem, project lookup, related-worktree lookup, transcript images,
+ * workspace policy, MIME detection, concurrency, and logging are all explicit
+ * so service construction has no hidden process or machine-wide defaults.
  */
 export type FileTreeServiceDependencies = {
   fileSystem: FileTreeFileSystem;
   projects: FileTreeProjectGateway;
   worktrees: FileTreeWorktreeGateway;
+  transcriptImages: FileTreeTranscriptImageGateway;
   workspace: FileTreeWorkspaceGateway;
   resolveMimeType(filePath: string): string;
   fileSystemConcurrency: number;

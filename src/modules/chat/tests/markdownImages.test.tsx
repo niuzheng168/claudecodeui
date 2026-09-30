@@ -210,3 +210,30 @@ test.each([false, true])('MessageComponent supplies the selected project for ass
   await screen.findByRole('img', { name: 'Rendered' });
   expect(fetchImage.mock.calls[0][0]).toContain('/projects/selected-project/');
 });
+
+test.each([false, true])('Codex desktop visualization paths keep authenticated project scope (streaming=%s)', async (isStreaming) => {
+  (window as Window & { __CLOUDCLI_BASE_PATH__?: string }).__CLOUDCLI_BASE_PATH__ = '/cloudcli/windows-node/';
+  const path = 'C:/Users/owner/.codex/visualizations/2026/09/29/11111111-2222-4333-8444-555555555555/screenshot.png';
+  const project: Project = { projectId: 'project-backup', fullPath: 'D:/backup', displayName: 'Backup' };
+  // Desktop can save JPEG bytes under a .png name. Use the node's sniffed type.
+  fetchImage.mockResolvedValueOnce(new Response(new Uint8Array([255, 216, 255, 224]), {
+    headers: { 'Content-Type': 'image/jpeg' },
+  }));
+  render(
+    <UiPreferencesProvider>
+      <MessageComponent
+        message={{ type: 'assistant', content: `![历史截图](${path})`, isStreaming, timestamp: '2026-09-30T00:00:00Z' }}
+        prevMessage={null}
+        createDiff={() => []}
+        provider="codex"
+        selectedProject={project}
+      />
+    </UiPreferencesProvider>,
+  );
+  expect((await screen.findByRole('img', { name: '历史截图' })).getAttribute('src')).toBe('blob:project-image-1');
+  expect(fetchImage).toHaveBeenCalledTimes(1);
+  const [url, options] = fetchImage.mock.calls[0];
+  expect(url).toBe(`/cloudcli/windows-node/api/file-tree/projects/project-backup/files/content?${new URLSearchParams({ path })}`);
+  expect(options.headers.Authorization).toBe('Bearer fixture.payload.signature');
+  expect(createObjectURL.mock.calls[0][0].type).toBe('image/jpeg');
+});

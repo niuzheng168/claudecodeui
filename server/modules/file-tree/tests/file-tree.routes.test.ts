@@ -162,6 +162,55 @@ test('file routes preserve a concrete scope rejection for the editor', async () 
   });
 });
 
+test('raw transcript images retain their sniffed MIME and cannot enter a shared browser cache', async () => {
+  const imagePath = 'C:/Users/owner/.codex/visualizations/2026/09/29/11111111-2222-4333-8444-555555555555/shot.png';
+  const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  const stream = Readable.from([bytes]);
+  await withFileTreeServer(createFakeServices({
+    openFile: async (projectId, filePath) => {
+      assert.equal(projectId, 'project-1');
+      assert.equal(filePath, imagePath);
+      return { contentType: 'image/jpeg', stream };
+    },
+  }), async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/api/file-tree/projects/project-1/files/content?${new URLSearchParams({ path: imagePath })}`,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/jpeg');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+  });
+  assert.equal(stream.destroyed, true);
+});
+
+test('a cancelled image request closes a stream returned after the client disconnected', async () => {
+  let finishRead!: (file: { contentType: string; stream: Readable }) => void;
+  let readStarted!: () => void;
+  const started = new Promise<void>((resolve) => { readStarted = resolve; });
+  const stream = new Readable({ read() { /* held open until cancellation */ } });
+  const closed = once(stream, 'close');
+  await withFileTreeServer(createFakeServices({
+    openFile: async () => {
+      readStarted();
+      return new Promise((resolve) => { finishRead = resolve; });
+    },
+  }), async (baseUrl) => {
+    const controller = new AbortController();
+    const request = fetch(`${baseUrl}/api/file-tree/projects/project-1/files/content?path=shot.png`, {
+      signal: controller.signal,
+    });
+    const aborted = assert.rejects(request, { name: 'AbortError' });
+    await started;
+    controller.abort();
+    await aborted;
+    finishRead({ contentType: 'image/png', stream });
+    await closed;
+  });
+  assert.equal(stream.destroyed, true);
+});
+
 test('create route parses the transport payload before invoking the service', async () => {
   const inputs: Parameters<FileTreeServices['createEntry']>[0][] = [];
   const services = createFakeServices({

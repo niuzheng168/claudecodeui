@@ -497,6 +497,14 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     async openFile(projectId, filePath) {
       const projectRoot = await resolveProjectRoot(projectId);
       try {
+        // Codex desktop keeps screenshots outside the checkout. Only this raw
+        // read path may use the session-owned, raster-only artifact capability;
+        // all text, worktree, listing and write boundaries remain unchanged.
+        if (path.isAbsolute(filePath)
+          && !isPathInsideDirectory(projectRoot, path.resolve(filePath))) {
+          const image = await dependencies.transcriptImages.openImage(projectRoot, filePath);
+          if (image) return image;
+        }
         const resolved = await resolveSingleFilePath(projectRoot, filePath);
         await fileSystem.access(resolved.canonicalPath);
         return {

@@ -43,7 +43,7 @@ export {
 } from './utils.js';
 export type {
   FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeLogger, FileTreeNode,
-  FileTreeProjectGateway, FileTreeServiceDependencies, FileTreeServices,
+  FileTreeProjectGateway, FileTreeServiceDependencies, FileTreeServices, FileTreeTranscriptImageGateway,
   FileTreeStats, FileTreeUploadedFile, FileTreeWorkspaceGateway, FileTreeWorktreeGateway,
   GitCommandResult, GitCommandRunner, WorktreeFileSystem, WorktreePorcelainEntry,
   WorktreeProjectGateway, WorktreeServices,
