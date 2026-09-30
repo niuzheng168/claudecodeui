@@ -11,8 +11,8 @@ const envKeys = ['CODEY_CODEX_EXECUTABLE', 'CODEY_CODEX_DAEMON_SOCKET', 'CODEY_C
 test('Windows does not probe the Unix default socket; explicit owners and Unix permission failures stay strict', async t => {
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
   const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
-  const denied = Object.assign(new Error('permission denied, lstat app-server-control.sock'), { code: 'EACCES' });
-  const stat = t.mock.method(fs, 'lstat', async () => { throw denied; });
+  const denied = Object.assign(new Error('permission denied, stat app-server-control.sock'), { code: 'EACCES' });
+  const stat = t.mock.method(fs, 'stat', async () => { throw denied; });
   const native = { ownsProcess: true } as CodexStdioClient;
   const connect = t.mock.method(CodexStdioClient, 'connect', async () => native);
   try {

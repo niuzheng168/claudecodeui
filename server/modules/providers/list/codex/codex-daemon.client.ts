@@ -84,7 +84,7 @@ export class CodexDaemonClient implements ICodexRpcClient {
       });
     }
     // Node's Windows IPC transport uses named pipes, not filesystem Unix
-    // sockets. Desktop's default .sock can even fail lstat with EACCES there.
+    // sockets. Desktop's default .sock can even fail filesystem lookup with EACCES there.
     // Do not probe that Unix-only discovery path: the shared connector can
     // select the configured native stdio CLI. Explicit owners remain strict.
     if (process.platform === 'win32' && !explicitSocket) return null;
@@ -93,7 +93,10 @@ export class CodexDaemonClient implements ICodexRpcClient {
     });
     const socketPath = explicitSocket || path.join(options.home ?? resolveCodexHomeDirectory(), 'app-server-control', 'app-server-control.sock');
     try {
-      if (!(await fs.lstat(socketPath)).isSocket()) {
+      // Codex can publish this path as a symlink to its private daemon socket.
+      // Check the target, but connect through the stable alias rather than
+      // caching a resolved endpoint that may change when the owner restarts.
+      if (!(await fs.stat(socketPath)).isSocket()) {
         if (explicitSocket) throw unavailable();
         return null;
       }
