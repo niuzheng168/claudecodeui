@@ -420,6 +420,26 @@ test('idle, changed, malformed and unverified snapshots cannot submit a correcti
   }
 });
 
+test('failed desktop state checks report unsent input, not an ambiguous steering delivery', async () => {
+  for (const options of [
+    { staleSnapshot: true },
+    { staleSnapshot: true, ownerDisconnected: true },
+    { state: { id: 'wrong-thread', turns: [] } },
+  ]) {
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        await assert.rejects(client.steerTurn('own-turn', [{ type: 'text', text: 'Keep queued' }], 'unsent-id'),
+          { code: 'STEER_UNAVAILABLE' });
+        assert.ok(!f.calls.some(x => [
+          'thread-follower-steer-turn', 'thread-follower-start-turn', 'thread/queue/add', 'turn/start',
+        ].includes(x.method)));
+      } finally { client.close(); }
+    }, options);
+  }
+});
+
 test('ambiguous desktop steering holds the input for review, never retries or queues it', async () => {
   for (const options of [
     { lostAck: true }, { wrongOwner: true }, { wrongTurn: true }, { noTurnReceipt: true }, { rejectControl: true },
