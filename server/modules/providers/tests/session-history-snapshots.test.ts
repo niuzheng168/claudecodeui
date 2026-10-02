@@ -144,9 +144,8 @@ test('native forward pages extend a snapshot without full-history reads or losin
   const first = await cache.page({ source: 's', limit: 20, load });
   const newer = await cache.page({
     source: 's', limit: 20, snapshotId: first.snapshotId, after: 'row-99', load,
-    loadAfter: async (previous, anchor, limit) => {
-      assert.equal(previous.total, 100);
-      assert.equal(anchor, 'row-99');
+    loadAfter: async (anchor, limit) => {
+      assert.equal(anchor.id, 'row-99');
       assert.equal(limit, 20);
       return { ...history(119), messages: history(119).messages.slice(99), hasNewer: true };
     },
@@ -160,4 +159,52 @@ test('native forward pages extend a snapshot without full-history reads or losin
   assert.equal(loads, 1);
   const all = await cache.page({ source: 's', snapshotId: newer.snapshotId, limit: null, load: async () => history(200) });
   assert.equal(all.messages.length, 200, 'explicit Load all does not mistake a partial catch-up for complete history');
+});
+
+test('a signed native checkpoint resumes after snapshot expiry without reconstructing 5000 old rows', async () => {
+  let time = 0, loads = 0, reads = 0;
+  const cache = createSessionHistorySnapshots({ maxAgeMs: 10, now: () => time });
+  const source = 'node/account/app-session/native-thread';
+  const load = async () => {
+    loads++;
+    const full = history(5065);
+    full.messages = full.messages.map((message, index) => ({
+      ...message, nativePosition: { turnId: 'turn', turnStartedAt: message.timestamp, itemIndex: index,
+        itemId: message.id, cursor: index ? String(index) : null },
+    }));
+    return full;
+  };
+  const first = await cache.page({ source, limit: 20, load });
+  assert.ok(first.syncCursor);
+  time = 11;
+  const resumed = await cache.page({
+    source, limit: 20, after: 'row-5064', snapshotId: first.snapshotId, syncCursor: first.syncCursor, load,
+    loadAfter: async (anchor, limit) => {
+      reads++;
+      assert.equal(anchor.nativePosition?.itemIndex, 5064);
+      assert.equal(anchor.nativePosition?.cursor, '5064');
+      assert.equal(limit, 20);
+      return { ...history(1), messages: [first.messages.at(-1)!], hasNewer: false };
+    },
+  });
+  assert.equal(loads, 1);
+  assert.equal(reads, 1);
+  assert.equal(resumed.total, 5065);
+  assert.equal(resumed.after, 'row-5064');
+  assert.equal(resumed.messages.length, 1);
+  assert.ok(resumed.syncCursor);
+  assert.equal(resumed.snapshotId, undefined);
+  for (const request of [
+    { source: 'other-account', after: 'row-5064', syncCursor: resumed.syncCursor, code: 'HISTORY_SNAPSHOT_MISMATCH' },
+    { source, after: 'wrong-row', syncCursor: resumed.syncCursor, code: 'HISTORY_SNAPSHOT_MISMATCH' },
+    { source, after: 'row-5064', syncCursor: 'tampered.' + resumed.syncCursor, code: 'HISTORY_SNAPSHOT_EXPIRED' },
+  ]) {
+    await assert.rejects(cache.page({
+      ...request, limit: 20, load, loadAfter: async () => { throw new Error('must not read untrusted positions'); },
+    }), { code: request.code });
+  }
+  await assert.rejects(createSessionHistorySnapshots().page({
+    source, after: 'row-5064', syncCursor: resumed.syncCursor, limit: 20, load,
+    loadAfter: async () => { throw new Error('must not read an unsigned position after restart'); },
+  }), { code: 'HISTORY_SNAPSHOT_EXPIRED' });
 });

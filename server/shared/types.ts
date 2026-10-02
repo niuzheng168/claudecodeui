@@ -626,6 +626,8 @@ export type FetchHistoryOptions = {
   before?: string;
   /** Replay this persisted row inclusively and read forward in bounded pages. */
   after?: string;
+  /** Server-signed native resume position; remains usable after snapshot LRU/TTL eviction. */
+  syncCursor?: string;
   /** Internal native reader boundary, resolved from a session-scoped server snapshot, never from query JSON. */
   afterPosition?: NativeTranscriptPosition;
 };
@@ -650,6 +652,8 @@ export type FetchHistoryResult = {
   after?: string;
   /** More newer rows remain after a forward page, independent of older-history hasMore. */
   hasNewer?: boolean;
+  /** Server-signed resume checkpoint for the final native item in this page. */
+  syncCursor?: string;
 };
 
 // ---------------------------

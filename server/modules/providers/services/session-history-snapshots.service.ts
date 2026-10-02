@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { AppError, sliceTailPage } from '@/shared/index.js';
-import type { FetchHistoryOptions, FetchHistoryResult } from '@/shared/index.js';
+import type { FetchHistoryOptions, FetchHistoryResult, NativeTranscriptPosition, NormalizedMessage } from '@/shared/index.js';
 
 type Snapshot = {
   id: string;
@@ -12,12 +12,12 @@ type Snapshot = {
   usedAt: number;
 };
 
-type SnapshotRequest = Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after'> & {
+type SnapshotRequest = Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after' | 'syncCursor'> & {
   /** Includes database, app/native session IDs and project; a token is never authorization. */
   source: string;
   load: () => Promise<FetchHistoryResult>;
   /** Native providers can extend a known snapshot without rereading its older items. */
-  loadAfter?: (history: FetchHistoryResult, anchor: string, limit: number) => Promise<FetchHistoryResult | null>;
+  loadAfter?: (anchor: Pick<NormalizedMessage, 'id' | 'nativePosition'>, limit: number) => Promise<FetchHistoryResult | null>;
 };
 
 /**
@@ -35,6 +35,52 @@ export function createSessionHistorySnapshots({
 } = {}) {
   const snapshots = new Map<string, Snapshot>();
   const pending = new Map<string, Promise<Snapshot>>();
+  // Not an authorization credential: session access/mapping is resolved first.
+  // Signing keeps client-supplied positions/counts from being trusted. No
+  // snapshot retention is required; a node process restart invalidates tokens.
+  const cursorKey = randomBytes(32);
+  const sourceHash = (source: string) => createHash('sha256').update(source).digest('hex');
+  type Resume = { source: string; after: string; position: NativeTranscriptPosition; prefixCount: number; expires: number };
+  const signature = (body: string) => createHmac('sha256', cursorKey).update(body).digest();
+
+  function readCursor(token: string, source: string, after: string): Resume {
+    try {
+      const [body, mac, extra] = token.split('.');
+      const received = Buffer.from(mac ?? '', 'base64url');
+      if (extra || received.length !== 32 || !timingSafeEqual(signature(body), received)) throw new Error('signature');
+      const value = JSON.parse(Buffer.from(body, 'base64url').toString()) as Resume;
+      if (value.expires < now()) throw new Error('expired');
+      if (value.source !== sourceHash(source) || value.after !== after) {
+        throw new AppError('The resume cursor does not match this session and row.', {
+          code: 'HISTORY_SNAPSHOT_MISMATCH', statusCode: 409,
+        });
+      }
+      return value;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError('The resume cursor expired. Obtain a fresh history checkpoint.', {
+        code: 'HISTORY_SNAPSHOT_EXPIRED', statusCode: 409,
+      });
+    }
+  }
+
+  function withCursor(result: FetchHistoryResult, source: string, prefixCount: number): FetchHistoryResult {
+    let index = result.messages.length - 1;
+    const position = result.messages[index]?.nativePosition;
+    if (!position?.itemId || position.cursor === undefined) return result;
+    // A native item can project to several display rows. Replay from its first
+    // row so a refresh can repair the whole final item rather than duplicate it.
+    while (index > 0) {
+      const before = result.messages[index - 1].nativePosition;
+      if (before?.turnId !== position.turnId || before.itemIndex !== position.itemIndex) break;
+      index--;
+    }
+    const body = Buffer.from(JSON.stringify({
+      source: sourceHash(source), after: result.messages[index].id, position,
+      prefixCount: prefixCount + index, expires: now() + 7 * 24 * 60 * 60_000,
+    } satisfies Resume)).toString('base64url');
+    return { ...result, syncCursor: `${body}.${signature(body).toString('base64url')}` };
+  }
 
   function prune(): void {
     const time = now();
@@ -88,7 +134,7 @@ export function createSessionHistorySnapshots({
   }
 
   return {
-    async page({ source, limit = null, offset = 0, snapshotId, before, after, load, loadAfter }: SnapshotRequest): Promise<FetchHistoryResult> {
+    async page({ source, limit = null, offset = 0, snapshotId, before, after, syncCursor, load, loadAfter }: SnapshotRequest): Promise<FetchHistoryResult> {
       prune();
       let snapshot = snapshotId ? snapshots.get(snapshotId) : undefined;
       if (snapshot && snapshot.source !== source) {
@@ -98,9 +144,22 @@ export function createSessionHistorySnapshots({
       }
       if (after) {
         const pageSize = Math.max(2, Math.min(100, limit ?? 20));
+        if (!snapshot && syncCursor && loadAfter) {
+          const checkpoint = readCursor(syncCursor, source, after);
+          const delta = await loadAfter({ id: after, nativePosition: checkpoint.position }, pageSize);
+          if (!delta || delta.messages[0]?.id !== after || typeof delta.hasNewer !== 'boolean') {
+            throw new AppError('The native history boundary changed. Obtain a fresh history checkpoint.', {
+              code: 'HISTORY_ANCHOR_NOT_FOUND', statusCode: 409,
+            });
+          }
+          return withCursor({
+            ...delta, after, total: checkpoint.prefixCount + delta.messages.length,
+            hasMore: checkpoint.prefixCount > 0, offset: 0, limit: pageSize,
+          }, source, checkpoint.prefixCount);
+        }
         const position = snapshot?.positions.get(after);
         const delta = snapshot && position !== undefined && loadAfter
-          ? await loadAfter(snapshot.history, after, pageSize) : null;
+          ? await loadAfter(snapshot.history.messages[position], pageSize) : null;
         if (delta && snapshot && position !== undefined) {
           if (delta.messages[0]?.id !== after) {
             throw new AppError('The newer-message anchor changed. Reload the conversation.', {
@@ -118,10 +177,10 @@ export function createSessionHistorySnapshots({
             snapshots.delete(updated.id);
             snapshots.set(updated.id, updated);
           }
-          return {
+          return withCursor({
             ...delta, total: messages.length, hasMore: position > 0,
             snapshotId: updated.id, after, offset: 0, limit: pageSize,
-          };
+          }, source, position);
         }
         // An older pinned snapshot must not answer a *fresh* tail read. JSONL
         // providers revalidate their file cache; evicted native handles rebuild.
@@ -133,12 +192,12 @@ export function createSessionHistorySnapshots({
           });
         }
         const end = Math.min(snapshot.history.messages.length, start + pageSize);
-        return {
+        return withCursor({
           ...snapshot.history, messages: snapshot.history.messages.slice(start, end),
           snapshotId: snapshot.id, after, hasMore: start > 0,
           hasNewer: end < snapshot.history.messages.length,
           offset: snapshot.history.messages.length - end, limit: pageSize,
-        };
+        }, source, start);
       }
       if (!snapshot && snapshotId && !before) {
         throw new AppError('This history snapshot expired. Reload the conversation to obtain a fresh snapshot.', {
@@ -167,10 +226,10 @@ export function createSessionHistorySnapshots({
         requestedOffset = snapshot.history.messages.length - position;
       }
       const { page, hasMore } = sliceTailPage(snapshot.history.messages, limit, requestedOffset);
-      return {
+      return withCursor({
         ...snapshot.history, messages: page, hasMore, offset: requestedOffset, limit,
         snapshotId: snapshot.id, ...(before ? { before } : {}),
-      };
+      }, source, Math.max(0, snapshot.history.messages.length - requestedOffset - page.length));
     },
   };
 }

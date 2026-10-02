@@ -79,17 +79,73 @@ test('an unavailable or indefinitely blocked IndexedDB open does not hang histor
   } finally { vi.useRealTimers(); }
 });
 
-test('expired records are ignored, and oversized records never replace a good cache entry', async () => {
+test('expired records are ignored, and an oversized newest row cannot leave a stale checkpoint', async () => {
   const cache = createSessionHistoryCache('account-a');
   const value = record();
   await cache.write(value);
   await cache.write({ ...value, messages: [{ ...value.messages[0], content: 'x'.repeat(17 * 1024 * 1024) }] });
-  expect(await cache.read('session')).toEqual(value);
+  expect(await cache.read('session')).toBeNull();
+  await cache.write(value);
   const now = Date.now();
   vi.spyOn(Date, 'now').mockReturnValue(now + 8 * 24 * 60 * 60_000);
   expect(await cache.read('session')).toBeNull();
 });
 
+test('a 25 MB conversation saves its newest bounded window instead of freezing the previous cache', async () => {
+  const cache = createSessionHistoryCache('account-a');
+  const old = record();
+  await cache.write(old);
+  const messages = Array.from({ length: 5065 }, (_, index) => ({
+    ...old.messages[0], id: `row-${index}`, content: 'x'.repeat(5100),
+  }));
+  const value = {
+    ...old, messages, total: messages.length, offset: messages.length, hasMore: false,
+    view: { visibleCount: -1, scrollTop: 50000, scrolledUp: false },
+  };
+  await cache.write(value);
+  const restored = await createSessionHistoryCache('account-a').read('session');
+  expect(restored?.messages).toEqual(messages.slice(-200));
+  expect(restored?.messages.at(-1)?.id).toBe('row-5064');
+  expect(restored?.offset).toBe(200);
+  expect(restored?.hasMore).toBe(true);
+  expect(restored?.total).toBe(5065);
+  expect(restored?.view?.scrolledUp).toBe(false);
+  expect(JSON.stringify(restored).length).toBeLessThan(4 * 1024 * 1024);
+  // The live session is not trimmed; only its disk reopen window is bounded.
+  expect(value.messages).toHaveLength(5065);
+});
+
+test('cache trimming preserves the reading anchor, timestamp collisions and an unseen forward gap', async () => {
+  const value = record();
+  const messages = Array.from({ length: 900 }, (_, index) => ({
+    ...value.messages[0], id: `row-${index}`, content: 'x'.repeat(9000),
+  }));
+  await createSessionHistoryCache('account-a').write({
+    ...value, messages, total: 1000, offset: 920, hasMore: true,
+    view: { visibleCount: 900, scrollTop: 8000, scrolledUp: true, anchorId: 'row-620', anchorOffset: -12 },
+  });
+  const restored = await createSessionHistoryCache('account-a').read('session');
+  expect(restored?.messages[0].id).toBe('row-620');
+  expect(restored?.messages.at(-1)?.id).toBe('row-899');
+  expect(restored?.offset).toBe(300);
+  expect(restored?.view).toMatchObject({ scrolledUp: true, anchorId: 'row-620', anchorOffset: -12 });
+});
+
+test('concurrent writes cannot put an older tail back over the latest one', async () => {
+  const cache = createSessionHistoryCache('account-a'), value = record();
+  await Promise.all(Array.from({ length: 20 }, (_, index) => cache.write({
+    ...value, snapshotId: `snapshot-${index}`, messages: [{ ...value.messages[0], id: `row-${index}` }],
+  })));
+  expect((await createSessionHistoryCache('account-a').read('session'))?.messages[0].id).toBe('row-19');
+});
+
+test('closing an old tab cannot replace the newer confirmed checkpoint written by another tab', async () => {
+  const oldTab = createSessionHistoryCache('account-a'), newTab = createSessionHistoryCache('account-a');
+  const value = record();
+  await newTab.write({ ...value, fetchedAt: value.fetchedAt + 100, messages: [{ ...value.messages[0], id: 'latest' }] });
+  await oldTab.write({ ...value, view: { visibleCount: 20, scrollTop: 0, scrolledUp: false } });
+  expect((await newTab.read('session'))?.messages[0].id).toBe('latest');
+});
 test('logout fences an in-flight write, and disposed account caches cannot write', async () => {
   const cache = createSessionHistoryCache('account-a');
   const writing = cache.write(record());

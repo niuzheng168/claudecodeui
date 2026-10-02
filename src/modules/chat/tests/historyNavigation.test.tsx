@@ -155,6 +155,50 @@ test('browser remount restores fetched history from IndexedDB without redownload
   expect(second.result.current.state.chatMessages.length).toBe(80);
 });
 
+test('a long conversation reopens at its latest confirmed row rather than the last cache that fit 16 MiB', async () => {
+  const history = rows('a', 5065).map(row => ({
+    ...row, toolResult: { content: 'x'.repeat(5100) },
+  }));
+  historyRequest.mockResolvedValue({ ok: true, json: async () => ({ data: {
+    messages: history, total: history.length, hasMore: false, offset: 0, snapshotId: 'current',
+    syncCursor: 'signed-latest-checkpoint',
+  } }) });
+  const first = setup('owner');
+  await waitFor(() => expect(first.result.current.store.getMessages('a').at(-1)?.id).toBe('a-5064'));
+  await waitFor(async () => {
+    const saved = await createSessionHistoryCache('owner').read('a');
+    expect(saved?.messages.at(-1)?.id).toBe('a-5064');
+    expect(saved?.messages.length).toBe(200);
+    expect(saved?.syncCursor).toBe('signed-latest-checkpoint');
+  });
+  // Kill/recreate rather than navigate within the original in-memory store.
+  first.unmount();
+  historyRequest.mockClear();
+  const second = setup('owner');
+  await waitFor(() => expect(second.result.current.store.getMessages('a')).toHaveLength(200));
+  expect(second.result.current.store.getMessages('a').at(-1)?.id).toBe('a-5064');
+  expect(historyRequest).not.toHaveBeenCalled();
+  expect(second.result.current.state.isUserScrolledUp).toBe(false);
+  expect(second.result.current.state.hasMoreMessages).toBe(true);
+});
+
+test('reopening an anchored reading position uses its row offset instead of obsolete absolute pixels', async () => {
+  await createSessionHistoryCache('owner').write({
+    sessionId: 'a', messages: rows('a', 181), total: 181, offset: 181, hasMore: false, fetchedAt: Date.now(),
+    view: { visibleCount: 181, scrollTop: 99999, scrolledUp: true, anchorId: 'a-170', anchorOffset: -20 },
+  });
+  const { result, container } = setup('owner', 5000);
+  const anchor = document.createElement('div');
+  anchor.dataset.messageId = 'a-170';
+  anchor.getBoundingClientRect = () => ({ top: 4700 - container.scrollTop, bottom: 4800 - container.scrollTop } as DOMRect);
+  container.getBoundingClientRect = () => ({ top: 100 } as DOMRect);
+  container.appendChild(anchor);
+  await waitFor(() => expect(result.current.state.chatMessages).toHaveLength(181));
+  expect(container.scrollTop).toBe(4620);
+  expect(result.current.state.isUserScrolledUp).toBe(true);
+  expect(historyRequest).not.toHaveBeenCalled();
+});
+
 test('a failed page clears loading, retains older data, and succeeds on explicit retry', async () => {
   const { result } = setup();
   await waitFor(() => expect(result.current.state.chatMessages.length).toBe(20));

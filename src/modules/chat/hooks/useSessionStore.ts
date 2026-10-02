@@ -48,10 +48,12 @@ export type SessionSlot = {
   fetchedAt: number;
   total: number;
   hasMore: boolean;
+  hasNewer?: boolean;
   /** Tail-relative oldest boundary; includes new tail rows not yet reconciled. */
   offset: number;
   tokenUsage: unknown;
   snapshotId?: string;
+  syncCursor?: string;
   view?: SessionHistoryView;
   /** Last failed read; a failed request must not look like completed/empty history. */
   historyError?: string;
@@ -89,6 +91,7 @@ type SessionHistoryPage = {
   hasMore: boolean;
   tokenUsage?: unknown;
   snapshotId?: string;
+  syncCursor?: string;
   before?: string;
   after?: string;
   hasNewer?: boolean;
@@ -132,6 +135,7 @@ async function requestSessionHistoryPage(
     total: typeof data.total === 'number' ? data.total : messages.length,
     hasMore: Boolean(data.hasMore),
     ...(typeof data.snapshotId === 'string' ? { snapshotId: data.snapshotId } : {}),
+    ...(typeof data.syncCursor === 'string' ? { syncCursor: data.syncCursor } : {}),
     ...(typeof data.before === 'string' ? { before: data.before } : {}),
     ...(typeof data.after === 'string' ? { after: data.after } : {}),
     ...(typeof data.hasNewer === 'boolean' ? { hasNewer: data.hasNewer } : {}),
@@ -482,14 +486,14 @@ async function refreshLatestSlotFromServer(
   slot: SessionSlot,
   limit: number,
   canRequest: CanRequestHistory = () => true,
-  onPage: () => void = () => {},
+  onPage: () => void | Promise<void> = () => {},
 ): Promise<LatestHistoryRefreshResult> {
   if (!canRequest()) {
     return { applied: false, changed: false, deferred: true };
   }
 
   let resetAfterRewrite = false;
-  if (slot.snapshotId && slot.serverMessages.length > 0) {
+  if ((slot.snapshotId || slot.syncCursor) && slot.serverMessages.length > 0) {
     let changed = false;
     while (canRequest()) {
       // A native item can project to multiple rows (e.g. a multi-file edit).
@@ -508,6 +512,7 @@ async function refreshLatestSlotFromServer(
         page = await requestSessionHistoryPage(sessionId, {
           limit: Math.max(2, Math.min(100, limit)), offset: 0,
           snapshotId: slot.snapshotId, after: anchor,
+          ...(slot.syncCursor ? { syncCursor: slot.syncCursor } : {}),
         });
       } catch (error) {
         if (['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED'].includes((error as { code?: string }).code ?? '')) {
@@ -540,14 +545,17 @@ async function refreshLatestSlotFromServer(
       // pages remain unread. Older paging will therefore never skip a gap.
       slot.offset = slot.serverMessages.length + (page.offset ?? 0);
       slot.snapshotId = page.snapshotId;
+      slot.syncCursor = page.syncCursor;
+      slot.hasNewer = page.hasNewer;
       slot.historyError = undefined;
       slot.status = 'idle';
-      if (!page.hasNewer) slot.fetchedAt = Date.now();
+      // This page is confirmed even if later pages have not arrived yet.
+      slot.fetchedAt = Date.now();
       if (page.tokenUsage !== undefined) slot.tokenUsage = page.tokenUsage;
       slot.realtimeMessages = pruneRealtimeSupersededByServer(slot.serverMessages, slot.realtimeMessages);
       recomputeMergedIfNeeded(slot);
       changed = true;
-      onPage();
+      await onPage();
       if (!page.hasNewer) return { applied: true, changed, deferred: false };
       // Permit paint/input between pages instead of one enormous React commit.
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -663,6 +671,8 @@ async function refreshLatestSlotFromServer(
   slot.offset = nextServerMessages.length;
   slot.hasMore = nextHasMore;
   slot.snapshotId = latestPage.snapshotId;
+  slot.syncCursor = latestPage.syncCursor;
+  slot.hasNewer = false;
   slot.historyError = undefined;
   slot.status = 'idle';
   slot.fetchedAt = Date.now();
@@ -708,20 +718,34 @@ export function useSessionStore(cacheOwner: string | null = null) {
   }), [persistence, slots]);
 
   const persist = useCallback((sessionId: string, slot: SessionSlot) => {
-    if (!slot.fetchedAt) return;
-    void persistence.write({
+    if (!slot.fetchedAt) return Promise.resolve();
+    return persistence.write({
       sessionId, messages: slot.serverMessages, total: slot.total, hasMore: slot.hasMore,
+      hasNewer: slot.hasNewer,
       offset: slot.offset, fetchedAt: slot.fetchedAt, snapshotId: slot.snapshotId,
+      syncCursor: slot.syncCursor,
       tokenUsage: slot.tokenUsage, view: slot.view,
     });
   }, [persistence]);
 
-  // Scroll position changes frequently; persist only the last view per burst.
+  // Scroll position changes frequently. Throttle writes without postponing
+  // forever on a busy stream, and flush on mobile hide/pagehide (unmount is
+  // not guaranteed when the browser discards a background page).
   const viewSaveTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  useEffect(() => () => {
-    for (const timer of viewSaveTimersRef.current.values()) clearTimeout(timer);
-    viewSaveTimersRef.current.clear();
-    for (const [sessionId, slot] of slots) persist(sessionId, slot);
+  useEffect(() => {
+    const flush = () => {
+      for (const timer of viewSaveTimersRef.current.values()) clearTimeout(timer);
+      viewSaveTimersRef.current.clear();
+      for (const [sessionId, slot] of slots) void persist(sessionId, slot);
+    };
+    const hidden = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
   }, [persist, slots]);
   const notify = useCallback((sessionId: string) => {
     if (sessionId === activeSessionIdRef.current) {
@@ -748,9 +772,11 @@ export function useSessionStore(cacheOwner: string | null = null) {
       slot.serverMessages = cached.messages;
       slot.total = cached.total;
       slot.hasMore = cached.hasMore;
+      slot.hasNewer = cached.hasNewer;
       slot.offset = cached.offset;
       slot.fetchedAt = cached.fetchedAt;
       slot.snapshotId = cached.snapshotId;
+      slot.syncCursor = cached.syncCursor;
       slot.tokenUsage = cached.tokenUsage;
       slot.view = cached.view;
       slot.status = 'idle';
@@ -762,9 +788,10 @@ export function useSessionStore(cacheOwner: string | null = null) {
 
   const saveView = useCallback((sessionId: string, view: SessionHistoryView) => {
     const slot = getSlot(sessionId);
+    if (JSON.stringify(slot.view) === JSON.stringify(view)) return;
     slot.view = view;
     const timers = viewSaveTimersRef.current;
-    if (timers.has(sessionId)) clearTimeout(timers.get(sessionId));
+    if (timers.has(sessionId)) return;
     timers.set(sessionId, setTimeout(() => {
       timers.delete(sessionId);
       persist(sessionId, slot);
@@ -815,7 +842,9 @@ export function useSessionStore(cacheOwner: string | null = null) {
         slot.serverMessages = data.messages;
         slot.total = data.total;
         slot.hasMore = data.hasMore;
+        slot.hasNewer = data.hasNewer;
         slot.snapshotId = data.snapshotId;
+        slot.syncCursor = data.syncCursor;
         slot.historyError = undefined;
         slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
         slot.fetchedAt = Date.now();
@@ -1017,6 +1046,7 @@ export function useSessionStore(cacheOwner: string | null = null) {
     slot.total = slot.serverMessages.length;
     slot.offset = slot.serverMessages.length;
     slot.snapshotId = undefined;
+    slot.syncCursor = undefined;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
     persist(sessionId, slot);
@@ -1082,7 +1112,10 @@ export function useSessionStore(cacheOwner: string | null = null) {
           slot,
           opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
           opts.canRequest,
-          () => notify(sessionId),
+          () => {
+            notify(sessionId);
+            return persist(sessionId, slot);
+          },
         );
         if (result.changed) {
           notify(sessionId);
@@ -1107,7 +1140,7 @@ export function useSessionStore(cacheOwner: string | null = null) {
   const isStale = useCallback((sessionId: string) => {
     const slot = slots.get(sessionId);
     if (!slot) return true;
-    return Date.now() - slot.fetchedAt > STALE_THRESHOLD_MS;
+    return Boolean(slot.hasNewer) || Date.now() - slot.fetchedAt > STALE_THRESHOLD_MS;
   }, [slots]);
 
   /**

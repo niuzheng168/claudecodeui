@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from 'react';
 
 import { api } from '@/shared/api';
-import type { MarkSessionIdle, SessionActivityMap,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
+import type { MarkSessionIdle, SessionActivityMap, SessionHistoryView,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import { createMessageHistoryRefreshCoordinator } from '@/modules/chat/utils/messageHistoryRefreshCoordinator';
@@ -116,6 +116,20 @@ function captureScrollRestoreState(container: HTMLDivElement): ScrollRestoreStat
     anchorOffset: anchor
       ? anchor.getBoundingClientRect().top - containerBounds.top
       : null,
+  };
+}
+
+function captureHistoryView(container: HTMLDivElement, visibleCount: number, scrolledUp: boolean): SessionHistoryView {
+  const bounds = container.getBoundingClientRect();
+  const anchor = scrolledUp
+    ? Array.from(container.querySelectorAll<HTMLElement>('[data-message-id]'))
+      .find(element => element.getBoundingClientRect().bottom > bounds.top) : undefined;
+  return {
+    visibleCount: Number.isFinite(visibleCount) ? visibleCount : -1,
+    scrollTop: Math.max(0, container.scrollTop), scrolledUp,
+    ...(anchor ? {
+      anchorId: anchor.dataset.messageId, anchorOffset: anchor.getBoundingClientRect().top - bounds.top,
+    } : {}),
   };
 }
 
@@ -236,7 +250,7 @@ export function useChatSessionState({
   const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
   const pendingInitialScrollRef = useRef(true);
   // Apply a saved viewport only after its cached render window is committed.
-  const pendingViewScrollRef = useRef<number | null>(null);
+  const pendingViewScrollRef = useRef<SessionHistoryView | null>(null);
   // Re-entering a still-opening session must join, not duplicate, its first read.
   const openingRequestsRef = useRef(new Map<string, Promise<ReturnType<SessionStore['getSessionSlot']> | null>>());
   useEffect(() => {
@@ -490,6 +504,8 @@ export function useChatSessionState({
   }, []);
 
   const scrollToBottomAndReset = useCallback(() => {
+    isUserScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
     scrollToBottom();
     if (allMessagesLoaded) {
       setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
@@ -577,6 +593,7 @@ export function useChatSessionState({
   const loadEarlierMessages = useCallback(async () => {
     const container = scrollContainerRef.current;
     if (!container || !isActive || isLoadingMoreRef.current || isLoadingAllMessages) return false;
+    pendingInitialScrollRef.current = false;
     // A render window is not the network cursor. Reveal locally cached rows
     // before requesting anything, including after returning to a conversation.
     if (visibleMessageCount < chatMessages.length) {
@@ -601,10 +618,9 @@ export function useChatSessionState({
     // Further scrolling while already "scrolled up" need not trigger a React
     // render. Save the actual position here, not only in the render effect.
     if (activeSessionId && activeSessionId === currentSessionId && !isLoadingSessionMessages) {
-      sessionStore.saveView?.(activeSessionId, {
-        visibleCount: Number.isFinite(visibleMessageCount) ? visibleMessageCount : -1,
-        scrollTop: Math.max(0, container.scrollTop), scrolledUp: !nearBottom,
-      });
+      if (!pendingInitialScrollRef.current && !pendingViewScrollRef.current) {
+        sessionStore.saveView?.(activeSessionId, captureHistoryView(container, visibleMessageCount, !nearBottom));
+      }
     }
 
     const scrolledNearTop = container.scrollTop < 100;
@@ -640,6 +656,7 @@ export function useChatSessionState({
     // Collapsed tool pages can add zero height, so scrollTop never leaves 0.
     // A deliberate wheel/touch gesture must re-arm the pager in that case.
     topLoadLockRef.current = false;
+    pendingInitialScrollRef.current = false;
     void handleScroll();
   }, [handleScroll]);
 
@@ -651,7 +668,16 @@ export function useChatSessionState({
 
     const container = scrollContainerRef.current;
     if (pendingViewScrollRef.current !== null) {
-      container.scrollTop = pendingViewScrollRef.current;
+      const view = pendingViewScrollRef.current;
+      const anchor = view.anchorId
+        ? Array.from(container.querySelectorAll<HTMLElement>('[data-message-id]'))
+          .find(element => element.dataset.messageId === view.anchorId) : undefined;
+      if (anchor && view.anchorOffset !== undefined) {
+        container.scrollTop += anchor.getBoundingClientRect().top
+          - container.getBoundingClientRect().top - view.anchorOffset;
+      } else {
+        container.scrollTop = view.scrollTop;
+      }
       pendingViewScrollRef.current = null;
       return;
     }
@@ -722,7 +748,9 @@ export function useChatSessionState({
   useEffect(() => {
     if (!isActive) return;
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
-    if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
+    // An empty first render is not a completed scroll. Cache/network hydration
+    // still has to arrive before deciding where the user was reading.
+    if (chatMessages.length === 0) return;
     if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
 
     const container = scrollContainerRef.current;
@@ -853,8 +881,13 @@ export function useChatSessionState({
           setIsUserScrolledUp(true);
           isUserScrolledUpRef.current = true;
           pendingInitialScrollRef.current = false;
-          pendingViewScrollRef.current = slot.view.scrollTop;
+          pendingViewScrollRef.current = slot.view;
           scrollPositionRef.current.top = slot.view.scrollTop;
+        } else {
+          isUserScrolledUpRef.current = false;
+          setIsUserScrolledUp(false);
+          pendingInitialScrollRef.current = true;
+          pendingViewScrollRef.current = null;
         }
         setHistoryError(slot.historyError ?? null);
         if (slot.tokenUsage !== undefined) {
@@ -1114,11 +1147,9 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container) return;
     scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
-    if (activeSessionId && activeSessionId === currentSessionId && !isLoadingSessionMessages) {
-      sessionStore.saveView?.(activeSessionId, {
-        visibleCount: Number.isFinite(visibleMessageCount) ? visibleMessageCount : -1,
-        scrollTop: container.scrollTop, scrolledUp: isUserScrolledUp,
-      });
+    if (activeSessionId && activeSessionId === currentSessionId && !isLoadingSessionMessages
+      && !pendingInitialScrollRef.current && !pendingViewScrollRef.current) {
+      sessionStore.saveView?.(activeSessionId, captureHistoryView(container, visibleMessageCount, isUserScrolledUp));
     }
   });
 

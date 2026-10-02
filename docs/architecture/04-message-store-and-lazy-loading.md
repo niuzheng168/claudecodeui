@@ -55,7 +55,7 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
 8. **Only confirmed server history is persisted client-side.** IndexedDB holds the loaded
    contiguous window, pagination handle and viewport, never optimistic or partial streaming
    rows. Returning to any hydrated slot preserves all its pages. A remount restores disk
-history before networking; a stale cache refreshes the tail in the background without
+   history before networking; a stale cache refreshes the tail in the background without
    replacing the older window. The provider remains authoritative.
 
 ### Foreground catch-up
@@ -75,8 +75,26 @@ Native snapshots retain each item's opaque pre-item cursor and identity. Forward
 revalidate turn metadata and resume at that cursor; they do not reload earlier turn items.
 A native item is atomic (a multi-file change may produce several display rows), and
 non-rendered items do not consume the visible-item page budget. Normal transport, byte,
-item and deadline limits still apply. Expired/evicted snapshots require reconstruction;
-initial cold loads and explicit Load all remain distinct from warm incremental refresh.
+item and deadline limits still apply. A server-signed `syncCursor` carries the confirmed
+native item position independently of the snapshot LRU. Expiring/evicting a snapshot does
+not require a full history traversal on forward recovery. Tokens are bound to the resolved
+node/account/session source and row, valid for seven days, and invalidated by a node process
+restart. A missing/invalidated cursor still requires reconstruction; initial cold loads and
+explicit Load all remain distinct from warm incremental refresh.
+
+The persistent browser cache stores the newest 200 confirmed rows (up to 4 MiB), extending
+back to a saved reading anchor when it fits that budget. It does not discard a new write
+just because the entire in-memory history became too large. Older pages remain available
+from the provider and the in-memory store. If a single newest row cannot fit, the old disk
+entry is invalidated rather than left frozen as a false latest checkpoint.
+
+Each confirmed forward page is committed to IndexedDB before requesting the next.
+An unfinished catch-up is marked `hasNewer` so a remount resumes it immediately even when
+its last page was fresh. View saves are throttled without starvation and flushed on
+`visibilitychange`/`pagehide`; browser process termination does not reliably unmount React.
+The saved viewport uses row identity plus relative offset where possible, not pixels from
+a discarded history prefix. Arbitrarily old reading anchors outside the cache budget fall
+back to the newest retained window, never to unrelated coordinates.
 
 Older nodes that do not acknowledge `after` use the overlap-checked compatibility path.
 Its bridge requests are now capped at 20 rows too, including the first gap-filling request.
