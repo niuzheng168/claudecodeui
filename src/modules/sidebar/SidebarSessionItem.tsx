@@ -391,6 +391,20 @@ function SidebarSessionItem({
                   </span>
                 </button>
 
+                {onForkSession && canForkThisSession && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOptionsOpen(false);
+                      onForkSession(session);
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                  >
+                    <GitBranch className="h-5 w-5 flex-shrink-0" />
+                    <span className="text-sm font-medium">Fork session</span>
+                  </button>
+                )}
+
                 {!isProcessing && (
                   <button
                     type="button"
@@ -570,7 +584,7 @@ function SidebarSessionItem({
                     closeOnSelect: false,
                     onSelect: handleCopyAction,
                   },
-                  ...(onForkSession && canForkThisSession && !isProcessing ? [{
+                  ...(onForkSession && canForkThisSession ? [{
                     key: 'fork',
                     label: 'Fork session',
                     description: 'Continue from a copy, leaving this one untouched.',

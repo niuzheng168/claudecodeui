@@ -55,8 +55,32 @@ on a 29k-row session costs ~112 MB instead of ~1 GB.
 8. **Only confirmed server history is persisted client-side.** IndexedDB holds the loaded
    contiguous window, pagination handle and viewport, never optimistic or partial streaming
    rows. Returning to any hydrated slot preserves all its pages. A remount restores disk
-   history before networking; a stale cache refreshes the tail in the background without
+history before networking; a stale cache refreshes the tail in the background without
    replacing the older window. The provider remains authoritative.
+
+### Foreground catch-up
+
+Once a confirmed snapshot exists, refresh requests use `after=<confirmed row id>` with
+`snapshotId` and a bounded `limit` (20 by default), rather than starting at the latest page
+and scanning backwards. The server replays the anchor inclusively, then returns newer rows
+in transcript order. `hasNewer` controls forward paging; `hasMore` still means older history.
+Row IDs, not timestamps, disambiguate items from the same native turn.
+
+Each page is merged and published immediately, yielding to the browser before the next
+request. Existing older row objects are preserved, including on a partial failure or a
+return to the background. A retry resumes at the last confirmed boundary. A removed anchor
+causes a bounded authoritative tail reset instead of stitching unrelated history.
+
+Native snapshots retain each item's opaque pre-item cursor and identity. Forward reads
+revalidate turn metadata and resume at that cursor; they do not reload earlier turn items.
+A native item is atomic (a multi-file change may produce several display rows), and
+non-rendered items do not consume the visible-item page budget. Normal transport, byte,
+item and deadline limits still apply. Expired/evicted snapshots require reconstruction;
+initial cold loads and explicit Load all remain distinct from warm incremental refresh.
+
+Older nodes that do not acknowledge `after` use the overlap-checked compatibility path.
+Its bridge requests are now capped at 20 rows too, including the first gap-filling request.
+Deploying the UI alone does not enable the new server-side forward protocol.
 
 ## The pieces
 

@@ -665,6 +665,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const anchorId = typeof raw?.uuid === 'string' && raw.uuid ? raw.uuid : null;
     if (anchorId) {
       for (const message of messages) {
+        message.forkAnchorId = anchorId;
         if (message.role === 'user') {
           message.transcriptAnchorId = anchorId;
         }

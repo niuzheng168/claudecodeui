@@ -14,7 +14,7 @@ import type {
   LLMProvider,
   NormalizedMessage,
 } from '@/shared/index.js';
-import { AppError, sliceTailPage } from '@/shared/index.js';
+import { AppError } from '@/shared/index.js';
 
 type CreateAppSessionResult = {
   sessionId: string;
@@ -269,7 +269,9 @@ export const sessionsService = {
 
     // A session that has never run has no transcript to copy, so there is
     // nothing a fork of it could resume from.
-    if (!source.provider_session_id || !source.jsonl_path) {
+    const nativeCodex = provider === 'codex' && source.provider_session_id
+      ? await readCodexHistoryMode(source.provider_session_id) : null;
+    if (!source.provider_session_id || (!source.jsonl_path && (!nativeCodex || nativeCodex === 'legacy'))) {
       throw new AppError('This session has not produced a transcript yet.', {
         code: 'FORK_SOURCE_NOT_READY',
         statusCode: 409,
@@ -281,7 +283,7 @@ export const sessionsService = {
 
     const forked = await fork.forkSession({
       providerSessionId: source.provider_session_id,
-      jsonlPath: source.jsonl_path,
+      jsonlPath: source.jsonl_path ?? '',
       projectPath: source.project_path ?? '',
       upToAnchorId: options.upToAnchorId,
       title: sessionName,
@@ -414,7 +416,7 @@ export const sessionsService = {
 
   async fetchHistory(
     sessionId: string,
-    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before'> = {},
+    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after'> = {},
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -459,6 +461,13 @@ export const sessionsService = {
         load: () => providerSessions.fetchHistory(sessionId, {
           limit: null, offset: 0, projectPath, providerSessionId,
         }),
+        loadAfter: async (history, anchor, limit) => {
+          const afterPosition = history.messages.find(message => message.id === anchor)?.nativePosition;
+          if (!afterPosition?.itemId || afterPosition.cursor === undefined) return null;
+          return providerSessions.fetchHistory(sessionId, {
+            limit, offset: 0, projectPath, providerSessionId, afterPosition,
+          });
+        },
       });
       return {
         ...result,
@@ -484,16 +493,11 @@ export const sessionsService = {
 
     let result: FetchHistoryResult;
     if (fullHistory) {
-      // Providers slice with this same helper, so a cached page is identical
-      // to what a direct `(limit, offset)` read would have returned.
-      const { page, hasMore } = sliceTailPage(fullHistory.messages, requestedLimit, Math.max(0, requestedOffset));
-      result = {
-        ...fullHistory,
-        messages: page,
-        hasMore,
-        offset: requestedOffset,
-        limit: requestedLimit,
-      };
+      result = await sessionHistorySnapshots.page({
+        ...options,
+        source: JSON.stringify([getDatabasePath(), sessionId, provider, providerSessionId, projectPath, session.jsonl_path]),
+        load: async () => fullHistory,
+      });
     } else {
       result = await providerSessions.fetchHistory(sessionId, {
         limit: requestedLimit,

@@ -20,6 +20,7 @@ type ToolGroupContainerProps = {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: LLMProvider | string;
+  onForkFromMessage?: (message: ChatMessage) => void;
 };
 
 /**
@@ -85,6 +86,7 @@ function ToolGroupContainer({
   showThinking,
   selectedProject,
   provider,
+  onForkFromMessage,
 }: ToolGroupContainerProps) {
   const isExporting = useIsExportingTranscript();
   // Collapsed on screen, always open in an export: the whole point of the
@@ -144,6 +146,7 @@ function ToolGroupContainer({
               showThinking={showThinking}
               selectedProject={selectedProject}
               provider={provider}
+              onForkFromMessage={onForkFromMessage}
             />
           ))}
         </div>

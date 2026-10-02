@@ -85,6 +85,8 @@ test('history boundaries reject malformed, repeated and oversized query paramete
     for (const query of [
       'snapshotId=', `snapshotId=${'x'.repeat(65)}`, 'before=', `before=${'x'.repeat(4097)}`,
       'before=a&before=b', 'snapshotId=a&snapshotId=b', 'before=%00', 'offset=-1',
+      'after=', `after=${'x'.repeat(4097)}`, 'after=a&after=b', 'after=%00',
+      'after=a', 'after=a&limit=1', 'after=a&limit=101', 'after=a&before=b&limit=20', 'after=a&offset=1&limit=20',
     ]) {
       const response = await fetch(`${baseUrl}/api/providers/sessions/history-route-test/messages?${query}`);
       assert.equal(response.status, 400, query.slice(0, 80));

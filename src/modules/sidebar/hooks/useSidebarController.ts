@@ -994,7 +994,7 @@ export function useSidebarController({
         const payload = await response.json();
         const forkedSessionId = payload?.data?.sessionId;
         if (!response.ok || typeof forkedSessionId !== 'string') {
-          throw new Error(payload?.message || `HTTP ${response.status}`);
+          throw new Error(payload?.error?.message || payload?.error || payload?.message || `HTTP ${response.status}`);
         }
 
         onSessionSelect({
@@ -1005,7 +1005,7 @@ export function useSidebarController({
         } as ProjectSession);
       } catch (error) {
         console.error('[Sidebar] Error forking session:', error);
-        alert(t('messages.forkSessionError'));
+        alert(error instanceof Error ? error.message : t('messages.forkSessionError'));
       }
     },
     [onSessionSelect, t],

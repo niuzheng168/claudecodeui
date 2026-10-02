@@ -10,6 +10,8 @@ export type SessionHistoryRequest = {
   offset?: number;
   snapshotId?: string;
   before?: string;
+  /** Confirmed row to replay inclusively, then page forwards (never a wall-clock filter). */
+  after?: string;
 };
 
 /** Per-session transcript viewport retained across session/tab switches and browser reloads. */
@@ -344,6 +346,8 @@ export type ChatMessage = {
    * Claude; it is the anchor "edit this message" and "fork from here" send back.
    */
   transcriptAnchorId?: string;
+  /** Fork cut point, separate from edit anchors because native Codex edits remain unsupported. */
+  forkAnchorId?: string;
   /**
    * Set on the optimistic echo of a message being sent as a replacement for an
    * already-sent one, naming the anchor it replaces. Local to this client.
@@ -473,6 +477,8 @@ export type NormalizedMessage = {
    * anchor for "edit this message" and "fork from here".
    */
   transcriptAnchorId?: string;
+  /** Provider-native cut point for branching this row without editing the source. */
+  forkAnchorId?: string;
   /**
    * Set only on the client-side optimistic echo of an edited message, naming
    * the anchor that echo replaces. Never sent by the backend.

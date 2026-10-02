@@ -317,6 +317,8 @@ export type NormalizedMessage = {
    * has to survive a reload — never a value this app synthesized.
    */
   transcriptAnchorId?: string;
+  /** Fork-only cut point; does not imply that the source supports editing/rewinding. */
+  forkAnchorId?: string;
   sessionId: string;
   timestamp: string;
   provider: LLMProvider;
@@ -402,6 +404,10 @@ export type NativeTranscriptPosition = {
   turnId: string;
   turnStartedAt: string;
   itemIndex: number;
+  /** Native item identity and the opaque cursor immediately before it, for inclusive replay. */
+  itemId?: string;
+  /** Undefined on older backends without item pagination; null identifies the first item. */
+  cursor?: string | null;
 };
 
 /**
@@ -618,6 +624,10 @@ export type FetchHistoryOptions = {
   snapshotId?: string;
   /** Persisted oldest row ID. Reconstructs an evicted snapshot without skipping older rows. */
   before?: string;
+  /** Replay this persisted row inclusively and read forward in bounded pages. */
+  after?: string;
+  /** Internal native reader boundary, resolved from a session-scoped server snapshot, never from query JSON. */
+  afterPosition?: NativeTranscriptPosition;
 };
 
 /**
@@ -636,6 +646,10 @@ export type FetchHistoryResult = {
   snapshotId?: string;
   /** Echoes the persisted boundary only when the server found and paged before it. */
   before?: string;
+  /** Echoed only when the forward boundary was found and replayed. */
+  after?: string;
+  /** More newer rows remain after a forward page, independent of older-history hasMore. */
+  hasNewer?: boolean;
 };
 
 // ---------------------------

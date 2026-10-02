@@ -30,7 +30,7 @@ test('a Codex fork asks for the whole thread when no anchor is given', { concurr
     codexAppServer.forkThread = realForkThread;
   }
 
-  assert.deepEqual(forkCalls, [{ threadId: 'thread-1', lastTurnId: undefined, cwd: '/tmp/workspace' }]);
+  assert.deepEqual(forkCalls, [{ threadId: 'thread-1', lastTurnId: undefined, cwd: '/tmp/workspace', allowNative: true }]);
 });
 
 test('forking from a message cuts through that message\'s turn', async () => {
@@ -55,5 +55,5 @@ test('forking from a message cuts through that message\'s turn', async () => {
   // Inclusive of the turn it names, so the branch keeps the message that was
   // forked from *and* the answer it got. A turn is written as one thing; there
   // is no cut that stops between them.
-  assert.deepEqual(forkCalls, [{ threadId: 'thread-1', lastTurnId: 'turn-b', cwd: '/tmp/workspace' }]);
+  assert.deepEqual(forkCalls, [{ threadId: 'thread-1', lastTurnId: 'turn-b', cwd: '/tmp/workspace', allowNative: true }]);
 });

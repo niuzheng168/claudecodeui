@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fsSync from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -1237,6 +1238,8 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     // branches ends in a `continue`.
     turns.observe(entry.type, payload);
 
+    const firstRow = messages.length;
+    try {
     // ── event_msg ──────────────────────────────────────────────────────────
     if (entry.type === 'event_msg') {
       if (payload.type === 'token_count' && payload.info) {
@@ -1714,6 +1717,16 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
 
       pushToolResult(callId, timestamp, rawOutput, false);
     }
+    } finally {
+      // One source row can produce several display rows. A content-derived
+      // identity plus its source position is stable across rereads, while an
+      // edit to that source row cannot masquerade as the old sync boundary.
+      const sourceId = createHash('sha256').update(line).digest('hex').slice(0, 24);
+      for (let index = firstRow; index < messages.length; index++) {
+        messages[index].uuid ??= `codex-${sourceId}-${index}`;
+        messages[index].forkAnchorId = turns.getCurrentTurnId();
+      }
+    }
   }
 
   // Every file row needs a result or the UI shows it as still running. The
@@ -1741,6 +1754,9 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
   for (const message of messages) {
     if (typeof message.turnId === 'string' && turns.isRolledBack(message.turnId)) {
       delete message.turnId;
+    }
+    if (typeof message.forkAnchorId === 'string' && turns.isRolledBack(message.forkAnchorId)) {
+      delete message.forkAnchorId;
     }
   }
 
@@ -2010,9 +2026,11 @@ export class CodexSessionsProvider implements IProviderSessions {
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
     const messages = this.normalizeEntry(rawMessage, sessionId);
-    return raw?.nativePosition
-      ? messages.map((message) => ({ ...message, nativePosition: raw.nativePosition }))
-      : messages;
+    return messages.map((message) => ({
+      ...message,
+      ...(raw?.nativePosition ? { nativePosition: raw.nativePosition } : {}),
+      ...(raw?.forkAnchorId ? { forkAnchorId: raw.forkAnchorId } : {}),
+    }));
   }
 
   private normalizeEntry(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
@@ -2235,6 +2253,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     const { limit = null, offset = 0 } = options;
 
     let result: CodexHistoryResult;
+    let hasNewer: boolean | undefined;
     try {
       const session = sessionsDb.getSessionById(sessionId);
       const providerSessionId = options.providerSessionId ?? session?.provider_session_id ?? sessionId;
@@ -2251,7 +2270,14 @@ export class CodexSessionsProvider implements IProviderSessions {
           });
         }
         try {
-          const thread = await codexAppServer.readThreadSnapshot(providerSessionId, { client });
+          const thread = await codexAppServer.readThreadSnapshot(providerSessionId, {
+            client, afterPosition: options.afterPosition, maxItems: options.afterPosition ? Math.max(2, limit ?? 20) : undefined,
+            ...(options.afterPosition ? {
+              isVisibleItem: (item: AnyRecord) => projectCodexDaemonItem(item, '', options.afterPosition!.turnStartedAt)
+                .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')),
+            } : {}),
+          });
+          hasNewer = thread.hasNewer;
           if (!thread || !Array.isArray(thread.turns)) {
             throw new AppError('Codex daemon did not return complete thread history.', {
               code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
@@ -2265,8 +2291,12 @@ export class CodexSessionsProvider implements IProviderSessions {
               // Do not advertise edit anchors for native-only histories.
               messages.push(...projectCodexDaemonItem(
                 item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
-                { turnId: turn.id, turnStartedAt: timestamp, itemIndex },
-              ));
+                {
+                  turnId: turn.id, turnStartedAt: timestamp, itemIndex: (turn.itemOffset ?? 0) + itemIndex,
+                  ...(Array.isArray(turn.itemCursors)
+                    ? { itemId: item.id, cursor: turn.itemCursors[itemIndex] } : {}),
+                },
+              ).map(raw => ({ ...raw, forkAnchorId: turn.id })));
             }
           }
           result = { messages };
@@ -2315,7 +2345,9 @@ export class CodexSessionsProvider implements IProviderSessions {
     const total = transcript.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
-    const { page, hasMore } = sliceTailPage(transcript, normalizedLimit, normalizedOffset);
+    const { page, hasMore } = options.afterPosition
+      ? { page: transcript, hasMore: false }
+      : sliceTailPage(transcript, normalizedLimit, normalizedOffset);
 
     return {
       messages: page,
@@ -2324,6 +2356,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       offset: normalizedOffset,
       limit: normalizedLimit,
       tokenUsage: result.tokenUsage,
+      ...(hasNewer !== undefined ? { hasNewer } : {}),
     };
   }
 }

@@ -76,6 +76,18 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   // also pull in browser-only voice state that a document render has no
   // provider for.
   const isExporting = useIsExportingTranscript();
+  const forkControl = !isExporting && !message.isStreaming && onForkFromMessage
+    && (message.forkAnchorId || message.transcriptAnchorId) ? (
+      <button
+        type="button"
+        onClick={() => onForkFromMessage(message)}
+        title={t('message.forkFromHere')}
+        aria-label={t('message.forkFromHere')}
+        className="rounded p-2 transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <GitBranchIcon className="h-3.5 w-3.5" />
+      </button>
+    ) : null;
   const shouldShowUserCopyControl = !isExporting && message.type === 'user' && userCopyContent.trim().length > 0;
   const shouldShowAssistantCopyControl = !isExporting &&
     message.type === 'assistant' &&
@@ -122,28 +134,18 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   </Markdown>
                 </div>
                 <div className="mt-1 flex items-center justify-end gap-1 text-xs text-muted-foreground">
-                  {onEditMessage && message.transcriptAnchorId && (
+                  {!isExporting && onEditMessage && message.transcriptAnchorId && (
                     <button
                       type="button"
                       onClick={() => onEditMessage(message)}
                       title={t('message.editAndResend')}
                       aria-label={t('message.editAndResend')}
-                      className="rounded p-1 opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover:opacity-100"
+                      className="rounded p-2 transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary"
                     >
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
                   )}
-                  {onForkFromMessage && message.transcriptAnchorId && (
-                    <button
-                      type="button"
-                      onClick={() => onForkFromMessage(message)}
-                      title={t('message.forkFromHere')}
-                      aria-label={t('message.forkFromHere')}
-                      className="rounded p-1 opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover:opacity-100"
-                    >
-                      <GitBranchIcon className="h-3.5 w-3.5" />
-                    </button>
-                  )}
+                  {forkControl}
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
@@ -153,6 +155,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                {forkControl}
                 <span>{formattedTime}</span>
               </div>
             )}
@@ -169,6 +172,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
             <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+            {forkControl}
           </div>
         </div>
       ) : (
@@ -358,8 +362,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <MemoryCitations citations={message.memoryCitations} />
             )}
 
-            {(shouldShowAssistantCopyControl || !isGrouped) && (
+            {(forkControl || shouldShowAssistantCopyControl || !isGrouped) && (
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
+                {forkControl}
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
                 )}

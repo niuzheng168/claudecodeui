@@ -299,6 +299,7 @@ function ChatMessagesPane({
                       showThinking={showThinking}
                       selectedProject={selectedProject}
                       provider={provider}
+                      onForkFromMessage={onForkFromMessage}
                     />
                   </LazyMessageRow>
                 );

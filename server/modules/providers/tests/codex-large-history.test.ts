@@ -85,6 +85,58 @@ test('empty native turns and multi-page turn metadata preserve their order', asy
     [['first', 'full', []], ['second', 'full', []]]);
 });
 
+test('native recovery starts at the saved item cursor, bounds new work, and does not reread previous turns', async () => {
+  const f = smallFixture((method, params) => {
+    if (method === 'thread/turns/list') return {
+      data: ['old', 'turn', 'next'].map(id => ({ id, itemsView: 'notLoaded', items: [] })), nextCursor: null,
+    };
+    if (method === 'thread/items/list') {
+      const index = Number(params.cursor);
+      assert.equal(params.turnId, 'turn');
+      assert.ok(index >= 1000);
+      return { data: [{ turnId: 'turn', item: { id: `item-${index}`, type: 'agentMessage', text: 'same time' } }],
+        nextCursor: String(index + 1) };
+    }
+  });
+  const page = await codexAppServer.readThreadSnapshot(THREAD, {
+    client: f.client, maxItems: 20,
+    afterPosition: { turnId: 'turn', turnStartedAt: '2026-10-02', itemIndex: 1000, itemId: 'item-1000', cursor: '1000' },
+  });
+  assert.equal(page.hasNewer, true);
+  assert.equal(page.turns.length, 1);
+  assert.equal(page.turns[0].itemOffset, 1000);
+  assert.equal(page.turns[0].items.length, 20);
+  assert.equal(page.turns[0].itemCursors[19], '1019');
+  assert.equal(f.calls.filter(call => call.method === 'thread/items/list').length, 20);
+  assert.equal(f.calls.at(-1)?.method, 'thread/loaded/list');
+});
+
+test('native recovery rejects an anchor changed by rollback instead of stitching unrelated rows', async () => {
+  const f = smallFixture();
+  await assert.rejects(codexAppServer.readThreadSnapshot(THREAD, {
+    client: f.client, maxItems: 20,
+    afterPosition: { turnId: 'turn', turnStartedAt: '2026-10-02', itemIndex: 0, itemId: 'deleted', cursor: null },
+  }), { code: 'HISTORY_ANCHOR_NOT_FOUND' });
+});
+
+test('non-rendered native items cannot trap forward sync on the same visible row', async () => {
+  const f = smallFixture((method, params) => {
+    if (method !== 'thread/items/list') return;
+    const index = Number(params.cursor ?? 0);
+    return {
+      data: [{ turnId: 'turn', item: { id: `item-${index}`, type: index % 25 === 0 ? 'agentMessage' : 'internal', text: 'row' } }],
+      nextCursor: String(index + 1),
+    };
+  });
+  const page = await codexAppServer.readThreadSnapshot(THREAD, {
+    client: f.client, maxItems: 2, isVisibleItem: item => item.type === 'agentMessage',
+    afterPosition: { turnId: 'turn', turnStartedAt: '2026-10-02', itemIndex: 0, itemId: 'item-0', cursor: null },
+  });
+  assert.equal(page.hasNewer, true);
+  assert.equal(page.turns[0].items.at(-1).id, 'item-25');
+  assert.equal(page.turns[0].itemCursors.at(-1), '25');
+});
+
 for (const fault of [
   'foreign-turn', 'missing-item', 'missing-id', 'missing-type', 'duplicate-item',
   'repeated-cursor', 'missing-cursor', 'empty-advancing-page', 'oversized-page', 'summary-turn',

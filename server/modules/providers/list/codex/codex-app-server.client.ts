@@ -4,9 +4,10 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import type { AnyRecord, ICodexRpcClient } from '@/shared/index.js';
+import type { AnyRecord, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
 import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/index.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
+import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 
 /**
  * Minimal JSON-RPC client for `codex app-server`.
@@ -21,8 +22,8 @@ import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-threa
  *
  * Legacy forks use the packaged CLI. Native history on every platform may instead use
  * the explicitly configured desktop CLI for a strictly read-only snapshot.
- * Neither path substitutes for the desktop owner when running native turns;
- * native paginated forks must still stay in Codex app.
+ * Explicit native forks use the selected native runtime and exclude history
+ * hydration. Legacy edit/rewind callers do not opt in to that mutation.
  */
 
 /** How long a single request may take before the child is killed. */
@@ -253,6 +254,9 @@ async function readNativeSnapshot(
   call: HistoryCall,
   threadId: string,
   readerOnly: boolean,
+  afterPosition?: NativeTranscriptPosition,
+  maxItems = MAX_HISTORY_ITEMS,
+  isVisibleItem: (item: AnyRecord) => boolean = () => true,
 ): Promise<AnyRecord> {
   const snapshot = readObjectRecord(await call('thread/read', { threadId, includeTurns: false }));
   const thread = readObjectRecord(snapshot?.thread);
@@ -261,6 +265,7 @@ async function readNativeSnapshot(
   const deadline = Date.now() + MAX_HISTORY_DURATION_MS;
   let historyBytes = 0;
   let itemCount = 0;
+  let visibleItemCount = 0;
   const checkBudget = (value?: AnyRecord) => {
     if (value) historyBytes += Buffer.byteLength(JSON.stringify(value), 'utf8');
     if (historyBytes > MAX_HISTORY_BYTES || itemCount > MAX_HISTORY_ITEMS || Date.now() > deadline) {
@@ -313,18 +318,35 @@ async function readNativeSnapshot(
   };
 
   let turns = await readTurns('notLoaded');
+  if (afterPosition) {
+    const start = turns.findIndex(turn => turn.id === afterPosition.turnId);
+    if (start < 0 || afterPosition.cursor === undefined) {
+      throw new AppError('The native history anchor no longer exists.', {
+        code: 'HISTORY_ANCHOR_NOT_FOUND', statusCode: 409,
+      });
+    }
+    turns = turns.slice(start);
+  }
   let itemPaginationConfirmed = false;
-  for (const turn of turns) {
+  let hasNewer = false;
+  for (const [turnIndex, turn] of turns.entries()) {
     // Old backends may ignore itemsView and return full turns. Their complete
     // items remain usable; a summary is never accepted as complete history.
     if (turn.itemsView !== 'notLoaded') {
+      if (afterPosition) {
+        throw new AppError('The native backend no longer supports the history cursor.', {
+          code: 'HISTORY_ANCHOR_NOT_FOUND', statusCode: 409,
+        });
+      }
       itemCount += turn.items.length;
       checkBudget();
       continue;
     }
     const ids = new Set<string>();
     const cursors = new Set<string>();
-    let cursor: string | null = null;
+    let cursor: string | null = turnIndex === 0 ? afterPosition?.cursor ?? null : null;
+    turn.itemOffset = turnIndex === 0 ? afterPosition?.itemIndex ?? 0 : 0;
+    turn.itemCursors = [];
     do {
       checkBudget();
       let result: AnyRecord | null;
@@ -336,7 +358,7 @@ async function readNativeSnapshot(
           threadId, turnId: turn.id, cursor, limit: 1, sortDirection: 'asc',
         }));
       } catch (error) {
-        if (itemPaginationConfirmed || !unsupportedMethod(error)) throw error;
+        if (afterPosition || itemPaginationConfirmed || !unsupportedMethod(error)) throw error;
         turns = await readTurns('full');
         itemCount = turns.reduce((count, value) => count + value.items.length, 0);
         checkBudget();
@@ -354,15 +376,30 @@ async function readNativeSnapshot(
           throw new Error('invalid, foreign or repeated native item');
         }
         ids.add(item.id);
+        if (afterPosition && itemCount === 0 && item.id !== afterPosition.itemId) {
+          throw new AppError('The native history anchor changed.', {
+            code: 'HISTORY_ANCHOR_NOT_FOUND', statusCode: 409,
+          });
+        }
         itemCount++;
+        if (isVisibleItem(item)) visibleItemCount++;
         checkBudget(item);
+        turn.itemCursors.push(cursor);
         turn.items.push(item);
       }
       cursor = nextHistoryCursor(result, cursors);
       if (cursor !== null && result.data.length === 0) throw new Error('native item page made no progress');
+      if (afterPosition && visibleItemCount >= maxItems && (cursor !== null || turnIndex < turns.length - 1)) {
+        hasNewer = true;
+        break;
+      }
     } while (cursor !== null);
     if (!itemPaginationConfirmed) break; // Explicit legacy capability fallback.
     turn.itemsView = 'full';
+    if (hasNewer) {
+      turns = turns.slice(0, turnIndex + 1);
+      break;
+    }
   }
   if (readerOnly) {
     const loaded = readObjectRecord(await call('thread/loaded/list', {}));
@@ -370,7 +407,7 @@ async function readNativeSnapshot(
       throw new Error('reader acquired a thread');
     }
   }
-  return { ...thread, turns };
+  return { ...thread, turns, ...(afterPosition ? { hasNewer } : {}) };
 }
 
 // Used by CodexSessionsProvider for native history and legacy fork/edit operations.
@@ -384,12 +421,17 @@ export const codexAppServer = {
    */
   async readThreadSnapshot(
     threadId: string,
-    { timeoutMs = 10_000, client }: { timeoutMs?: number; client?: ICodexRpcClient } = {},
+    { timeoutMs = 10_000, client, afterPosition, maxItems, isVisibleItem }: {
+      timeoutMs?: number; client?: ICodexRpcClient; afterPosition?: NativeTranscriptPosition; maxItems?: number;
+      /** Providers ignore non-rendered native items without stalling the visible-row cursor. */
+      isVisibleItem?: (item: AnyRecord) => boolean;
+    } = {},
   ): Promise<AnyRecord> {
     if (client) {
       try {
-        return await readNativeSnapshot((method, params) => client.request(method, params), threadId, Boolean(client.ownsProcess));
-      } catch {
+        return await readNativeSnapshot((method, params) => client.request(method, params), threadId, Boolean(client.ownsProcess), afterPosition, maxItems, isVisibleItem);
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'HISTORY_ANCHOR_NOT_FOUND') throw error;
         throw new AppError('Could not read complete native Codex history with the selected backend.', {
           code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
         });
@@ -410,7 +452,7 @@ export const codexAppServer = {
     }
     try {
       if (!(await stat(executable)).isFile()) throw new Error('missing executable');
-      return await withAppServer(call => readNativeSnapshot(call, threadId, true), {
+      return await withAppServer(call => readNativeSnapshot(call, threadId, true, afterPosition, maxItems, isVisibleItem), {
         kind: 'read-only', executable, home: resolveCodexHomeDirectory(), timeoutMs,
       });
     } catch {
@@ -439,9 +481,38 @@ export const codexAppServer = {
     threadId: string;
     lastTurnId?: string;
     cwd: string;
+    /** Only explicit session forks opt in; legacy edit/rewind callers stay guarded. */
+    allowNative?: boolean;
   }): Promise<CodexThreadFork> {
     const historyMode = await readCodexHistoryMode(input.threadId);
     if (historyMode && historyMode !== 'legacy') {
+      if (input.allowNative) {
+        const client = await connectCodexNativeClient();
+        if (!client) {
+          throw new AppError('Connect the native Codex runtime before forking this session.', {
+            code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
+          });
+        }
+        try {
+          // An explicit fork creates a *new* thread. Never resume/interrupt the
+          // source, hydrate its whole history, or retry an ambiguous mutation.
+          const result = await client.request('thread/fork', {
+            threadId: input.threadId, cwd: input.cwd,
+            ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
+            excludeTurns: true, deferGoalContinuation: true,
+          });
+          const thread = readObjectRecord(result.thread);
+          if (!thread || typeof thread.id !== 'string' || !thread.id || thread.id === input.threadId) {
+            throw new AppError('Codex did not confirm an independent fork. The request was not retried.', {
+              code: 'FORK_FAILED', statusCode: 502,
+            });
+          }
+          // Native history is authoritative; its JSONL export is optional.
+          return { threadId: thread.id, path: typeof thread.path === 'string' ? thread.path : '' };
+        } finally {
+          await client.close();
+        }
+      }
       throw new AppError('Fork or edit this native paginated session in Codex app. The legacy Codey fork adapter cannot safely copy its history.', {
         code: 'CODEX_NATIVE_FORK_UNSUPPORTED',
         statusCode: 409,
