@@ -90,6 +90,8 @@ type SessionHistoryPage = {
   tokenUsage?: unknown;
   snapshotId?: string;
   before?: string;
+  after?: string;
+  hasNewer?: boolean;
   offset?: number;
 };
 
@@ -131,6 +133,8 @@ async function requestSessionHistoryPage(
     hasMore: Boolean(data.hasMore),
     ...(typeof data.snapshotId === 'string' ? { snapshotId: data.snapshotId } : {}),
     ...(typeof data.before === 'string' ? { before: data.before } : {}),
+    ...(typeof data.after === 'string' ? { after: data.after } : {}),
+    ...(typeof data.hasNewer === 'boolean' ? { hasNewer: data.hasNewer } : {}),
     ...(Number.isSafeInteger(data.offset) && data.offset >= 0 ? { offset: data.offset } : {}),
     ...(
       data && typeof data === 'object' && 'tokenUsage' in data
@@ -470,26 +474,93 @@ function olderPagePrecedesCachedHistory(
 }
 
 /**
- * Fetches and atomically applies a bounded persisted-tail reconciliation.
- * Every request is finite. Claude/Codex bridge discovery may use more than one
- * bounded chunk because their response `total` omits paginated tool results.
+ * Replays the confirmed tail boundary and publishes each bounded forward page.
+ * Older nodes that do not acknowledge `after` use overlap-checked tail bridging.
  */
 async function refreshLatestSlotFromServer(
   sessionId: string,
   slot: SessionSlot,
   limit: number,
   canRequest: CanRequestHistory = () => true,
+  onPage: () => void = () => {},
 ): Promise<LatestHistoryRefreshResult> {
   if (!canRequest()) {
     return { applied: false, changed: false, deferred: true };
   }
 
-  const previousServerMessages = slot.serverMessages;
+  let resetAfterRewrite = false;
+  if (slot.snapshotId && slot.serverMessages.length > 0) {
+    let changed = false;
+    while (canRequest()) {
+      // A native item can project to multiple rows (e.g. a multi-file edit).
+      // Replay the whole final item so an updated result repairs all its rows.
+      let anchorIndex = slot.serverMessages.length - 1;
+      const position = slot.serverMessages[anchorIndex].nativePosition;
+      while (position && anchorIndex > 0) {
+        const previous = slot.serverMessages[anchorIndex - 1].nativePosition;
+        if (previous?.turnId !== position.turnId || previous.itemIndex !== position.itemIndex) break;
+        anchorIndex--;
+      }
+      const anchor = slot.serverMessages[anchorIndex].id;
+      const requestedMessages = slot.serverMessages;
+      let page: SessionHistoryPage;
+      try {
+        page = await requestSessionHistoryPage(sessionId, {
+          limit: Math.max(2, Math.min(100, limit)), offset: 0,
+          snapshotId: slot.snapshotId, after: anchor,
+        });
+      } catch (error) {
+        if (['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED'].includes((error as { code?: string }).code ?? '')) {
+          resetAfterRewrite = true;
+          break;
+        }
+        throw error;
+      }
+      // An edit/truncation can arrive over the socket while HTTP is pending.
+      // Do not resurrect its removed rows using an older forward response.
+      if (slot.serverMessages !== requestedMessages) return { applied: changed, changed, deferred: true };
+      // Rolling upgrades: a node ignoring `after` must never be interpreted
+      // as a delta. Fall back to a fresh bounded tail read, not its pinned page.
+      if (page.after !== anchor || page.hasNewer === undefined) break;
+      if (page.messages[0]?.id !== anchor) throw new Error('Invalid newer-message boundary. Retry loading history.');
+      const oldRows = new Map(slot.serverMessages.slice(anchorIndex).map(row => [row.id, row]));
+      const nextRows = page.messages.map(row => {
+        const old = oldRows.get(row.id);
+        return old && JSON.stringify(old) === JSON.stringify(row) ? old : row;
+      });
+      if (page.hasNewer && nextRows.at(-1)?.id === slot.serverMessages.at(-1)?.id) {
+        throw new Error('Newer history made no progress. Retry loading history.');
+      }
+      const oldSuffix = slot.serverMessages.slice(anchorIndex);
+      if (oldSuffix.length !== nextRows.length || oldSuffix.some((row, index) => row !== nextRows[index])) {
+        slot.serverMessages = [...slot.serverMessages.slice(0, anchorIndex), ...nextRows];
+      }
+      slot.total = page.total;
+      // The current page locates the oldest cached boundary even if newer
+      // pages remain unread. Older paging will therefore never skip a gap.
+      slot.offset = slot.serverMessages.length + (page.offset ?? 0);
+      slot.snapshotId = page.snapshotId;
+      slot.historyError = undefined;
+      slot.status = 'idle';
+      if (!page.hasNewer) slot.fetchedAt = Date.now();
+      if (page.tokenUsage !== undefined) slot.tokenUsage = page.tokenUsage;
+      slot.realtimeMessages = pruneRealtimeSupersededByServer(slot.serverMessages, slot.realtimeMessages);
+      recomputeMergedIfNeeded(slot);
+      changed = true;
+      onPage();
+      if (!page.hasNewer) return { applied: true, changed, deferred: false };
+      // Permit paint/input between pages instead of one enormous React commit.
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    if (!canRequest()) return { applied: changed, changed, deferred: true };
+  }
+
+  const previousServerMessages = resetAfterRewrite ? [] : slot.serverMessages;
   const previousTotal = slot.total;
   // Older pages can advance without fetching the growing tail. Account for
   // those omitted rows when planning the bridge back to the cached newest row.
   const previousTailTotal = previousTotal - Math.max(0, slot.offset - previousServerMessages.length);
-  const previousHasMore = slot.hasMore;
+  const previousHasMore = resetAfterRewrite ? false : slot.hasMore;
   const latestPage = await requestSessionHistoryPage(sessionId, {
     limit,
     offset: 0,
@@ -593,6 +664,7 @@ async function refreshLatestSlotFromServer(
   slot.hasMore = nextHasMore;
   slot.snapshotId = latestPage.snapshotId;
   slot.historyError = undefined;
+  slot.status = 'idle';
   slot.fetchedAt = Date.now();
   slot.realtimeMessages = pruneRealtimeSupersededByServer(
     slot.serverMessages,
@@ -991,9 +1063,8 @@ export function useSessionStore(cacheOwner: string | null = null) {
   }, [getSlot, notify]);
 
   /**
-   * Refreshes only the persisted tail and stitches it onto the contiguous
-   * cached suffix. Large turns request a small offset bridge rather than the
-   * whole transcript, and the final state is applied atomically.
+   * Refreshes the persisted tail in forward pages, notifying after each page
+   * while retaining cached older rows. Legacy offset bridging stays bounded.
    */
   const refreshLatestFromServer = useCallback(async (
     sessionId: string,
@@ -1011,6 +1082,7 @@ export function useSessionStore(cacheOwner: string | null = null) {
           slot,
           opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
           opts.canRequest,
+          () => notify(sessionId),
         );
         if (result.changed) {
           notify(sessionId);
@@ -1019,7 +1091,12 @@ export function useSessionStore(cacheOwner: string | null = null) {
         return { slot, ...result };
       } catch (error) {
         console.error(`[SessionStore] latest refresh failed for ${sessionId}:`, error);
-        return { slot, applied: false, changed: false, deferred: false };
+        slot.historyError = error instanceof Error ? error.message : String(error);
+        slot.status = 'error';
+        notify(sessionId);
+        // Any earlier forward pages are confirmed and must survive a retry.
+        persist(sessionId, slot);
+        return { slot, applied: false, changed: false, deferred: true };
       }
     });
   }, [getSlot, notify, persist]);

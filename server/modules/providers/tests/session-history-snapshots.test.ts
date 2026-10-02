@@ -109,3 +109,55 @@ test('reading an older page touches its snapshot before the next LRU eviction', 
   });
   assert.equal((await cache.page({ source: 'a', snapshotId: a.snapshotId, load })).messages.length, 80);
 });
+
+test('forward pages replay their anchor, preserve equal timestamps, and revalidate a pinned tail', async () => {
+  const cache = createSessionHistorySnapshots();
+  let count = 50;
+  const load = async () => history(count);
+  let page = await cache.page({ source: 's', limit: 20, load });
+  count = 125;
+  const seen = new Set<string>();
+  let after = 'row-49';
+  do {
+    page = await cache.page({ source: 's', limit: 20, snapshotId: page.snapshotId, after, load });
+    assert.equal(page.after, after);
+    assert.equal(page.messages[0].id, after);
+    assert.ok(page.messages.length <= 20);
+    for (const row of page.messages.slice(1)) {
+      assert.ok(!seen.has(row.id));
+      seen.add(row.id);
+    }
+    after = page.messages.at(-1)!.id;
+  } while (page.hasNewer);
+  assert.equal(seen.size, 75);
+  assert.equal(after, 'row-124');
+  count = 20;
+  await assert.rejects(cache.page({ source: 's', limit: 20, snapshotId: page.snapshotId, after, load }), {
+    code: 'HISTORY_ANCHOR_NOT_FOUND',
+  });
+});
+
+test('native forward pages extend a snapshot without full-history reads or losing older boundaries', async () => {
+  const cache = createSessionHistorySnapshots();
+  let loads = 0;
+  const load = async () => { loads++; return history(100); };
+  const first = await cache.page({ source: 's', limit: 20, load });
+  const newer = await cache.page({
+    source: 's', limit: 20, snapshotId: first.snapshotId, after: 'row-99', load,
+    loadAfter: async (previous, anchor, limit) => {
+      assert.equal(previous.total, 100);
+      assert.equal(anchor, 'row-99');
+      assert.equal(limit, 20);
+      return { ...history(119), messages: history(119).messages.slice(99), hasNewer: true };
+    },
+  });
+  assert.equal(loads, 1);
+  assert.equal(newer.messages.length, 20);
+  assert.equal(newer.hasNewer, true);
+  const old = await cache.page({ source: 's', limit: 20, snapshotId: newer.snapshotId, before: 'row-80', load });
+  assert.equal(old.messages[0].id, 'row-60');
+  assert.equal(old.total, 119);
+  assert.equal(loads, 1);
+  const all = await cache.page({ source: 's', snapshotId: newer.snapshotId, limit: null, load: async () => history(200) });
+  assert.equal(all.messages.length, 200, 'explicit Load all does not mistake a partial catch-up for complete history');
+});

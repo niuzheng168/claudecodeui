@@ -849,11 +849,18 @@ router.get(
     const offset = parseBoundedIntegerQuery(req.query.offset, 'offset', 0, 0);
     const snapshotId = parseHistoryBoundary(req.query.snapshotId, 'snapshotId', 64);
     const before = parseHistoryBoundary(req.query.before, 'before', 4096);
+    const after = parseHistoryBoundary(req.query.after, 'after', 4096);
+    if (after && (before || offset !== 0 || limit === null || limit < 2 || limit > 100)) {
+      throw new AppError('Forward history requires a limit of 2–100, no before boundary, and offset zero.', {
+        code: 'INVALID_REQUEST', statusCode: 400,
+      });
+    }
     const result = await sessionsService.fetchHistory(sessionId, {
       limit,
       offset,
       ...(snapshotId ? { snapshotId } : {}),
       ...(before ? { before } : {}),
+      ...(after ? { after } : {}),
     });
     res.json(createApiSuccessResponse(result));
   }),

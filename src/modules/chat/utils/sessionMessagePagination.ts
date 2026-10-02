@@ -130,7 +130,7 @@ export function planLatestPageBridge(
 
   return {
     offset: latestMessages.length + bridgeRowsFetched,
-    limit: preferredLimit,
+    limit: Math.min(SESSION_MESSAGES_PAGE_SIZE, preferredLimit),
   };
 }
 

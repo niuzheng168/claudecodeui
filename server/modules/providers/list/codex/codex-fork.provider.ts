@@ -30,6 +30,7 @@ export class CodexForkProvider implements IProviderFork {
       threadId: input.providerSessionId,
       lastTurnId: input.upToAnchorId,
       cwd: input.projectPath,
+      allowNative: true,
     });
 
     // The path is the one the server reported and already confirmed on disk,

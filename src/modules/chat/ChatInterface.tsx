@@ -330,7 +330,7 @@ function ChatInterface({
    * then opens it. The session being viewed is left exactly as it was.
    */
   const handleForkFromMessage = useCallback(async (message: ChatMessage) => {
-    const anchorId = message.transcriptAnchorId;
+    const anchorId = message.forkAnchorId || message.transcriptAnchorId;
     const sourceSessionId = selectedSession?.id;
     if (!anchorId || !sourceSessionId) return;
 
@@ -339,11 +339,12 @@ function ChatInterface({
       const payload = await response.json();
       const forkedSessionId = payload?.data?.sessionId;
       if (!response.ok || typeof forkedSessionId !== 'string') {
-        throw new Error(payload?.message || `HTTP ${response.status}`);
+        throw new Error(payload?.error?.message || payload?.error || payload?.message || `HTTP ${response.status}`);
       }
       onNavigateToSession?.(forkedSessionId);
     } catch (error) {
       console.error('Error forking session:', error);
+      window.alert(error instanceof Error ? error.message : 'Could not fork this session.');
     }
   }, [onNavigateToSession, selectedSession?.id]);
 

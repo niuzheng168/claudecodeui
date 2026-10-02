@@ -13,4 +13,7 @@ test('history URLs encode native anchors and keep snapshot handles for unbounded
   expect(sessionMessagesUrl('a', { limit: null, snapshotId: 'snapshot-id' }))
     .toBe('/api/providers/sessions/a/messages?snapshotId=snapshot-id');
   expect(sessionMessagesUrl('a')).toBe('/api/providers/sessions/a/messages');
+  const forward = new URL(sessionMessagesUrl('a', { limit: 20, after: 'row/a?中文', snapshotId: 's' }), 'https://example.test');
+  expect(forward.searchParams.get('after')).toBe('row/a?中文');
+  expect(forward.searchParams.get('limit')).toBe('20');
 });
