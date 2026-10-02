@@ -458,7 +458,10 @@ export const getPageTitle = (
 //----------------- PERSISTENT SESSION HISTORY ------------
 
 const MAX_CACHE_BYTES = 64 * 1024 * 1024;
-const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
+// A reopen needs the recent confirmed window, not every page ever visited.
+// Keeping the budget small also bounds JSON encoding/IDB cloning on phones.
+const MAX_ENTRY_BYTES = 4 * 1024 * 1024;
+const RECENT_HISTORY_ROWS = 200;
 const MAX_CACHE_ENTRIES = 40;
 const CACHE_AGE_MS = 7 * 24 * 60 * 60_000;
 const STORAGE_TIMEOUT_MS = 1500;
@@ -512,9 +515,53 @@ function validHistory(value: CachedSessionHistory, sessionId: string): boolean {
     && Number.isSafeInteger(value.total) && value.total >= 0
     && Number.isSafeInteger(value.offset) && value.offset >= value.messages.length
     && typeof value.hasMore === 'boolean'
+    && (value.hasNewer === undefined || typeof value.hasNewer === 'boolean')
     && (value.snapshotId === undefined || (typeof value.snapshotId === 'string' && value.snapshotId.length <= 64))
+    && (value.syncCursor === undefined || (typeof value.syncCursor === 'string' && value.syncCursor.length <= 16384))
     && (value.view === undefined || (Number.isFinite(value.view.visibleCount) && value.view.visibleCount >= -1
-      && Number.isFinite(value.view.scrollTop) && value.view.scrollTop >= 0 && typeof value.view.scrolledUp === 'boolean')));
+      && Number.isFinite(value.view.scrollTop) && value.view.scrollTop >= 0 && typeof value.view.scrolledUp === 'boolean'
+      && (value.view.anchorId === undefined || (typeof value.view.anchorId === 'string' && value.view.anchorId.length <= 4096))
+      && (value.view.anchorOffset === undefined || Number.isFinite(value.view.anchorOffset)))));
+}
+
+function historyReopenWindow(value: CachedSessionHistory): { value: CachedSessionHistory; bytes: number } | null {
+  const encoder = new TextEncoder();
+  // Measure only the candidate window, never stringify a multi-megabyte
+  // transcript merely to discover that it no longer fits the disk budget.
+  let bytes = encoder.encode(JSON.stringify({ ...value, messages: [] })).length;
+  if (bytes > MAX_ENTRY_BYTES) return null;
+  const anchorIndex = value.view?.scrolledUp && value.view.anchorId
+    ? value.messages.findIndex(message => message.id === value.view!.anchorId) : -1;
+  const desiredStart = Math.min(Math.max(0, value.messages.length - RECENT_HISTORY_ROWS),
+    anchorIndex < 0 ? value.messages.length : anchorIndex);
+  let start = value.messages.length;
+  while (start > desiredStart) {
+    const rowBytes = encoder.encode(JSON.stringify(value.messages[start - 1])).length + 1;
+    if (bytes + rowBytes > MAX_ENTRY_BYTES) break;
+    bytes += rowBytes;
+    start--;
+  }
+  // A single oversized latest row cannot be stored faithfully. Invalidate the
+  // stale entry instead of leaving an old "latest" checkpoint there forever.
+  if (value.messages.length && start === value.messages.length) return null;
+  if (start === 0) return { value, bytes };
+  const messages = value.messages.slice(start);
+  const canRestoreAnchor = anchorIndex >= start;
+  return {
+    value: {
+      ...value, messages, hasMore: true, offset: value.offset - start,
+      ...(value.view ? {
+        view: {
+          ...value.view, visibleCount: messages.length,
+          // Absolute pixels belong to the old rendered prefix. Restore by
+          // row/offset if retained, otherwise start at the current tail.
+          scrollTop: 0, scrolledUp: canRestoreAnchor,
+          ...(canRestoreAnchor ? {} : { anchorId: undefined, anchorOffset: undefined }),
+        },
+      } : {}),
+    },
+    bytes,
+  };
 }
 
 /**
@@ -527,6 +574,10 @@ export function createSessionHistoryCache(owner: string | null) {
   const createdEpoch = epoch;
   const createdGeneration = generation(name);
   let disposed = false;
+  // Serialize commits and coalesce superseded writes so an earlier async IDB
+  // open cannot overwrite a newer confirmed checkpoint or reading position.
+  let writeQueue = Promise.resolve();
+  const latestWrite = new Map<string, symbol>();
   const active = () => !disposed && owner !== null && createdEpoch === epoch && generation(name) === createdGeneration;
   const keyFor = (sessionId: string) => JSON.stringify([createdGeneration, owner, sessionId]);
 
@@ -570,36 +621,59 @@ export function createSessionHistoryCache(owner: string | null) {
         request.onsuccess = () => {
           const record = request.result as CacheRecord | undefined;
           if (record?.owner === owner && Date.now() - record.savedAt < CACHE_AGE_MS
-            && validHistory(record.value, sessionId)) finish(record.value);
-        };
-      });
-    },
-    async write(value: CachedSessionHistory): Promise<void> {
-      if (owner === null || !active() || !validHistory(value, value.sessionId)) return;
-      let bytes: number;
-      try { bytes = new TextEncoder().encode(JSON.stringify(value)).length; }
-      catch { return; }
-      if (bytes > MAX_ENTRY_BYTES) return;
-      await transaction('readwrite', undefined, tx => {
-        const key = keyFor(value.sessionId), savedAt = Date.now();
-        const history = tx.objectStore('history'), metadata = tx.objectStore('metadata');
-        history.put({ key, owner, value, savedAt } satisfies CacheRecord);
-        metadata.put({ key, bytes, usedAt: savedAt } satisfies CacheMetadata);
-        // Read only the tiny metadata list, never deserialize every transcript
-        // merely to enforce the shared node's LRU/byte budget.
-        const request = metadata.getAll();
-        request.onsuccess = () => {
-          const entries = (request.result as CacheMetadata[]).sort((a, b) => a.usedAt - b.usedAt);
-          let total = entries.reduce((sum, entry) => sum + entry.bytes, 0), count = entries.length;
-          for (const entry of entries) {
-            if (count <= MAX_CACHE_ENTRIES && total <= MAX_CACHE_BYTES && savedAt - entry.usedAt < CACHE_AGE_MS) continue;
-            history.delete(entry.key);
-            metadata.delete(entry.key);
-            total -= entry.bytes;
-            count--;
+            && validHistory(record.value, sessionId)) {
+            // Migrate old full-transcript cache entries on read as well; a
+            // stale pre-fix entry must not remount thousands of rows first.
+            finish(historyReopenWindow(record.value)?.value ?? null);
           }
         };
       });
+    },
+    write(value: CachedSessionHistory): Promise<void> {
+      const revision = Symbol();
+      latestWrite.set(value.sessionId, revision);
+      const writing = writeQueue.then(async () => {
+        if (latestWrite.get(value.sessionId) !== revision) return;
+        if (owner === null || !active() || !validHistory(value, value.sessionId)) return;
+        let window: ReturnType<typeof historyReopenWindow>;
+        try { window = historyReopenWindow(value); }
+        catch { return; }
+        await transaction('readwrite', undefined, tx => {
+          const key = keyFor(value.sessionId), savedAt = Date.now();
+          const history = tx.objectStore('history'), metadata = tx.objectStore('metadata');
+          const existing = history.get(key);
+          existing.onsuccess = () => {
+            // Another tab may have confirmed more history before this old tab
+            // flushes its viewport on close. Never roll its checkpoint back.
+            const previous = existing.result as CacheRecord | undefined;
+            if (previous && previous.value.fetchedAt > value.fetchedAt) return;
+            if (!window) {
+              history.delete(key);
+              metadata.delete(key);
+              return;
+            }
+            history.put({ key, owner, value: window.value, savedAt } satisfies CacheRecord);
+            metadata.put({ key, bytes: window.bytes, usedAt: savedAt } satisfies CacheMetadata);
+            // Read only the tiny metadata list, never deserialize every transcript
+            // merely to enforce the shared node's LRU/byte budget.
+            const request = metadata.getAll();
+            request.onsuccess = () => {
+              const entries = (request.result as CacheMetadata[]).sort((a, b) => a.usedAt - b.usedAt);
+              let total = entries.reduce((sum, entry) => sum + entry.bytes, 0), count = entries.length;
+              for (const entry of entries) {
+                if (count <= MAX_CACHE_ENTRIES && total <= MAX_CACHE_BYTES && savedAt - entry.usedAt < CACHE_AGE_MS) continue;
+                history.delete(entry.key);
+                metadata.delete(entry.key);
+                total -= entry.bytes;
+                count--;
+              }
+            };
+          };
+        });
+      });
+      writeQueue = writing.catch(() => {});
+      void writeQueue.then(() => { if (latestWrite.get(value.sessionId) === revision) latestWrite.delete(value.sessionId); });
+      return writeQueue;
     },
     onReset(listener: () => void): () => void {
       resetListeners.add(listener);

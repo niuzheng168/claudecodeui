@@ -113,14 +113,14 @@ const del = withBody('DELETE');
  */
 export const sessionMessagesUrl = (
   sessionId: string,
-  { limit = null, offset = 0, snapshotId, before, after }: SessionHistoryRequest = {},
+  { limit = null, offset = 0, snapshotId, before, after, syncCursor }: SessionHistoryRequest = {},
 ): string => {
   const base = withDeploymentBasePath(
     `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`,
   );
   return `${base}${query({
     ...(limit === null || limit === undefined ? {} : { limit, offset: offset ?? 0 }),
-    snapshotId, before, after,
+    snapshotId, before, after, syncCursor,
   })}`;
 };
 

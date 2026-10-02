@@ -12,6 +12,8 @@ export type SessionHistoryRequest = {
   before?: string;
   /** Confirmed row to replay inclusively, then page forwards (never a wall-clock filter). */
   after?: string;
+  /** Opaque server-signed resume checkpoint, not an authentication token. */
+  syncCursor?: string;
 };
 
 /** Per-session transcript viewport retained across session/tab switches and browser reloads. */
@@ -19,6 +21,10 @@ export type SessionHistoryView = {
   visibleCount: number;
   scrollTop: number;
   scrolledUp: boolean;
+  /** Stable row at the viewport top; pixel coordinates alone do not survive a trimmed cache or lazy layout. */
+  anchorId?: string;
+  /** Row top relative to the scrolling viewport; may be negative for a partially visible row. */
+  anchorOffset?: number;
 };
 
 /** IndexedDB stores confirmed history and paging/view metadata, excluding auth state and transient streams. */
@@ -27,9 +33,13 @@ export type CachedSessionHistory = {
   messages: NormalizedMessage[];
   total: number;
   hasMore: boolean;
+  /** A confirmed forward page was saved before catch-up finished; resume immediately on reopen. */
+  hasNewer?: boolean;
   offset: number;
   fetchedAt: number;
   snapshotId?: string;
+  /** Retained separately from the server's expiring in-memory snapshot handle. */
+  syncCursor?: string;
   tokenUsage?: unknown;
   view?: SessionHistoryView;
 };
@@ -332,6 +342,8 @@ export type SubagentInfo = {
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
   type: string;
+  /** Confirmed source row identity used to restore a transcript viewport, not to mutate history. */
+  sourceId?: string;
   /** Opaque identity allocated for one Codex send, shared by its optimistic echo and native input. Not an edit anchor or a retry token. */
   clientMessageId?: string;
   content?: string;

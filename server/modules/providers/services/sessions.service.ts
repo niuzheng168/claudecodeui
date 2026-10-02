@@ -416,7 +416,7 @@ export const sessionsService = {
 
   async fetchHistory(
     sessionId: string,
-    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after'> = {},
+    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after' | 'syncCursor'> = {},
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -461,8 +461,8 @@ export const sessionsService = {
         load: () => providerSessions.fetchHistory(sessionId, {
           limit: null, offset: 0, projectPath, providerSessionId,
         }),
-        loadAfter: async (history, anchor, limit) => {
-          const afterPosition = history.messages.find(message => message.id === anchor)?.nativePosition;
+        loadAfter: async (anchor, limit) => {
+          const afterPosition = anchor.nativePosition;
           if (!afterPosition?.itemId || afterPosition.cursor === undefined) return null;
           return providerSessions.fetchHistory(sessionId, {
             limit, offset: 0, projectPath, providerSessionId, afterPosition,
