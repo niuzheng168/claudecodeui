@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { useLayoutEffect } from 'react';
 
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -96,12 +97,13 @@ function createStore(messagesBySession: Map<string, NormalizedMessage[]>) {
 async function renderChatSessionState(options: {
   session: ProjectSession;
   store: ReturnType<typeof createStore>;
+  container?: HTMLDivElement;
 }) {
   const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
 
   return renderHook(
-    ({ session }: { session: ProjectSession }) =>
-      useChatSessionState({
+    ({ session }: { session: ProjectSession }) => {
+      const state = useChatSessionState({
         isActive: true,
         selectedProject: project,
         selectedSession: session,
@@ -111,7 +113,14 @@ async function renderChatSessionState(options: {
         statusCheckSentAtRef: { current: new Map() },
         lastSeqRef: { current: new Map() },
         sessionStore: options.store as never,
-      }),
+      });
+      useLayoutEffect(() => {
+        if (options.container) {
+          (state.scrollContainerRef as { current: HTMLDivElement | null }).current = options.container;
+        }
+      }, [state.scrollContainerRef, options.container]);
+      return state;
+    },
     { initialProps: { session: options.session } },
   );
 }
@@ -147,6 +156,23 @@ it('keeps a submitted input identity on the actual optimistic store row', async 
 });
 
 describe('deferred scroll-to-bottom', () => {
+  it('retains the reflow observer when an incremental page appends new messages', async () => {
+    const observers: unknown[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: unknown) { observers.push(callback); }
+      observe() {} unobserve() {} disconnect() {}
+    });
+    const messages = new Map([[SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]]]);
+    const container = createContainer(5000, 500);
+    const { rerender } = await renderChatSessionState({
+      session: { id: SESSION_A } as ProjectSession, store: createStore(messages), container: container.element,
+    });
+    expect(observers).toHaveLength(1);
+    messages.set(SESSION_A, [...messages.get(SESSION_A)!, buildMessage(1, '2026-01-01T00:00:01.000Z')]);
+    act(() => { rerender({ session: { id: SESSION_A } as ProjectSession }); });
+    expect(observers).toHaveLength(1);
+  });
+
   it('does not yank the view back down when the user scrolls up inside the delay', async () => {
     const messages = new Map<string, NormalizedMessage[]>([
       [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],

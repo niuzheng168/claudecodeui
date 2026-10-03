@@ -1181,15 +1181,18 @@ export function useChatSessionState({
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
+  const hasTranscriptRows = chatMessages.length > 0;
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container || !isActive || isLoadingSessionMessages || !chatMessages.length) return;
+    if (!container || !isActive || isLoadingSessionMessages || !hasTranscriptRows) return;
     return anchorTranscriptReflow(container, () => (
       isActiveRef.current && !isUserScrolledUpRef.current
       && !isLoadingMoreRef.current && !pendingScrollRestoreRef.current
       && !pendingViewScrollRef.current && !searchScrollActiveRef.current
     ));
-  }, [activeSessionId, isActive, isLoadingSessionMessages, chatMessages.length]);
+    // Keep the observer's previous layout across appended forward pages.
+    // Recreating it for every row count forgets the pre-append tail position.
+  }, [activeSessionId, isActive, isLoadingSessionMessages, hasTranscriptRows]);
 
   // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
   // timers are cleared on session change via the reset effect above.
