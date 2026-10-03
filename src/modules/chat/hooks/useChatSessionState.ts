@@ -6,6 +6,7 @@ import type { MarkSessionIdle, SessionActivityMap, SessionHistoryView,Project,Pr
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import { createMessageHistoryRefreshCoordinator } from '@/modules/chat/utils/messageHistoryRefreshCoordinator';
+import { anchorTranscriptReflow } from '@/modules/chat/utils/transcriptReflowAnchor';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
@@ -594,6 +595,10 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container || !isActive || isLoadingMoreRef.current || isLoadingAllMessages) return false;
     pendingInitialScrollRef.current = false;
+    // An explicit older-page request owns the viewport before its async
+    // content arrives; tail reflow anchoring must not pull it back down.
+    isUserScrolledUpRef.current = true;
+    setIsUserScrolledUp(true);
     // A render window is not the network cursor. Reveal locally cached rows
     // before requesting anything, including after returning to a conversation.
     if (visibleMessageCount < chatMessages.length) {
@@ -610,6 +615,7 @@ export function useChatSessionState({
     if (!container) return;
 
     const nearBottom = isNearBottom();
+    isUserScrolledUpRef.current = !nearBottom;
     setIsUserScrolledUp(!nearBottom);
     scrollPositionRef.current = {
       height: container.scrollHeight,
@@ -1174,6 +1180,16 @@ export function useChatSessionState({
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !isActive || isLoadingSessionMessages || !chatMessages.length) return;
+    return anchorTranscriptReflow(container, () => (
+      isActiveRef.current && !isUserScrolledUpRef.current
+      && !isLoadingMoreRef.current && !pendingScrollRestoreRef.current
+      && !pendingViewScrollRef.current && !searchScrollActiveRef.current
+    ));
+  }, [activeSessionId, isActive, isLoadingSessionMessages, chatMessages.length]);
 
   // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
   // timers are cleared on session change via the reset effect above.
