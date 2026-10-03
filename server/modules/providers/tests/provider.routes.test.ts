@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,7 +35,9 @@ async function withProviderServer(
     }
     res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR' } });
   });
-  const server = app.listen(0, '127.0.0.1');
+  // Exercise the route's 16 KiB cursor validator, rather than Node's smaller
+  // default aggregate HTTP-header rejection before Express sees the request.
+  const server = createServer({ maxHeaderSize: 32 * 1024 }, app).listen(0, '127.0.0.1');
   await once(server, 'listening');
 
   try {
