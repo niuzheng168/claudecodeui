@@ -53,6 +53,7 @@ type ChatMessagesPaneProps = {
   historyError?: string | null;
   hasMoreMessages: boolean;
   totalMessages: number;
+  totalIsExact?: boolean;
   sessionMessagesCount: number;
   visibleMessageCount: number;
   visibleMessages: ChatMessage[];
@@ -108,6 +109,7 @@ function ChatMessagesPane({
   historyError,
   hasMoreMessages,
   totalMessages,
+  totalIsExact = true,
   sessionMessagesCount,
   visibleMessageCount,
   visibleMessages,
@@ -239,7 +241,7 @@ function ChatMessagesPane({
           {/* Persistent controls still work when tool grouping adds no scroll height. */}
           {(hasMoreMessages || chatMessages.length > visibleMessageCount) && (
             <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {totalMessages > 0 && (
+              {totalMessages > 0 && totalIsExact && (
                 <span>
                   {t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}
                   <span className="text-xs">{t('session.messages.scrollToLoad')}</span>

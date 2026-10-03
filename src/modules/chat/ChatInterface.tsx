@@ -463,6 +463,7 @@ function ChatInterface({
           historyError={historyError}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
+          totalIsExact={sessionStore.getSessionSlot(selectedSession?.id || currentSessionId || '')?.totalIsExact}
           sessionMessagesCount={chatMessages.length}
           visibleMessageCount={visibleMessageCount}
           visibleMessages={visibleMessages}

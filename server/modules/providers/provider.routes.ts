@@ -851,6 +851,10 @@ router.get(
     const before = parseHistoryBoundary(req.query.before, 'before', 4096);
     const after = parseHistoryBoundary(req.query.after, 'after', 4096);
     const syncCursor = parseHistoryBoundary(req.query.syncCursor, 'syncCursor', 16384);
+    const beforeCursor = parseHistoryBoundary(req.query.beforeCursor, 'beforeCursor', 16384);
+    if (beforeCursor && (!before || after || syncCursor || offset !== 0 || limit === null || limit < 2 || limit > 100)) {
+      throw new AppError('A native older cursor requires before, limit 2–100 and offset zero.', { code: 'INVALID_REQUEST', statusCode: 400 });
+    }
     if (syncCursor && !after) {
       throw new AppError('A resume cursor requires a forward row boundary.', { code: 'INVALID_REQUEST', statusCode: 400 });
     }
@@ -866,6 +870,7 @@ router.get(
       ...(before ? { before } : {}),
       ...(after ? { after } : {}),
       ...(syncCursor ? { syncCursor } : {}),
+      ...(beforeCursor ? { beforeCursor } : {}),
     });
     res.json(createApiSuccessResponse(result));
   }),

@@ -14,6 +14,8 @@ export type SessionHistoryRequest = {
   after?: string;
   /** Opaque server-signed resume checkpoint, not an authentication token. */
   syncCursor?: string;
+  /** Signed native older-page cursor, paired with before. */
+  beforeCursor?: string;
 };
 
 /** Per-session transcript viewport retained across session/tab switches and browser reloads. */
@@ -40,6 +42,9 @@ export type CachedSessionHistory = {
   snapshotId?: string;
   /** Retained separately from the server's expiring in-memory snapshot handle. */
   syncCursor?: string;
+  beforeCursor?: string;
+  /** False means total is a discovered lower bound, not the full conversation size. */
+  totalIsExact?: boolean;
   tokenUsage?: unknown;
   view?: SessionHistoryView;
 };
@@ -474,11 +479,15 @@ export type NativeTranscriptPosition = {
   turnId: string;
   turnStartedAt: string;
   itemIndex: number;
+  /** Native page-relative ordering domain; allows negative indexes without claiming absolute item counts. */
+  orderScope?: string;
 };
 
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
   id: string;
+  /** Signed native seek point retained when this row becomes a cached window's oldest row. */
+  historyPageBefore?: string;
   /** Correlates one submitted user input with its native persisted copy, independently of text or the enclosing turn's timestamp. Scoped to this provider/session; not an edit anchor. */
   clientMessageId?: string;
   /** Canonical native item order; unlike display timestamps, remains comparable across history and websocket replay. */

@@ -26,19 +26,36 @@ export function orderNativeTranscriptMessages(
 
   const turnTimes = new Map<string, number>();
   const canonical = new Map<string, NormalizedMessage>();
+  const serverRows = new Set(server);
+  const pageTurns = new Map<string, { maximum: number; shift?: number }>();
   for (const message of [...server, ...realtime]) {
     const position = positionOf(message);
     if (!position) continue;
     const turn = turnKey(message, position);
     if (!turnTimes.has(turn)) turnTimes.set(turn, Date.parse(position.turnStartedAt));
     if (!canonical.has(message.id)) canonical.set(message.id, message);
+    if (position.orderScope && serverRows.has(message)) {
+      const known = pageTurns.get(turn);
+      pageTurns.set(turn, { maximum: Math.max(known?.maximum ?? -Infinity, position.itemIndex) });
+    }
+  }
+  for (const live of realtime) {
+    const stored = canonical.get(live.id), a = stored && positionOf(stored), b = positionOf(live);
+    if (a?.orderScope && b && !b.orderScope && a.turnId === b.turnId) {
+      const turn = pageTurns.get(turnKey(live, b));
+      if (turn) turn.shift = a.itemIndex - b.itemIndex;
+    }
   }
   const nativeKey = (message: NormalizedMessage): OrderKey | null => {
     const source = canonical.get(message.id) ?? message;
     const position = positionOf(source);
     if (!position) return null;
     const turn = turnKey(source, position);
-    return { time: turnTimes.get(turn) ?? Date.parse(position.turnStartedAt), turn, item: position.itemIndex };
+    const pageTurn = pageTurns.get(turn);
+    const item = pageTurn && !position.orderScope
+      ? pageTurn.shift !== undefined ? position.itemIndex + pageTurn.shift : pageTurn.maximum + 1 + position.itemIndex
+      : position.itemIndex;
+    return { time: turnTimes.get(turn) ?? Date.parse(position.turnStartedAt), turn, item };
   };
 
   const keys = new Map<NormalizedMessage, OrderKey>();

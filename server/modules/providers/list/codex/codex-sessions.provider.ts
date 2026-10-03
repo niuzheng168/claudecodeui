@@ -2030,6 +2030,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       ...message,
       ...(raw?.nativePosition ? { nativePosition: raw.nativePosition } : {}),
       ...(raw?.forkAnchorId ? { forkAnchorId: raw.forkAnchorId } : {}),
+      ...(raw && 'historyBeforeCursor' in raw ? { historyBeforeCursor: raw.historyBeforeCursor } : {}),
     }));
   }
 
@@ -2254,6 +2255,7 @@ export class CodexSessionsProvider implements IProviderSessions {
 
     let result: CodexHistoryResult;
     let hasNewer: boolean | undefined;
+    let pageHasMore: boolean | undefined;
     try {
       const session = sessionsDb.getSessionById(sessionId);
       const providerSessionId = options.providerSessionId ?? session?.provider_session_id ?? sessionId;
@@ -2270,36 +2272,52 @@ export class CodexSessionsProvider implements IProviderSessions {
           });
         }
         try {
-          const thread = await codexAppServer.readThreadSnapshot(providerSessionId, {
-            client, afterPosition: options.afterPosition, maxItems: options.afterPosition ? Math.max(2, limit ?? 20) : undefined,
-            ...(options.afterPosition ? {
-              isVisibleItem: (item: AnyRecord) => projectCodexDaemonItem(item, '', options.afterPosition!.turnStartedAt)
-                .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')),
-            } : {}),
-          });
-          hasNewer = thread.hasNewer;
-          if (!thread || !Array.isArray(thread.turns)) {
-            throw new AppError('Codex daemon did not return complete thread history.', {
-              code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
-            });
-          }
-          const messages: AnyRecord[] = [];
-          for (const turn of thread.turns) {
-            const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
-            for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
-              // The existing edit/fork adapter relies on a legacy rollout.
-              // Do not advertise edit anchors for native-only histories.
-              messages.push(...projectCodexDaemonItem(
-                item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
-                {
-                  turnId: turn.id, turnStartedAt: timestamp, itemIndex: (turn.itemOffset ?? 0) + itemIndex,
-                  ...(Array.isArray(turn.itemCursors)
-                    ? { itemId: item.id, cursor: turn.itemCursors[itemIndex] } : {}),
-                },
-              ).map(raw => ({ ...raw, forkAnchorId: turn.id })));
+          if (options.nativePage) {
+            const thread = await codexAppServer.readThreadPage(providerSessionId, client, options.nativePage,
+              item => projectCodexDaemonItem(item, '', '1970-01-01T00:00:00.000Z')
+                .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')));
+            const messages: AnyRecord[] = [];
+            for (const entry of thread.records) {
+              messages.push(...projectCodexDaemonItem(entry.item, '', entry.turnStartedAt, {
+                turnId: entry.turnId, turnStartedAt: entry.turnStartedAt, itemIndex: entry.index,
+                itemId: entry.item.id, cursor: entry.ascCursor, orderScope: entry.orderScope,
+              }).map(raw => ({ ...raw, forkAnchorId: entry.turnId, historyBeforeCursor: entry.descCursor })));
             }
+            result = { messages };
+            pageHasMore = options.nativePage.direction === 'desc' && thread.more;
+            hasNewer = options.nativePage.direction === 'asc' && thread.more;
+          } else {
+            const thread = await codexAppServer.readThreadSnapshot(providerSessionId, {
+              client, afterPosition: options.afterPosition, maxItems: options.afterPosition ? Math.max(2, limit ?? 20) : undefined,
+              ...(options.afterPosition ? {
+                isVisibleItem: (item: AnyRecord) => projectCodexDaemonItem(item, '', options.afterPosition!.turnStartedAt)
+                  .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')),
+              } : {}),
+            });
+            hasNewer = thread.hasNewer;
+            if (!thread || !Array.isArray(thread.turns)) {
+              throw new AppError('Codex daemon did not return complete thread history.', {
+                code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
+              });
+            }
+            const messages: AnyRecord[] = [];
+            for (const turn of thread.turns) {
+              const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
+              for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
+                // The existing edit/fork adapter relies on a legacy rollout.
+                // Do not advertise edit anchors for native-only histories.
+                messages.push(...projectCodexDaemonItem(
+                  item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
+                  {
+                    turnId: turn.id, turnStartedAt: timestamp, itemIndex: (turn.itemOffset ?? 0) + itemIndex,
+                    ...(Array.isArray(turn.itemCursors)
+                      ? { itemId: item.id, cursor: turn.itemCursors[itemIndex] } : {}),
+                  },
+                ).map(raw => ({ ...raw, forkAnchorId: turn.id })));
+              }
+            }
+            result = { messages };
           }
-          result = { messages };
         } catch (error) {
           if (error instanceof AppError) throw error;
           throw new AppError(
@@ -2345,8 +2363,8 @@ export class CodexSessionsProvider implements IProviderSessions {
     const total = transcript.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
-    const { page, hasMore } = options.afterPosition
-      ? { page: transcript, hasMore: false }
+    const { page, hasMore } = options.afterPosition || options.nativePage
+      ? { page: transcript, hasMore: pageHasMore ?? false }
       : sliceTailPage(transcript, normalizedLimit, normalizedOffset);
 
     return {
@@ -2357,6 +2375,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       limit: normalizedLimit,
       tokenUsage: result.tokenUsage,
       ...(hasNewer !== undefined ? { hasNewer } : {}),
+      ...(options.nativePage ? { totalIsExact: !pageHasMore && options.nativePage.direction === 'desc' && options.nativePage.cursor === null } : {}),
     };
   }
 }

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import type { AnyRecord, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
+import type { AnyRecord, CodexHistoryPageRequest, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
 import { AppError, readObjectRecord, resolveCodexHomeDirectory } from '@/shared/index.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
@@ -412,6 +412,92 @@ async function readNativeSnapshot(
 
 // Used by CodexSessionsProvider for native history and legacy fork/edit operations.
 export const codexAppServer = {
+  /**
+   * Used by CodexSessionsProvider for cold/older/forward pages. Read newest
+   * native items directly, including inherited fork history, never all turns'
+   * items before returning the first screen. Each item is an atomic frame.
+   */
+  async readThreadPage(
+    threadId: string,
+    client: ICodexRpcClient,
+    page: CodexHistoryPageRequest,
+    isVisibleItem: (item: AnyRecord) => boolean,
+  ): Promise<AnyRecord> {
+    try {
+      const metadata = readObjectRecord(await client.request('thread/read', { threadId, includeTurns: false }));
+      if (metadata?.thread?.id !== threadId) throw new Error('wrong thread');
+      const records: AnyRecord[] = [];
+      const seenIds = new Set<string>(), seenCursors = new Set<string>();
+      let cursor = page.cursor, index = page.index, visible = 0, bytes = 0;
+      const deadline = Date.now() + 15_000;
+      do {
+        if (records.length >= 2000 || Date.now() > deadline) throw new Error('page budget');
+        const result = readObjectRecord(await client.request('thread/items/list', {
+          threadId, cursor, limit: 1, sortDirection: page.direction,
+        }));
+        if (!result || !Array.isArray(result.data) || result.data.length > 1
+          || !Object.hasOwn(result, 'nextCursor')) throw new Error('invalid page');
+        const next = nextHistoryCursor(result, seenCursors);
+        for (const entry of result.data) {
+          const item = readObjectRecord(entry.item);
+          if (!item || typeof item.id !== 'string' || !item.id || typeof item.type !== 'string'
+            || typeof entry.turnId !== 'string' || !entry.turnId || seenIds.has(item.id)
+            || typeof result.backwardsCursor !== 'string' || !result.backwardsCursor) throw new Error('invalid item');
+          seenIds.add(item.id);
+          bytes += Buffer.byteLength(JSON.stringify(entry));
+          if (bytes > 16 * 1024 * 1024) throw new Error('page byte budget');
+          records.push({
+            ...entry, index, orderScope: page.orderScope,
+            ascCursor: page.direction === 'asc' ? cursor : result.backwardsCursor,
+            descCursor: page.direction === 'desc' ? cursor : result.backwardsCursor,
+          });
+          index += page.direction === 'asc' ? 1 : -1;
+          if (isVisibleItem(item)) visible++;
+        }
+        if (result.data.length === 0 && next !== null) throw new Error('no progress');
+        cursor = next;
+      } while (cursor !== null && visible < page.limit && (visible < 2 || bytes < 4 * 1024 * 1024));
+      // Only metadata for the turns represented on this page is needed.
+      // Native item replies on older daemons do not include timestamps.
+      const wanted = new Set(records.map(entry => entry.turnId));
+      const turns = new Map<string, AnyRecord>();
+      let turnCursor: string | null = null;
+      const turnCursors = new Set<string>();
+      while (wanted.size) {
+        const result = readObjectRecord(await client.request('thread/turns/list', {
+          threadId, cursor: turnCursor, limit: 100, sortDirection: 'desc', itemsView: 'notLoaded',
+        }));
+        if (!result || !Array.isArray(result.data) || Date.now() > deadline) throw new Error('invalid turn page');
+        for (const turn of result.data) {
+          if (wanted.delete(turn.id)) turns.set(turn.id, turn);
+        }
+        turnCursor = nextHistoryCursor(result, turnCursors);
+        if (!wanted.size || turnCursor === null) break;
+        if (!result.data.length) throw new Error('no turn progress');
+      }
+      if (wanted.size) throw new Error('missing visible turn');
+      if (client.ownsProcess) {
+        const loaded = await client.request('thread/loaded/list', {});
+        if (!Array.isArray(loaded.data) || loaded.data.length) throw new Error('reader acquired a writer');
+      }
+      if (page.direction === 'desc') records.reverse();
+      return {
+        ...metadata.thread, records: records.map(entry => ({
+          ...entry, turnStartedAt: new Date(Number(turns.get(entry.turnId)?.startedAt ?? metadata.thread.createdAt ?? 0) * 1000).toISOString(),
+        })),
+        more: cursor !== null,
+      };
+    } catch (error) {
+      if (unsupportedMethod(error)) {
+        throw new AppError('This Codex runtime does not support native item paging. Update the node runtime.', {
+          code: 'CODEX_HISTORY_PAGING_UNSUPPORTED', statusCode: 409,
+        });
+      }
+      throw new AppError('Could not read this native history page. Retry the page without creating another fork.', {
+        code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
+      });
+    }
+  },
   /**
    * Used by CodexSessionsProvider with the selected native connection on every
    * platform. Without a connection, reads through the explicitly configured

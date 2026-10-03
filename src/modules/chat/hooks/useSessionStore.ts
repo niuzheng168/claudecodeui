@@ -54,6 +54,8 @@ export type SessionSlot = {
   tokenUsage: unknown;
   snapshotId?: string;
   syncCursor?: string;
+  beforeCursor?: string;
+  totalIsExact?: boolean;
   view?: SessionHistoryView;
   /** Last failed read; a failed request must not look like completed/empty history. */
   historyError?: string;
@@ -92,6 +94,8 @@ type SessionHistoryPage = {
   tokenUsage?: unknown;
   snapshotId?: string;
   syncCursor?: string;
+  beforeCursor?: string;
+  totalIsExact?: boolean;
   before?: string;
   after?: string;
   hasNewer?: boolean;
@@ -136,6 +140,8 @@ async function requestSessionHistoryPage(
     hasMore: Boolean(data.hasMore),
     ...(typeof data.snapshotId === 'string' ? { snapshotId: data.snapshotId } : {}),
     ...(typeof data.syncCursor === 'string' ? { syncCursor: data.syncCursor } : {}),
+    ...(typeof data.beforeCursor === 'string' ? { beforeCursor: data.beforeCursor } : {}),
+    ...(typeof data.totalIsExact === 'boolean' ? { totalIsExact: data.totalIsExact } : {}),
     ...(typeof data.before === 'string' ? { before: data.before } : {}),
     ...(typeof data.after === 'string' ? { after: data.after } : {}),
     ...(typeof data.hasNewer === 'boolean' ? { hasNewer: data.hasNewer } : {}),
@@ -540,7 +546,8 @@ async function refreshLatestSlotFromServer(
       if (oldSuffix.length !== nextRows.length || oldSuffix.some((row, index) => row !== nextRows[index])) {
         slot.serverMessages = [...slot.serverMessages.slice(0, anchorIndex), ...nextRows];
       }
-      slot.total = page.total;
+      slot.total = page.totalIsExact === false ? Math.max(slot.total, slot.serverMessages.length, page.total) : page.total;
+      slot.totalIsExact = page.totalIsExact;
       // The current page locates the oldest cached boundary even if newer
       // pages remain unread. Older paging will therefore never skip a gap.
       slot.offset = slot.serverMessages.length + (page.offset ?? 0);
@@ -582,7 +589,10 @@ async function refreshLatestSlotFromServer(
   if (!latestPage.hasMore) {
     nextServerMessages = latestPage.messages;
     nextHasMore = false;
-  } else if (previousServerMessages.length === 0) {
+  } else if (previousServerMessages.length === 0 || latestPage.beforeCursor) {
+    // A new native cursor chain (upgrade, restart or expired checkpoint) has
+    // its own positions. Adopt its bounded tail, not legacy offset bridging
+    // which would materialize the fork or combine incompatible seek points.
     nextServerMessages = latestPage.messages;
     nextHasMore = true;
   } else {
@@ -667,11 +677,13 @@ async function refreshLatestSlotFromServer(
   }
 
   slot.serverMessages = nextServerMessages;
-  slot.total = latestPage.total;
+  slot.total = latestPage.totalIsExact === false ? nextServerMessages.length : latestPage.total;
   slot.offset = nextServerMessages.length;
   slot.hasMore = nextHasMore;
   slot.snapshotId = latestPage.snapshotId;
   slot.syncCursor = latestPage.syncCursor;
+  slot.beforeCursor = latestPage.beforeCursor;
+  slot.totalIsExact = latestPage.totalIsExact;
   slot.hasNewer = false;
   slot.historyError = undefined;
   slot.status = 'idle';
@@ -724,6 +736,7 @@ export function useSessionStore(cacheOwner: string | null = null) {
       hasNewer: slot.hasNewer,
       offset: slot.offset, fetchedAt: slot.fetchedAt, snapshotId: slot.snapshotId,
       syncCursor: slot.syncCursor,
+      beforeCursor: slot.beforeCursor, totalIsExact: slot.totalIsExact,
       tokenUsage: slot.tokenUsage, view: slot.view,
     });
   }, [persistence]);
@@ -777,6 +790,8 @@ export function useSessionStore(cacheOwner: string | null = null) {
       slot.fetchedAt = cached.fetchedAt;
       slot.snapshotId = cached.snapshotId;
       slot.syncCursor = cached.syncCursor;
+      slot.beforeCursor = cached.beforeCursor;
+      slot.totalIsExact = cached.totalIsExact;
       slot.tokenUsage = cached.tokenUsage;
       slot.view = cached.view;
       slot.status = 'idle';
@@ -845,6 +860,8 @@ export function useSessionStore(cacheOwner: string | null = null) {
         slot.hasNewer = data.hasNewer;
         slot.snapshotId = data.snapshotId;
         slot.syncCursor = data.syncCursor;
+        slot.beforeCursor = data.beforeCursor;
+        slot.totalIsExact = data.totalIsExact;
         slot.historyError = undefined;
         slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
         slot.fetchedAt = Date.now();
@@ -890,6 +907,27 @@ export function useSessionStore(cacheOwner: string | null = null) {
 
       try {
         slot.historyError = undefined;
+        if (slot.beforeCursor && slot.serverMessages.length > 0) {
+          const requestedMessages = slot.serverMessages;
+          const before = slot.serverMessages[0].id;
+          const data = await requestSessionHistoryPage(sessionId, {
+            limit: opts.limit ?? SESSION_MESSAGES_PAGE_SIZE, offset: 0, before, beforeCursor: slot.beforeCursor,
+          });
+          if (slot.serverMessages !== requestedMessages) return { slot, prependedCount: 0 };
+          if (data.before !== before || data.messages.some(message => message.id === before)) throw new Error('Invalid older native page boundary.');
+          const older = mergeOlderServerPage(slot.serverMessages, data.messages);
+          if (!older.prependedCount && data.hasMore) throw new Error('Native page made no progress.');
+          slot.serverMessages = older.messages;
+          slot.beforeCursor = data.beforeCursor;
+          slot.hasMore = data.hasMore;
+          slot.total = Math.max(slot.total, slot.serverMessages.length, data.total);
+          slot.totalIsExact = data.totalIsExact;
+          slot.offset = slot.serverMessages.length;
+          recomputeMergedIfNeeded(slot);
+          notify(sessionId);
+          await persist(sessionId, slot);
+          return { slot, prependedCount: older.prependedCount };
+        }
         if (slot.snapshotId && slot.serverMessages.length > 0) {
           const before = slot.serverMessages[0].id;
           const data = await requestSessionHistoryPage(sessionId, {
@@ -997,7 +1035,22 @@ export function useSessionStore(cacheOwner: string | null = null) {
         if (changed || slot.historyError) notify(sessionId);
         if (changed) persist(sessionId, slot);
         return { slot, prependedCount };
-      } catch (error) {
+      } catch (caught) {
+        let error = caught;
+        if (slot.beforeCursor && ['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED']
+          .includes((error as { code?: string }).code ?? '')) {
+          // Recover an expired native chain through a bounded latest-page
+          // refresh; never fall through to whole-history offset reads.
+          try {
+            await refreshLatestSlotFromServer(sessionId, slot, SESSION_MESSAGES_PAGE_SIZE, canRequest);
+            recomputeMergedIfNeeded(slot);
+            notify(sessionId);
+            await persist(sessionId, slot);
+            return { slot, prependedCount: 0 };
+          } catch (refreshError) {
+            error = refreshError;
+          }
+        }
         console.error(`[SessionStore] fetchMore failed for ${sessionId}:`, error);
         slot.historyError = error instanceof Error ? error.message : String(error);
         notify(sessionId);
@@ -1047,6 +1100,7 @@ export function useSessionStore(cacheOwner: string | null = null) {
     slot.offset = slot.serverMessages.length;
     slot.snapshotId = undefined;
     slot.syncCursor = undefined;
+    slot.beforeCursor = undefined;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
     persist(sessionId, slot);
