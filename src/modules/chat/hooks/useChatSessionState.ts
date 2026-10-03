@@ -1206,19 +1206,37 @@ export function useChatSessionState({
     const scrollRestoreState = container ? captureScrollRestoreState(container) : null;
 
     try {
-      const slot = await sessionStore.fetchFromServer(requestSessionId, {
-        limit: null,
-        offset: 0,
-        ...(existingSlot?.snapshotId ? { snapshotId: existingSlot.snapshotId } : {}),
-        canRequest: () => (
-          isActiveRef.current
-          && activeSessionIdRef.current === requestSessionId
-        ),
-      });
+      const canRequest = () => isActiveRef.current && activeSessionIdRef.current === requestSessionId;
+      let slot: ReturnType<SessionStore['getSessionSlot']> | null = existingSlot;
+      if (slot?.beforeCursor) {
+        while (slot.hasMore && canRequest()) {
+          const result = await sessionStore.fetchMore(requestSessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, canRequest });
+          slot = result.slot;
+          if (slot.historyError || !result.prependedCount) break;
+          setTotalMessages(slot.total);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      } else {
+        slot = await sessionStore.fetchFromServer(requestSessionId, {
+          // Retrying a failed cold load must not ask for the entire fork.
+          limit: existingSlot?.fetchedAt ? null : SESSION_MESSAGES_PAGE_SIZE,
+          offset: 0,
+          ...(existingSlot?.snapshotId ? { snapshotId: existingSlot.snapshotId } : {}),
+          canRequest: () => (
+            isActiveRef.current
+            && activeSessionIdRef.current === requestSessionId
+          ),
+        });
+        while (slot?.beforeCursor && slot.hasMore && canRequest()) {
+          const result = await sessionStore.fetchMore(requestSessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, canRequest });
+          slot = result.slot;
+          if (slot.historyError || !result.prependedCount) break;
+        }
+      }
 
       if (activeSessionIdRef.current !== requestSessionId || olderRequestRef.current !== request) return;
 
-      if (slot?.fetchedAt && slot.status !== 'error') {
+      if (slot?.fetchedAt && slot.status !== 'error' && !slot.historyError && !slot.hasMore) {
         if (scrollRestoreState) {
           pendingScrollRestoreRef.current = scrollRestoreState;
         }
@@ -1270,11 +1288,23 @@ export function useChatSessionState({
       return [];
     }
 
-    await sessionStore.fetchFromServer(sessionId, {
-      limit: null,
-      offset: 0,
-      canRequest: () => activeSessionIdRef.current === sessionId,
-    });
+    const canRequest = () => activeSessionIdRef.current === sessionId;
+    let slot = sessionStore.getSessionSlot(sessionId);
+    if (slot?.beforeCursor) {
+      while (slot.hasMore && canRequest()) {
+        const result = await sessionStore.fetchMore(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, canRequest });
+        slot = result.slot;
+        if (slot.historyError || !result.prependedCount) throw new Error(slot.historyError || 'History export could not advance.');
+      }
+      if (!canRequest()) throw new Error('The selected conversation changed during export.');
+    } else {
+      const result = await sessionStore.fetchFromServer(sessionId, {
+        limit: null,
+        offset: 0,
+        canRequest,
+      });
+      if (!result || result.status === 'error') throw new Error(result?.historyError || 'History export failed.');
+    }
 
     return normalizedToChatMessages(sessionStore.getMessages(sessionId));
   }, [sessionStore]);

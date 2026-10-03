@@ -8,6 +8,7 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import { sessionHistorySnapshots } from '@/modules/providers/services/session-history-snapshots.service.js';
+import { nativeHistoryPages } from '@/modules/providers/services/native-history-pages.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -416,7 +417,7 @@ export const sessionsService = {
 
   async fetchHistory(
     sessionId: string,
-    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after' | 'syncCursor'> = {},
+    options: Pick<FetchHistoryOptions, 'limit' | 'offset' | 'snapshotId' | 'before' | 'after' | 'syncCursor' | 'beforeCursor'> = {},
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -453,6 +454,17 @@ export const sessionsService = {
     const codexMode = provider === 'codex' ? await readCodexHistoryMode(providerSessionId) : null;
     const nativeCodexHistory = Boolean(codexMode && codexMode !== 'legacy');
     if (nativeCodexHistory) {
+      const source = JSON.stringify([getDatabasePath(), sessionId, provider, providerSessionId, projectPath, session.jsonl_path]);
+      if (options.syncCursor?.startsWith('np.') || options.beforeCursor
+        || (requestedLimit !== null && requestedLimit >= 2 && requestedLimit <= 100
+          && requestedOffset === 0 && !options.snapshotId && !options.after && !options.before)) {
+        return nativeHistoryPages.page({
+          source, options,
+          load: nativePage => providerSessions.fetchHistory(sessionId, {
+            projectPath, providerSessionId, nativePage, limit: requestedLimit, offset: 0,
+          }),
+        });
+      }
       // Resolve the current database mapping before trusting a cached handle.
       // A cursor from another project/node mapping is never a fallback.
       const result = await sessionHistorySnapshots.page({

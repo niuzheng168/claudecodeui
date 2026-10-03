@@ -9,7 +9,7 @@ import type { CachedSessionHistory, ChatMessage, ComposerHistoryMessage, LLMProv
 export function nativeTranscriptPositionOf(message: NormalizedMessage): NativeTranscriptPosition | null {
   const position = message.nativePosition;
   return position && typeof position.turnId === 'string' && position.turnId
-    && Number.isSafeInteger(position.itemIndex) && position.itemIndex >= 0
+    && Number.isSafeInteger(position.itemIndex) && (position.itemIndex >= 0 || Boolean(position.orderScope))
     && Number.isFinite(Date.parse(position.turnStartedAt)) ? position : null;
 }
 
@@ -18,7 +18,7 @@ export function compareNativeTranscriptPositions(left: NormalizedMessage, right:
   if (left.provider !== right.provider || left.sessionId !== right.sessionId) return null;
   const a = nativeTranscriptPositionOf(left), b = nativeTranscriptPositionOf(right);
   if (!a || !b) return null;
-  if (a.turnId === b.turnId) return a.itemIndex - b.itemIndex;
+  if (a.turnId === b.turnId) return a.orderScope === b.orderScope ? a.itemIndex - b.itemIndex : null;
   const difference = Date.parse(a.turnStartedAt) - Date.parse(b.turnStartedAt);
   return difference || null;
 }
@@ -518,6 +518,7 @@ function validHistory(value: CachedSessionHistory, sessionId: string): boolean {
     && (value.hasNewer === undefined || typeof value.hasNewer === 'boolean')
     && (value.snapshotId === undefined || (typeof value.snapshotId === 'string' && value.snapshotId.length <= 64))
     && (value.syncCursor === undefined || (typeof value.syncCursor === 'string' && value.syncCursor.length <= 16384))
+    && (value.beforeCursor === undefined || (typeof value.beforeCursor === 'string' && value.beforeCursor.length <= 16384))
     && (value.view === undefined || (Number.isFinite(value.view.visibleCount) && value.view.visibleCount >= -1
       && Number.isFinite(value.view.scrollTop) && value.view.scrollTop >= 0 && typeof value.view.scrolledUp === 'boolean'
       && (value.view.anchorId === undefined || (typeof value.view.anchorId === 'string' && value.view.anchorId.length <= 4096))
@@ -550,6 +551,7 @@ function historyReopenWindow(value: CachedSessionHistory): { value: CachedSessio
   return {
     value: {
       ...value, messages, hasMore: true, offset: value.offset - start,
+      beforeCursor: typeof messages[0]?.historyPageBefore === 'string' ? messages[0].historyPageBefore : undefined,
       ...(value.view ? {
         view: {
           ...value.view, visibleCount: messages.length,

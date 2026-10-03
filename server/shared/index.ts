@@ -27,7 +27,7 @@ export { parseFrontMatter } from './frontmatter.js';
 // Providers use the shared session/history contracts and projections through this barrel.
 export type { IProviderSessions, IProviderSessionSynchronizer, IProviderFork } from './interfaces.js';
 export type {
-  FetchHistoryOptions, FetchHistoryResult, MemoryCitation, NormalizedMessage,
+  CodexHistoryPageRequest, FetchHistoryOptions, FetchHistoryResult, MemoryCitation, NormalizedMessage,
   SubagentActivity, SubagentInfo,
 } from './types.js';
 export {

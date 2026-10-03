@@ -408,6 +408,17 @@ export type NativeTranscriptPosition = {
   itemId?: string;
   /** Undefined on older backends without item pagination; null identifies the first item. */
   cursor?: string | null;
+  /** Page-local native ordering domain; negative indexes are valid within this signed cursor chain. */
+  orderScope?: string;
+};
+
+/** Internal native page request, reconstructed from a server-signed cursor rather than query JSON. */
+export type CodexHistoryPageRequest = {
+  direction: 'asc' | 'desc';
+  cursor: string | null;
+  index: number;
+  orderScope: string;
+  limit: number;
 };
 
 /**
@@ -630,6 +641,10 @@ export type FetchHistoryOptions = {
   syncCursor?: string;
   /** Internal native reader boundary, resolved from a session-scoped server snapshot, never from query JSON. */
   afterPosition?: NativeTranscriptPosition;
+  /** Native first/older page; never materializes a full snapshot. */
+  nativePage?: CodexHistoryPageRequest;
+  /** Server-signed exclusive older-page boundary. */
+  beforeCursor?: string;
 };
 
 /**
@@ -654,6 +669,10 @@ export type FetchHistoryResult = {
   hasNewer?: boolean;
   /** Server-signed resume checkpoint for the final native item in this page. */
   syncCursor?: string;
+  /** Server-signed exclusive older-page boundary. */
+  beforeCursor?: string;
+  /** False when total is only the number discovered by bounded native paging. */
+  totalIsExact?: boolean;
 };
 
 // ---------------------------
