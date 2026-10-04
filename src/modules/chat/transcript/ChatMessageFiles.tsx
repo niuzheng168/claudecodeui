@@ -3,6 +3,8 @@ import { useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { ChatAttachment } from '@/shared/types';
+import { getAudioMimeType } from '@/shared/utils';
+import { ChatAudioPreview } from '@/modules/chat/transcript/ChatAudioPreview';
 
 type ChatMessageFilesProps = {
   files: ChatAttachment[];
@@ -27,13 +29,14 @@ const getFileIcon = (file: ChatAttachment) => {
 function ChatMessageFile({ file }: { file: ChatAttachment }) {
   const [isDownloading, setIsDownloading] = useState(false);
   const name = file.name || file.path?.split(/[\\/]/).pop() || 'Attached file';
+  const storedName = file.path?.split(/[\\/]/).pop();
   const FileTypeIcon = getFileIcon(file);
   const size = formatFileSize(file.size);
+  const declaredMime = file.mimeType?.split(';', 1)[0].trim().toLowerCase();
+  const audioMime = getAudioMimeType(name) ?? (declaredMime?.startsWith('audio/') ? declaredMime : undefined);
 
   const download = async () => {
-    if (!file.path || isDownloading) return;
-    const storedName = file.path.split(/[\\/]/).pop();
-    if (!storedName) return;
+    if (!storedName || isDownloading) return;
 
     setIsDownloading(true);
     try {
@@ -51,6 +54,26 @@ function ChatMessageFile({ file }: { file: ChatAttachment }) {
       setIsDownloading(false);
     }
   };
+
+  if (audioMime && storedName) {
+    return (
+      <ChatAudioPreview source={{ kind: 'attachment', value: storedName, mimeType: audioMime }} name={name}>
+        <button
+          type="button"
+          onClick={() => void download()}
+          disabled={isDownloading}
+          className="flex w-full min-w-0 items-center gap-2 text-left hover:text-primary disabled:cursor-default"
+          aria-label={`Download ${name}`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium" title={name}>{name}</span>
+            {size && <span className="block text-xs text-muted-foreground">{size}</span>}
+          </span>
+          <DownloadIcon className={`h-4 w-4 shrink-0 ${isDownloading ? 'animate-pulse' : ''}`} aria-hidden />
+        </button>
+      </ChatAudioPreview>
+    );
+  }
 
   return (
     <button
@@ -79,7 +102,7 @@ function ChatMessageFile({ file }: { file: ChatAttachment }) {
 
 /**
  * Rendered by chat's MessageComponent to list the non-image file attachments
- * on a user turn as downloadable cards.
+ * on a user turn as downloadable cards, with in-place players for audio.
  */
 export default function ChatMessageFiles({ files }: ChatMessageFilesProps) {
   if (!files?.length) return null;

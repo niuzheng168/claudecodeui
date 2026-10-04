@@ -411,7 +411,7 @@ export const api = {
         headers: {}, // Let browser set Content-Type for FormData
         body: formData,
       }),
-    file: (storedName: string) => get(`/api/assets/files/${encodeURIComponent(storedName)}`),
+    file: (storedName: string, options: ApiRequestOptions = {}) => get(`/api/assets/files/${encodeURIComponent(storedName)}`, options),
     image: (filename: string, options: ApiRequestOptions = {}) =>
       get(`/api/assets/images/${encodeURIComponent(filename)}`, options),
   },

@@ -307,6 +307,13 @@ export type ChatAttachment = {
   size?: number;
 };
 
+/** A chat audio preview's public URL, authorized project path, or stored attachment name and playback MIME type. */
+export type AudioPreviewSource = {
+  kind: 'remote' | 'file' | 'attachment';
+  value: string;
+  mimeType: string;
+};
+
 /** A chat attachment that is an image, extending ChatAttachment with the inline base64 data URL that Claude history uses when no stored path is available. */
 export type ChatImage = {
   /** Inline data URL (Claude history stores image attachments as base64). */

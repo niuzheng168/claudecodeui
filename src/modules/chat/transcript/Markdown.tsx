@@ -10,12 +10,13 @@ import { useTranslation } from 'react-i18next';
 
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
-import { copyTextToClipboard } from '@/shared/utils';
+import { copyTextToClipboard, resolveAudioSource } from '@/shared/utils';
 import { SyntaxHighlighter } from '@/shared/syntaxHighlighter';
 import { usePaletteOps } from '@/modules/command-palette';
 import { buildSyntaxTheme } from '@/modules/chat/utils/syntaxHighlightTheme';
 import type { PrismStyleSheet } from '@/modules/chat/utils/syntaxHighlightTheme';
 import { MarkdownImage } from '@/modules/chat/transcript/MarkdownImage';
+import { ChatAudioPreview } from '@/modules/chat/transcript/ChatAudioPreview';
 import { CodexDirective } from '@/modules/chat/transcript/CodexDirective';
 import { remarkCodexDirectives } from '@/modules/chat/utils/remarkCodexDirectives';
 
@@ -82,11 +83,11 @@ const MATH_DELIMITER = /\$\$|\\\(|\\\[/;
 
 const EMPTY_PLUGINS: never[] = [];
 
-// Image sources are interpreted only by MarkdownImage's explicit scheme
-// allowlist/project reader, never spread into the DOM. Keep the default
-// sanitizer for links; retaining file:/drive paths here must not enable them.
+// Image sources and recognized audio links use their explicit scheme allowlists
+// and project readers. Other links retain the default Markdown URL sanitizer.
 const transformMarkdownUrl: UrlTransform = (url, key, node) =>
-  node.tagName === 'img' && key === 'src' ? url : defaultUrlTransform(url);
+  (node.tagName === 'img' && key === 'src') || (node.tagName === 'a' && key === 'href' && resolveAudioSource(url))
+    ? url : defaultUrlTransform(url);
 
 type CodeBlockProps = {
   node?: any;
@@ -309,6 +310,26 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         // Prefer the href when it is a real path; otherwise fall back to the
         // link text, since models often emit `[src/foo.ts]()` with an empty href.
         const linkText = childrenToText(linkChildren);
+        const audioSource = resolveAudioSource(href);
+        if (audioSource) {
+          const name = linkText || audioSource.value.split(/[\\/]/).pop() || audioSource.value;
+          return (
+            <ChatAudioPreview source={audioSource} name={name}>
+              <a
+                href={href}
+                className="text-blue-600 hover:underline dark:text-blue-400"
+                target={audioSource.kind === 'remote' ? '_blank' : undefined}
+                rel={audioSource.kind === 'remote' ? 'noopener noreferrer' : undefined}
+                onClick={audioSource.kind === 'file' ? (event) => {
+                  event.preventDefault();
+                  openFileInEditor(audioSource.value);
+                } : undefined}
+              >
+                {linkChildren || name}
+              </a>
+            </ChatAudioPreview>
+          );
+        }
         const hrefPath = filePathFromHref(href);
         const fileRef = looksLikeFilePath(hrefPath)
           ? hrefPath

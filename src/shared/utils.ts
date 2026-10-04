@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { CachedSessionHistory, ChatMessage, ComposerHistoryMessage, LLMProvider, NativeTranscriptPosition, NormalizedMessage, Project, ProjectSession, SlashCommand } from '@/shared/types';
+import type { AudioPreviewSource, CachedSessionHistory, ChatMessage, ComposerHistoryMessage, LLMProvider, NativeTranscriptPosition, NormalizedMessage, Project, ProjectSession, SlashCommand } from '@/shared/types';
 
 //----------------- NATIVE TRANSCRIPT ORDER ------------
 
@@ -221,6 +221,72 @@ export function withFrontendAssetBasePath(value: string): string {
 export function deploymentStorageKey(key: string): string {
   const base = getDeploymentBasePath();
   return base === '/' ? key : `${key}:${base.replace(/^\/|\/$/g, '')}`;
+}
+
+// ---------------------------
+
+//----------------- AUDIO PREVIEW SOURCES ------------
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  opus: 'audio/opus',
+  oga: 'audio/ogg',
+  ogg: 'audio/ogg',
+  weba: 'audio/webm',
+};
+
+/** Chat and code-editor previews share the same extension-to-MIME mapping for playable audio files. */
+export function getAudioMimeType(filename: string): string | undefined {
+  const extension = /\.([a-z\d]+)$/i.exec(filename)?.[1].toLowerCase() ?? '';
+  return Object.prototype.hasOwnProperty.call(AUDIO_MIME_TYPES, extension) ? AUDIO_MIME_TYPES[extension] : undefined;
+}
+
+/** Chat Markdown accepts public HTTP(S) audio or literal file paths, leaving local authorization to the project API. */
+export function resolveAudioSource(href?: string): AudioPreviewSource | null {
+  const value = href?.trim();
+  if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null;
+
+  if (/^https?:\/\//i.test(value) || value.startsWith('//')) {
+    try {
+      const url = new URL(value, 'https://audio.invalid');
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+      const pathname = decodeURIComponent(url.pathname);
+      if (/[\u0000-\u001f\u007f]/.test(pathname)) return null;
+      const mimeType = getAudioMimeType(pathname);
+      return mimeType ? { kind: 'remote', value, mimeType } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  let filePath = value;
+  if (/^file:/i.test(value)) {
+    try {
+      const url = new URL(value);
+      if (url.hostname && url.hostname !== 'localhost') return null;
+      filePath = url.pathname;
+      if (/^\/[a-z]:\//i.test(filePath)) filePath = filePath.slice(1);
+    } catch {
+      return null;
+    }
+  } else if (/^sandbox:\/(?!\/)/i.test(value)) {
+    filePath = value.slice('sandbox:'.length);
+  } else if (/^[a-z][a-z\d+.-]*:/i.test(value) && !/^[a-z]:(?:[\\/]|%5c|%2f)/i.test(value)) {
+    return null;
+  }
+
+  try {
+    filePath = decodeURIComponent(filePath.split(/[?#]/, 1)[0]);
+  } catch {
+    return null;
+  }
+  if (!filePath || /[\u0000-\u001f\u007f]/.test(filePath)) return null;
+  const mimeType = getAudioMimeType(filePath);
+  return mimeType ? { kind: 'file', value: filePath, mimeType } : null;
 }
 
 // ---------------------------

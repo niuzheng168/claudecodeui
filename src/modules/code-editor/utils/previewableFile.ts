@@ -1,4 +1,5 @@
 import type { PreviewKind } from '@/shared/types';
+import { getAudioMimeType } from '@/shared/utils';
 
 // Some binary files can't be edited as text, but the browser can still render
 // them natively (images, PDFs, audio, video). For those we show an inline
@@ -31,16 +32,6 @@ const EXTENSION_MIME: Record<string, string> = {
   ogv: 'video/ogg',
   mov: 'video/quicktime',
   m4v: 'video/x-m4v',
-  // Audio
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  m4a: 'audio/mp4',
-  aac: 'audio/aac',
-  flac: 'audio/flac',
-  opus: 'audio/opus',
-  oga: 'audio/ogg',
-  ogg: 'audio/ogg',
-  weba: 'audio/webm',
 };
 
 const extensionOf = (filename: string): string => filename.split('.').pop()?.toLowerCase() ?? '';
@@ -54,11 +45,11 @@ const kindForMime = (mime: string): PreviewKind | null => {
 };
 
 export const getPreviewKind = (filename: string): PreviewKind | null => {
-  const mime = EXTENSION_MIME[extensionOf(filename)];
+  const mime = EXTENSION_MIME[extensionOf(filename)] ?? getAudioMimeType(filename);
   return mime ? kindForMime(mime) : null;
 };
 
 // MIME type to fall back to when the server returns no/generic Content-Type.
 // Returns undefined for non-previewable extensions.
 export const getPreviewMimeType = (filename: string): string | undefined =>
-  EXTENSION_MIME[extensionOf(filename)];
+  EXTENSION_MIME[extensionOf(filename)] ?? getAudioMimeType(filename);

@@ -44,6 +44,12 @@
     "unavailable": "无法加载图片，请检查节点连接和文件路径。",
     "retry": "重试加载图片"
   },
+  "audio": {
+    "loading": "正在加载音频…",
+    "unavailable": "无法播放音频，请检查节点连接、文件路径或音频格式。",
+    "retry": "重试加载音频",
+    "player": "音频播放器：{{name}}"
+  },
   "codeBlock": {
     "copy": "复制",
     "copied": "已复制",

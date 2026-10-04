@@ -44,6 +44,12 @@
     "unavailable": "Image unavailable. Check the node connection and file path.",
     "retry": "Retry image"
   },
+  "audio": {
+    "loading": "Loading audio…",
+    "unavailable": "Audio unavailable. Check the node connection, file path, or audio format.",
+    "retry": "Retry audio",
+    "player": "Audio player: {{name}}"
+  },
   "codeBlock": {
     "copy": "Copy",
     "copied": "Copied",
