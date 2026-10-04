@@ -4,6 +4,21 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import type { ProviderModelsDefinition } from '@/shared/types';
+
+const providerApiMocks = vi.hoisted(() => ({ models: vi.fn() }));
+
+const managedCodexModels: ProviderModelsDefinition = {
+  DEFAULT: 'gpt-6.1-sol',
+  OPTIONS: ['gpt-6.1-sol', 'codex/gpt-6-astra'].map((value) => ({
+    value,
+    label: value,
+    effort: {
+      default: 'max',
+      values: ['low', 'medium', 'high', 'xhigh', 'max'].map((effort) => ({ value: effort })),
+    },
+  })),
+};
 
 /**
  * The four per-provider default models used to be four useState slots with four
@@ -27,7 +42,7 @@ vi.mock('@/shared/api', () => ({
       savePreferences: () => okJson({ success: true, preferences: {} }),
     },
     providers: {
-      models: () => okJson({ success: true, data: null }),
+      models: providerApiMocks.models,
       capabilities: () => okJson({ success: true, data: null }),
       sessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveModel: () => okJson({ success: true, data: null }),
@@ -50,13 +65,48 @@ const renderProviderState = async () => {
 
 beforeEach(() => {
   localStorage.clear();
+  providerApiMocks.models.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
   resetUserPreferences();
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.resetModules();
+});
+
+test('managed chat offers Astra, persists its selection, and restores it for the next chat', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: provider === 'codex' ? { models: managedCodexModels } : null,
+  }));
+  const { result, unmount } = await renderProviderState();
+
+  await waitFor(() => {
+    assert.equal(result.current.currentProviderModelOptions.length, 2);
+  });
+  assert.equal(result.current.currentProviderModel, 'gpt-6.1-sol');
+  assert.deepEqual(result.current.currentProviderModelOptions.map(({ value }) => value), [
+    'gpt-6.1-sol', 'codex/gpt-6-astra',
+  ]);
+
+  await act(async () => {
+    await result.current.selectProviderModel('codex', 'codex/gpt-6-astra');
+  });
+  assert.equal(result.current.currentProviderModel, 'codex/gpt-6-astra');
+  assert.equal(localStorage.getItem('codex-model'), 'codex/gpt-6-astra');
+  assert.deepEqual(result.current.currentProviderEffortOptions.map(({ value }) => value), [
+    'low', 'medium', 'high', 'xhigh', 'max',
+  ]);
+
+  unmount();
+  const restored = await renderProviderState();
+  await waitFor(() => {
+    assert.equal(restored.result.current.providerModelsLoading, false);
+  });
+  assert.equal(restored.result.current.currentProviderModel, 'codex/gpt-6-astra');
 });
 
 test('each provider gets its own model from its own storage key', async () => {

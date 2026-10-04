@@ -19,13 +19,16 @@ test('Codey-managed nodes expose the current upstream model ID and context', () 
   assert.equal(catalog.DEFAULT, 'gpt-6.1-sol');
   assert.deepEqual(
     catalog.OPTIONS.map(({ value, label }) => ({ value, label })),
-    [{
-      value: 'gpt-6.1-sol',
-      label: 'GPT-6.1 Sol (922K context)',
-    }],
+    [
+      { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol (922K context)' },
+      { value: 'codex/gpt-6-astra', label: 'GPT-6 Astra (872K context)' },
+    ],
   );
-  assert.deepEqual(
-    catalog.OPTIONS[0]?.effort?.values.map(({ value }) => value),
-    ['low', 'medium', 'high', 'xhigh', 'max'],
-  );
+  for (const option of catalog.OPTIONS) {
+    assert.equal(option.effort?.default, 'max');
+    assert.deepEqual(
+      option.effort?.values.map(({ value }) => value),
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+    );
+  }
 });

@@ -114,6 +114,21 @@ export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
         ],
       },
     },
+    {
+      value: 'codex/gpt-6-astra',
+      label: 'GPT-6 Astra (872K context)',
+      description: 'Use GPT-6 Astra directly when supported by your upstream account.',
+      effort: {
+        default: 'max',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
   ],
   DEFAULT: 'gpt-6.1-sol',
 };
