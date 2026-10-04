@@ -106,7 +106,6 @@ export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
       effort: {
         default: 'max',
         values: [
-          { value: 'none' },
           { value: 'low' },
           { value: 'medium' },
           { value: 'high' },
