@@ -39,7 +39,7 @@ const config: CodeyVoiceConfig = {
     { id: 'mai-transcribe', label: 'MAI Transcribe', configured: true },
   ],
 };
-const fullModelLabel = 'GPT-6 Astra (872K context)';
+const fullModelLabel = 'GPT-6.1 Sol (922K context)';
 const originalViewport = { width: window.innerWidth, height: window.innerHeight };
 
 afterEach(() => {
@@ -71,7 +71,7 @@ function fixture({ hasInput = false, state = 'idle', error = null, rewritten = f
           onRewrite={callbacks.rewrite} onCancel={callbacks.cancelRewrite}
           onUndo={callbacks.undoRewrite} onRestore={callbacks.restoreRewrite} />}
         modelControl={<ComposerModelMenu effort="max" effortOptions={hasModelOptions ? [{ value: 'high' }, { value: 'max' }] : []}
-          onSelectEffort={callbacks.effort} model="gpt-6-astra" modelOptions={hasModelOptions ? [{ value: 'gpt-6-astra', label: fullModelLabel }] : []}
+          onSelectEffort={callbacks.effort} model="gpt-6.1-sol" modelOptions={hasModelOptions ? [{ value: 'gpt-6.1-sol', label: fullModelLabel }] : []}
           onSelectModel={callbacks.model} modelsLoading={false} />}
         permissionControl={<ComposerPermissionMenu permissionMode="default" permissionModes={['default', 'plan']}
           providerLabel="Codex" onSelectPermissionMode={callbacks.permission} />}
@@ -283,7 +283,7 @@ test('model and effort values are unchanged by shortening their toolbar presenta
   fireEvent.click(screen.getByRole('button', { name: /Select model and reasoning effort/ }));
   fireEvent.click(screen.getByRole('menuitem', { name: fullModelLabel }));
   fireEvent.click(screen.getByRole('menuitemradio', { name: fullModelLabel }));
-  expect(f.callbacks.model).toHaveBeenCalledWith('gpt-6-astra');
+  expect(f.callbacks.model).toHaveBeenCalledWith('gpt-6.1-sol');
   expect(f.callbacks.submit).not.toHaveBeenCalled();
 });
 

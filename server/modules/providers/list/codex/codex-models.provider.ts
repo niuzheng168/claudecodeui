@@ -100,12 +100,13 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
 export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
-      value: 'gpt-6-astra',
-      label: 'GPT-6 Astra (872K context)',
-      description: 'Codey Codex model configured with an 872,000-token context window.',
+      value: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol (922K context)',
+      description: 'Current Codey Codex model with a 922,000-token prompt context.',
       effort: {
         default: 'max',
         values: [
+          { value: 'none' },
           { value: 'low' },
           { value: 'medium' },
           { value: 'high' },
@@ -115,7 +116,7 @@ export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
       },
     },
   ],
-  DEFAULT: 'gpt-6-astra',
+  DEFAULT: 'gpt-6.1-sol',
 };
 
 /** Used by the Codex adapter and its tests to select the deployment-specific catalog. */

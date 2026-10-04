@@ -6,6 +6,7 @@ import { useTasksSettings } from '@/modules/task-master';
 import { useAuth } from '@/modules/auth';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
+import { TranscriptFollowupContext } from '@/modules/chat/context/TranscriptFollowupContext';
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
@@ -197,6 +198,8 @@ function ChatInterface({
   const {
     input,
     setInput,
+    insertFollowupPrompt,
+    composerFocusRequest,
     textareaRef,
     inputHighlightRef,
     isTextareaExpanded,
@@ -424,6 +427,7 @@ function ChatInterface({
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
+      <TranscriptFollowupContext.Provider value={editingAnchorId ? null : insertFollowupPrompt}>
       <div className="flex h-full min-h-0 flex-col">
         <SessionGoalBanner
           key={goalSessionId}
@@ -567,6 +571,7 @@ function ChatInterface({
           inputHighlightRef={inputHighlightRef}
           renderInputWithMentions={renderInputWithMentions}
           textareaRef={textareaRef}
+          focusRequest={composerFocusRequest}
           input={input}
           onVoiceTranscript={handleVoiceTranscript}
           onReplaceVoiceDraft={replaceVoiceDraft}
@@ -604,6 +609,7 @@ function ChatInterface({
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
       />
+      </TranscriptFollowupContext.Provider>
     </PermissionContext.Provider>
   );
 }

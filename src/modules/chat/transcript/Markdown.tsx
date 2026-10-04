@@ -16,6 +16,8 @@ import { usePaletteOps } from '@/modules/command-palette';
 import { buildSyntaxTheme } from '@/modules/chat/utils/syntaxHighlightTheme';
 import type { PrismStyleSheet } from '@/modules/chat/utils/syntaxHighlightTheme';
 import { MarkdownImage } from '@/modules/chat/transcript/MarkdownImage';
+import { CodexDirective } from '@/modules/chat/transcript/CodexDirective';
+import { remarkCodexDirectives } from '@/modules/chat/utils/remarkCodexDirectives';
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -219,6 +221,7 @@ if (!document.getElementById(SYNTAX_THEME_STYLE_ELEMENT_ID)) {
 
 const markdownComponents = {
   img: MarkdownImage,
+  span: CodexDirective,
   code: CodeBlock,
   // Fenced/indented code arrives as <pre><code>. Re-render the child CodeBlock
   // with `forceBlock` so it always gets the block treatment (react-markdown v9+
@@ -277,9 +280,15 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
   // render, and almost no assistant message contains math. Only wire the two
   // plugins up when the text has a delimiter they could act on.
   const hasMath = useMemo(() => MATH_DELIMITER.test(content), [content]);
+  // User messages (breaks=true) and ordinary Markdown keep their original
+  // grammar. Only model text containing Codex markers needs the extra parser.
+  const hasCodexDirectives = !breaks && content.includes(':codex-');
   const remarkPlugins = useMemo(
     () => {
       const plugins: unknown[] = [remarkGfm];
+      if (hasCodexDirectives) {
+        plugins.push(remarkCodexDirectives);
+      }
       if (hasMath) {
         plugins.push([remarkMath, { singleDollarTextMath: false }]);
       }
@@ -288,7 +297,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
       }
       return plugins as any;
     },
-    [breaks, hasMath],
+    [breaks, hasMath, hasCodexDirectives],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
   const { openFileInEditor } = usePaletteOps();

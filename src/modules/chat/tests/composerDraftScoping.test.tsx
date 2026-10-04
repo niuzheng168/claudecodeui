@@ -127,6 +127,29 @@ test('a draft is stored under the open session, not the project', async () => {
   assert.equal(readDraftText(`project:${PROJECT.projectId}`), '');
 });
 
+test('followup suggestions append to the current draft, preserve attachments and request focus', async () => {
+  const view = renderComposer({ id: 'session-a' });
+  const attachment = new File(['notes'], 'notes.txt');
+  await act(async () => {
+    view.result.current.setInput('已有草稿');
+    view.result.current.setAttachedFiles([attachment]);
+    view.result.current.insertFollowupPrompt('请核对购买链接。');
+  });
+  assert.equal(view.result.current.input, '已有草稿\n\n请核对购买链接。');
+  assert.equal(readDraftText('session-a'), '已有草稿\n\n请核对购买链接。');
+  assert.deepEqual(view.result.current.attachedFiles, [attachment]);
+  assert.equal(view.result.current.composerFocusRequest, 1);
+
+  await act(async () => view.rerender({ session: { id: 'session-b' } }));
+  await act(async () => view.result.current.insertFollowupPrompt('继续'));
+  assert.equal(readDraftText('session-b'), '继续');
+  assert.equal(readDraftText('session-a'), '已有草稿\n\n请核对购买链接。');
+  assert.equal(view.result.current.composerFocusRequest, 2);
+  await act(async () => view.result.current.insertFollowupPrompt('  '));
+  assert.equal(view.result.current.input, '继续');
+  assert.equal(view.result.current.composerFocusRequest, 2);
+});
+
 test('a chat with no session yet is stored under its project', async () => {
   const view = renderComposer(null);
 

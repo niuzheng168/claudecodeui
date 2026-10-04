@@ -63,7 +63,7 @@ function ComposerToolbarPreview() {
   const record = (action: string) => setActions((items) => [...items, action]);
   const modelLabel = params.get('long') === '1'
     ? 'An intentionally very long custom Codex deployment name (872K context)'
-    : 'GPT-6 Astra (872K context)';
+    : 'GPT-6.1 Sol (922K context)';
   const rewriteAllowed = !rewriteBusy && voiceState === 'idle' && Boolean(input.trim()) &&
     (!rewriteSnapshot || [rewriteSnapshot.original, rewriteSnapshot.rewritten].includes(input));
 
@@ -105,7 +105,7 @@ function ComposerToolbarPreview() {
                 ? 'draftChanged' : input === rewriteSnapshot.original ? 'undone' : 'done' : undefined}
               onRewrite={() => {
                 record('rewrite');
-                const rewritten = locale === 'zh-CN' ? '请检查 node-west 的语音配置，不要重启服务。' : 'Check the voice settings without restarting.';
+                const rewritten = locale === 'zh-CN' ? '请检查 westus2 的语音配置，不要重启服务。' : 'Check the voice settings without restarting.';
                 setRewriteSnapshot({ original: rewriteSnapshot?.original ?? input, rewritten });
                 setInput(rewritten);
               }}
@@ -114,7 +114,7 @@ function ComposerToolbarPreview() {
               onRestore={() => { if (rewriteSnapshot) { record('restore-rewrite'); setInput(rewriteSnapshot.rewritten); } }} />}
             modelControl={<ComposerModelMenu effort={effort} effortOptions={params.get('model') === 'none' ? [] : ['low', 'medium', 'high', 'max'].map((value) => ({ value }))}
               onSelectEffort={(value) => { setEffort(value); record(`effort:${value}`); }}
-              model="gpt-6-astra" modelOptions={params.get('model') === 'none' ? [] : [{ value: 'gpt-6-astra', label: modelLabel }]}
+              model="gpt-6.1-sol" modelOptions={params.get('model') === 'none' ? [] : [{ value: 'gpt-6.1-sol', label: modelLabel }]}
               onSelectModel={(value) => record(`model:${value}`)} modelsLoading={false} />}
             permissionControl={<ComposerPermissionMenu permissionMode={permission} permissionModes={params.get('permissions') === 'none' ? [] : ['default', 'plan', 'acceptEdits', 'bypassPermissions']}
               providerLabel="Codex" onSelectPermissionMode={(value) => { setPermission(value); record(`permission:${value}`); }} />}

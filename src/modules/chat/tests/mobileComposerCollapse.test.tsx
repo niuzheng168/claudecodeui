@@ -550,6 +550,24 @@ test('editing a previous message reveals its draft', () => {
   expect(screen.getByRole('button', { name: 'Collapse input' })).toBeTruthy();
 });
 
+test('a followup focus request reveals the mobile draft without sending or replaying focus on manual toggles', () => {
+  const f = fixture();
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  f.rerender(<ChatComposer {...f.props} focusRequest={1} input="Suggested next question" />);
+  const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+  expect(textarea.value).toBe('Suggested next question');
+  expect(document.activeElement).toBe(textarea);
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));
+  expect(screen.queryByRole('textbox')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand input' }));
+  expect(document.activeElement).not.toBe(textarea);
+  f.rerender(<ChatComposer {...f.props} focusRequest={2} input="Another suggestion" />);
+  expect(document.activeElement).toBe(textarea);
+  expect(f.props.onSubmit).not.toHaveBeenCalled();
+});
+
 test('editing a queued message reopens the composer without sending or deleting it', () => {
   const f = fixture({ queuedDraft: { content: 'Queued message', attachments: [] } });
   fireEvent.click(screen.getByRole('button', { name: 'Collapse input' }));

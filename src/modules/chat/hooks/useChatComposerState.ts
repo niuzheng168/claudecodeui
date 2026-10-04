@@ -265,6 +265,14 @@ export function useChatComposerState({
       value: typeof next === 'function' ? next(previous.value) : next,
     }));
   }, []);
+  // Explicit transcript suggestions reveal/focus even a folded mobile composer;
+  // draft hydration and ordinary input changes must not trigger that behavior.
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const insertFollowupPrompt = useCallback((prompt: string) => {
+    if (!prompt.trim()) return;
+    setInput(previous => previous.trim() ? `${previous}\n\n${prompt}` : prompt);
+    setComposerFocusRequest(previous => previous + 1);
+  }, [setInput]);
   const sessionKeyRef = useRef(sessionKey);
   sessionKeyRef.current = sessionKey;
 
@@ -1413,6 +1421,8 @@ export function useChatComposerState({
   return {
     input,
     setInput,
+    insertFollowupPrompt,
+    composerFocusRequest,
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,

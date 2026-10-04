@@ -12,20 +12,20 @@ test('ordinary CloudCLI keeps its full Codex model catalog', () => {
   assert.ok(CODEX_PREDEFINED_MODELS.OPTIONS.length > 1);
 });
 
-test('Codey-managed nodes expose only GPT-6 Astra with its 872K context label', () => {
+test('Codey-managed nodes expose the current upstream model ID and context', () => {
   const catalog = resolveCodexPredefinedModels(true);
 
   assert.equal(catalog, CODEY_MANAGED_CODEX_MODELS);
-  assert.equal(catalog.DEFAULT, 'gpt-6-astra');
+  assert.equal(catalog.DEFAULT, 'gpt-6.1-sol');
   assert.deepEqual(
     catalog.OPTIONS.map(({ value, label }) => ({ value, label })),
     [{
-      value: 'gpt-6-astra',
-      label: 'GPT-6 Astra (872K context)',
+      value: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol (922K context)',
     }],
   );
   assert.deepEqual(
     catalog.OPTIONS[0]?.effort?.values.map(({ value }) => value),
-    ['low', 'medium', 'high', 'xhigh', 'max'],
+    ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   );
 });

@@ -53,6 +53,10 @@ const FIXTURES: Record<string, string> = {
   'consecutive blockquotes': 'Intro.\n\n> a\n\n> b\n\nEnd.\n',
   'a table then a stray row': 'Intro.\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n| 3 | 4 |\n\nEnd.\n',
   'a footnote definition': 'Text[^1].\n\n[^1]: the note\n\nEnd.\n',
+  'Codex directives': 'Intro.\n\n:codex-file-citation{path="output/guide.pdf"}\n\n:codex-followup[Next]{prompt="Continue"}\n',
+  'Codex directives in a loose list': 'Plan:\n\n- :codex-followup[One]{prompt="First"}\n\n- :codex-followup[Two]{prompt="Second"}\n\nEnd.\n',
+  'an incomplete multiline directive': 'Intro.\n\n:codex-followup[Next]{prompt="One\n\nTwo"}\n\nEnd.\n',
+  'ordinary Markdown beside Codex directives': 'see:[guide](https://example.test) :note[**important**]\n\n:codex-followup[Next]{prompt="Continue"}\n',
 };
 
 for (const [name, content] of Object.entries(FIXTURES)) {

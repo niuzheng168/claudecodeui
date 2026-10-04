@@ -32,7 +32,7 @@ const toProviderEffortOptions = (
 const fallbackDefaultModel: Record<LLMProvider, string> = {
   claude: 'default',
   cursor: 'gpt-5.3-codex',
-  codex: isCodeyManagedDeployment() ? 'gpt-6-astra' : 'gpt-5.6-sol',
+  codex: isCodeyManagedDeployment() ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
   opencode: 'anthropic/claude-sonnet-4-5',
 };
 

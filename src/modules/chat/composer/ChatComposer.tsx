@@ -114,6 +114,8 @@ type ChatComposerProps = {
   inputHighlightRef: RefObject<HTMLDivElement>;
   renderInputWithMentions: (text: string) => ReactNode;
   textareaRef: RefObject<HTMLTextAreaElement>;
+  /** Monotonic request from a transcript suggestion; reveals and focuses the draft without sending. */
+  focusRequest?: number;
   input: string;
   onVoiceTranscript?: (text: string, send?: boolean) => VoiceDraftInsertion | void;
   onReplaceVoiceDraft?: (expected: string, replacement: string) => void;
@@ -201,6 +203,7 @@ export default function ChatComposer({
   inputHighlightRef,
   renderInputWithMentions,
   textareaRef,
+  focusRequest = 0,
   input,
   onVoiceTranscript,
   onReplaceVoiceDraft,
@@ -224,9 +227,10 @@ export default function ChatComposer({
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  // Keep the user's mobile reading preference without hiding the desktop composer or discarding drafts.
-  const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] = useState(false);
-  const isComposerCollapsed = isMobile && isMobileComposerCollapsed;
+  // Folding applies to the current focus request. A new transcript suggestion
+  // reveals the draft directly, without an effect/state-update round trip.
+  const [collapsedAtFocusRequest, setCollapsedAtFocusRequest] = useState<number | null>(null);
+  const isComposerCollapsed = isMobile && collapsedAtFocusRequest === focusRequest;
   // Only one toggle is mounted at a time: in the footer when open, above the hidden form when closed.
   const composerToggleRef = useRef<HTMLButtonElement | null>(null);
   // Explicit toggles transfer keyboard focus without reopening the mobile keyboard or stealing focus on resize.
@@ -237,6 +241,14 @@ export default function ChatComposer({
     restoreToggleFocusRef.current = false;
     if (isMobile) composerToggleRef.current?.focus({ preventScroll: true });
   }, [isComposerCollapsed, isMobile]);
+  // Consume each request once so a later manual expand/collapse keeps its
+  // existing focus behavior rather than replaying an old suggestion click.
+  const handledFocusRequestRef = useRef(0);
+  useLayoutEffect(() => {
+    if (focusRequest === handledFocusRequestRef.current) return;
+    handledFocusRequestRef.current = focusRequest;
+    textareaRef.current?.focus();
+  }, [focusRequest, textareaRef]);
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
   const commandMenuPosition = useMemo(() => {
@@ -333,7 +345,7 @@ export default function ChatComposer({
   useEffect(() => {
     // Editing a transcript message must reveal its draft; active voice work must keep its controls reachable.
     if (isEditingSentMessage || voiceState !== 'idle' || rewrite.busy) {
-      setIsMobileComposerCollapsed(false);
+      setCollapsedAtFocusRequest(null);
     }
   }, [isEditingSentMessage, voiceState, rewrite.busy]);
 
@@ -432,7 +444,7 @@ export default function ChatComposer({
             draft.uploadedAttachments?.length ?? draft.attachments.length
           }
           onEdit={() => {
-            setIsMobileComposerCollapsed(false);
+            setCollapsedAtFocusRequest(null);
             onEditQueuedDraft(draft.id);
           }}
           onDelete={() => onDeleteQueuedDraft(draft.id)}
@@ -456,7 +468,7 @@ export default function ChatComposer({
             disabled={voiceState !== 'idle' || rewrite.busy}
             onClick={() => {
               restoreToggleFocusRef.current = true;
-              setIsMobileComposerCollapsed(false);
+              setCollapsedAtFocusRequest(null);
             }}
             className={[
               'flex min-h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl border border-border/50 bg-card/80 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:cursor-not-allowed disabled:opacity-50',
@@ -626,7 +638,7 @@ export default function ChatComposer({
                 onCloseCommandMenu();
                 completion.invalidate();
                 restoreToggleFocusRef.current = true;
-                setIsMobileComposerCollapsed(true);
+                setCollapsedAtFocusRequest(focusRequest);
               }}
               className="inline-flex h-6 shrink-0 touch-manipulation items-center gap-1 rounded-md px-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50">
               <ChevronDownIcon className="h-3.5 w-3.5" aria-hidden />
