@@ -486,6 +486,22 @@ export const getSessionTitle = (session: ProjectSession): string => {
   return (session.summary as string) || 'New Session';
 };
 
+// Use the node API/router prefix, never the shared asset release or the
+// current SPA route, so session navigation cannot rename or lose the node.
+export const getWorkspacePageTitle = (): string | null => {
+  const nodeId = getDeploymentBasePath().match(/^\/cloudcli\/([a-z0-9][a-z0-9_-]{0,31})\/$/i)?.[1];
+  if (!nodeId) return null;
+
+  const identity = typeof window !== 'undefined'
+    ? (window as Window & { __CLOUDCLI_NODE__?: { id?: unknown; name?: unknown } }).__CLOUDCLI_NODE__
+    : undefined;
+  // Metadata belongs to this node only. A stale/foreign label must never
+  // make another workspace look like the machine the user intended to open.
+  const nodeName = identity?.id === nodeId && typeof identity.name === 'string'
+    ? identity.name.trim() : '';
+  return nodeName || nodeId;
+};
+
 /**
  * Main, sidebar and completion notifications keep the authorized machine name
  * first in the tab title. Older portals fall back to the routed node ID;
@@ -495,19 +511,9 @@ export const getPageTitle = (
   selectedProject: Project | null,
   selectedSession: ProjectSession | null,
 ): string => {
-  // Use the node API/router prefix, never the shared asset release or the
-  // current SPA route, so session navigation cannot rename or lose the node.
-  const nodeId = getDeploymentBasePath().match(/^\/cloudcli\/([a-z0-9][a-z0-9_-]{0,31})\/$/i)?.[1];
+  const workspaceTitle = getWorkspacePageTitle();
   const displayName = selectedProject?.displayName?.trim();
-  if (nodeId) {
-    const identity = typeof window !== 'undefined'
-      ? (window as Window & { __CLOUDCLI_NODE__?: { id?: unknown; name?: unknown } }).__CLOUDCLI_NODE__
-      : undefined;
-    // Metadata belongs to this node only. A stale/foreign label must never
-    // make another workspace look like the machine the user intended to open.
-    const nodeName = identity?.id === nodeId && typeof identity.name === 'string'
-      ? identity.name.trim() : '';
-    const workspaceTitle = `cloudcli - ${nodeName || nodeId}`;
+  if (workspaceTitle) {
     const selectionTitle = selectedSession ? getSessionTitle(selectedSession) : displayName;
     return selectionTitle ? `${workspaceTitle} · ${selectionTitle}` : workspaceTitle;
   }
