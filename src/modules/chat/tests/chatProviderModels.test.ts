@@ -6,11 +6,11 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
 import type { ProviderModelsDefinition } from '@/shared/types';
 
-const providerApiMocks = vi.hoisted(() => ({ models: vi.fn() }));
+const providerApiMocks = vi.hoisted(() => ({ models: vi.fn(), deleteModel: vi.fn() }));
 
 const managedCodexModels: ProviderModelsDefinition = {
   DEFAULT: 'gpt-6.1-sol',
-  OPTIONS: ['gpt-6.1-sol', 'codex/gpt-6-astra'].map((value) => ({
+  OPTIONS: ['gpt-6.1-sol', 'gpt-6-astra'].map((value) => ({
     value,
     label: value,
     effort: {
@@ -49,7 +49,7 @@ vi.mock('@/shared/api', () => ({
       setSessionActiveEffort: () => okJson({ success: true, data: null }),
       createModel: () => okJson({ success: true, data: null }),
       updateModel: () => okJson({ success: true, data: null }),
-      removeModel: () => okJson({ success: true, data: null }),
+      deleteModel: providerApiMocks.deleteModel,
     },
   },
 }));
@@ -66,6 +66,7 @@ const renderProviderState = async () => {
 beforeEach(() => {
   localStorage.clear();
   providerApiMocks.models.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
+  providerApiMocks.deleteModel.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
   resetUserPreferences();
@@ -89,14 +90,14 @@ test('managed chat offers Astra, persists its selection, and restores it for the
   });
   assert.equal(result.current.currentProviderModel, 'gpt-6.1-sol');
   assert.deepEqual(result.current.currentProviderModelOptions.map(({ value }) => value), [
-    'gpt-6.1-sol', 'codex/gpt-6-astra',
+    'gpt-6.1-sol', 'gpt-6-astra',
   ]);
 
   await act(async () => {
-    await result.current.selectProviderModel('codex', 'codex/gpt-6-astra');
+    await result.current.selectProviderModel('codex', 'gpt-6-astra');
   });
-  assert.equal(result.current.currentProviderModel, 'codex/gpt-6-astra');
-  assert.equal(localStorage.getItem('codex-model'), 'codex/gpt-6-astra');
+  assert.equal(result.current.currentProviderModel, 'gpt-6-astra');
+  assert.equal(localStorage.getItem('codex-model'), 'gpt-6-astra');
   assert.deepEqual(result.current.currentProviderEffortOptions.map(({ value }) => value), [
     'low', 'medium', 'high', 'xhigh', 'max',
   ]);
@@ -106,7 +107,56 @@ test('managed chat offers Astra, persists its selection, and restores it for the
   await waitFor(() => {
     assert.equal(restored.result.current.providerModelsLoading, false);
   });
-  assert.equal(restored.result.current.currentProviderModel, 'codex/gpt-6-astra');
+  assert.equal(restored.result.current.currentProviderModel, 'gpt-6-astra');
+});
+
+test('managed catalog hydration never replaces a saved model missing from the list', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  localStorage.setItem('codex-model', 'owner/unavailable');
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: provider === 'codex' ? { models: managedCodexModels } : null,
+  }));
+  const { result } = await renderProviderState();
+
+  await waitFor(() => {
+    assert.equal(result.current.providerModelsLoading, false);
+  });
+  assert.equal(result.current.currentProviderModel, 'owner/unavailable');
+  assert.equal(localStorage.getItem('codex-model'), 'owner/unavailable');
+  await act(async () => {
+    await result.current.selectProviderModel('codex', 'gpt-6.1-sol');
+  });
+  assert.equal(result.current.currentProviderModel, 'gpt-6.1-sol');
+  assert.equal(localStorage.getItem('codex-model'), 'gpt-6.1-sol');
+});
+
+test('managed deletion never substitutes another model for the current selection', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  const custom = { value: 'owner/custom', label: 'Owner model', isCustom: true, recordId: 17 };
+  localStorage.setItem('codex-model', custom.value);
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: provider === 'codex'
+      ? { models: { ...managedCodexModels, OPTIONS: [...managedCodexModels.OPTIONS, custom] } }
+      : null,
+  }));
+  providerApiMocks.deleteModel.mockImplementation(() => okJson({
+    success: true, data: { model: custom, models: managedCodexModels },
+  }));
+  const { result } = await renderProviderState();
+  await waitFor(() => {
+    assert.equal(result.current.currentProviderModelOptions.length, 3);
+  });
+
+  await act(async () => {
+    await result.current.providerModelActions.remove('codex', custom);
+  });
+  await waitFor(() => {
+    assert.equal(result.current.currentProviderModelOptions.length, 2);
+  });
+  assert.equal(result.current.currentProviderModel, custom.value);
+  assert.equal(localStorage.getItem('codex-model'), custom.value);
 });
 
 test('each provider gets its own model from its own storage key', async () => {

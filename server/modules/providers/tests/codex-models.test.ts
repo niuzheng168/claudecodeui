@@ -21,7 +21,7 @@ test('Codey-managed nodes expose the current upstream model ID and context', () 
     catalog.OPTIONS.map(({ value, label }) => ({ value, label })),
     [
       { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol (922K context)' },
-      { value: 'codex/gpt-6-astra', label: 'GPT-6 Astra (872K context)' },
+      { value: 'gpt-6-astra', label: 'GPT-6 Astra (872K context)' },
     ],
   );
   for (const option of catalog.OPTIONS) {

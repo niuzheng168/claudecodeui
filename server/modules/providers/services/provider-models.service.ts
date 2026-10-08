@@ -96,19 +96,6 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     return mergeProviderModels(predefined, catalog.listCustomProviderModels(provider));
   };
 
-  const resolveSelectableModel = async (
-    provider: LLMProvider,
-    model: string,
-    providerCatalog?: ProviderModelsDefinition,
-  ): Promise<string> => {
-    if (!usesManagedCodexModel(provider)) {
-      return model;
-    }
-
-    const models = providerCatalog ?? await getProviderModels(provider);
-    return models.OPTIONS.some((option) => option.value === model) ? model : models.DEFAULT;
-  };
-
   const getCurrentActiveModel = async (
     provider: LLMProvider,
     sessionId?: string,
@@ -331,20 +318,6 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     if (normalizedSessionId) {
       const recordedSelection = readRecordedSessionSelection(normalizedSessionId);
       if (recordedSelection?.model) {
-        if (usesManagedCodexModel(provider)) {
-          const managedModel = await resolveSelectableModel(provider, recordedSelection.model);
-          if (recordedSelection.model !== managedModel) {
-            sessions.setSessionModel(normalizedSessionId, managedModel);
-          }
-          return {
-            provider,
-            sessionId: normalizedSessionId,
-            model: managedModel,
-            effort: recordedSelection.effort,
-            source: 'session',
-          };
-        }
-
         return {
           provider,
           sessionId: normalizedSessionId,
@@ -354,11 +327,19 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         };
       }
 
+      if (usesManagedCodexModel(provider) && normalizedRequestedModel) {
+        return {
+          provider,
+          sessionId: normalizedSessionId,
+          model: normalizedRequestedModel,
+          effort: recordedSelection?.effort ?? null,
+          source: 'session',
+        };
+      }
+
       const providerCatalog = await getProviderModels(provider);
       const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
-      const resolvedProviderModel = await resolveSelectableModel(
-        provider, providerModel.model?.trim() || '', providerCatalog,
-      );
+      const resolvedProviderModel = providerModel.model?.trim() || '';
       if (resolvedProviderModel && resolvedProviderModel !== providerCatalog.DEFAULT) {
         return {
           provider,
@@ -369,26 +350,23 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         };
       }
 
-      const requestedModel = normalizedRequestedModel
-        ? await resolveSelectableModel(provider, normalizedRequestedModel, providerCatalog)
-        : providerCatalog.DEFAULT;
+      const requestedModel = normalizedRequestedModel || providerCatalog.DEFAULT;
       return {
         provider,
         sessionId: normalizedSessionId,
         model: requestedModel,
         effort: recordedSelection?.effort ?? null,
-        source: normalizedRequestedModel && requestedModel === normalizedRequestedModel ? 'session' : 'default',
+        source: normalizedRequestedModel ? 'session' : 'default',
       };
     }
 
     if (normalizedRequestedModel) {
-      const resolvedModel = await resolveSelectableModel(provider, normalizedRequestedModel);
       return {
         provider,
         sessionId: null,
-        model: resolvedModel,
+        model: normalizedRequestedModel,
         effort: null,
-        source: resolvedModel === normalizedRequestedModel ? 'session' : 'default',
+        source: 'session',
       };
     }
 
@@ -416,19 +394,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     const normalizedRequestedModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
     const normalizedSessionId = sessionId?.trim();
 
-    if (usesManagedCodexModel(provider)) {
-      const recordedModel = normalizedSessionId
-        ? readRecordedSessionSelection(normalizedSessionId)?.model
-        : null;
-      const managedModel = await resolveSelectableModel(
-        provider, recordedModel || normalizedRequestedModel,
-      );
-      if (normalizedSessionId) {
-        if (recordedModel && recordedModel !== managedModel) {
-          sessions.setSessionModel(normalizedSessionId, managedModel);
-        }
-      }
-      return managedModel;
+    if (usesManagedCodexModel(provider) && normalizedRequestedModel) {
+      return normalizedRequestedModel;
     }
 
     if (!normalizedSessionId) {

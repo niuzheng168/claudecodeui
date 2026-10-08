@@ -289,15 +289,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerCapabilities]);
 
   const pickStoredOrCurrent = (
+    targetProvider: LLMProvider,
     storageKey: string,
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
     const stored = localStorage.getItem(storageKey);
-    if (stored && def.OPTIONS.some((o) => o.value === stored)) {
+    const honorSelection = targetProvider === 'codex' && isCodeyManagedDeployment();
+    if (stored && (honorSelection || def.OPTIONS.some((o) => o.value === stored))) {
       return stored;
     }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
+    if (current && (honorSelection || def.OPTIONS.some((o) => o.value === current))) {
       return current;
     }
     return def.DEFAULT;
@@ -372,7 +374,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       const storageKey = providerModelStorageKey(targetProvider);
       const currentModel = providerModels[targetProvider];
-      const nextModel = pickStoredOrCurrent(storageKey, currentModel, catalog);
+      const nextModel = pickStoredOrCurrent(targetProvider, storageKey, currentModel, catalog);
 
       if (nextModel !== currentModel) {
         reconciledModels[targetProvider] = nextModel;
@@ -784,6 +786,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const response = await api.providers.deleteModel(targetProvider, existing.recordId);
     const result = await readModelMutationResponse(response);
     applyProviderCatalog(targetProvider, result.models);
+
+    if (targetProvider === 'codex' && isCodeyManagedDeployment()) {
+      return;
+    }
 
     if (providerModels[targetProvider] === existing.value) {
       setStoredProviderModel(targetProvider, result.models.DEFAULT);
