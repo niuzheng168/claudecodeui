@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ async function until(condition: () => boolean, message: string): Promise<void> {
   }
 }
 
-async function startRun(prompt: string, sessionId: string) {
+async function startRun(prompt: string, sessionId: string, options: AnyRecord = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'claude-steering-'));
   const previous = { HOME: process.env.HOME, CLAUDE_CLI_PATH: process.env.CLAUDE_CLI_PATH, CODEY_MANAGED: process.env.CODEY_MANAGED };
   process.env.HOME = home;
@@ -38,7 +39,7 @@ async function startRun(prompt: string, sessionId: string) {
     isProviderInstalled: async () => true,
   };
   const writer = { userId: null, send: (message: unknown) => { sent.push(message as AnyRecord); }, setSessionId: () => {} };
-  const finished = claudeRuntime.run(prompt, { sessionId, cwd: home, model: 'fake-model' }, writer, context);
+  const finished = claudeRuntime.run(prompt, { sessionId, cwd: home, model: 'fake-model', ...options }, writer, context);
   const done = async () => {
     await finished;
     Object.assign(process.env, previous);
@@ -107,4 +108,16 @@ test('stopping a steered turn drops the steering instead of running it afterward
 
   assert.equal(run.texts().some((text) => text.includes('never run this')), false);
   assert.equal(claudeRuntime.canSteer('steer-stop'), false);
+});
+
+test('a send is submitted under its client receipt, which the transcript keeps as the row uuid', { concurrency: false }, async () => {
+  const clientMessageId = randomUUID();
+  const run = await startRun('ECHO_UUID', 'send-identity', { clientMessageId });
+  await run.done();
+  assert.deepEqual(run.texts(), [`assistant:uuid: ${clientMessageId}`]);
+
+  // Claude Code only accepts a UUID, so any other receipt leaves the row to it.
+  const other = await startRun('ECHO_UUID', 'send-identity-other', { clientMessageId: 'codey_user_1' });
+  await other.done();
+  assert.deepEqual(other.texts(), ['assistant:uuid: none']);
 });

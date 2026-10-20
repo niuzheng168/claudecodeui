@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -186,6 +186,40 @@ test('history pages are sliced from the cached full transcript and see appended 
       const older = await sessionsService.fetchHistory(sessionId, { limit: 2, offset: 2 });
       assert.deepEqual(older.messages.map((message) => message.content), ['reply one', 'two']);
       assert.equal(older.hasMore, true);
+    });
+  } finally {
+    await rm(transcriptDirectory, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable Claude transcript is retried instead of cached as an empty conversation', {
+  concurrency: false,
+  // Permission bits do not stop root (or Windows) from reading the file.
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async () => {
+  const transcriptDirectory = await mkdtemp(path.join(os.tmpdir(), 'sessions-service-unreadable-'));
+  const sessionId = 'claude-unreadable-history-session';
+  const transcriptPath = path.join(transcriptDirectory, `${sessionId}.jsonl`);
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const rows = [claudeTextRow(sessionId, 'user', 'one', 0), claudeTextRow(sessionId, 'assistant', 'reply one', 1)];
+      await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+      sessionsDb.createSession(
+        sessionId, 'claude', '/tmp/history-unreadable-project', 'Unreadable conversation',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:10.000Z', transcriptPath,
+      );
+
+      await chmod(transcriptPath, 0o000);
+      await assert.rejects(sessionsService.fetchHistory(sessionId, { limit: 20, offset: 0 }), {
+        code: 'CLAUDE_HISTORY_UNAVAILABLE', statusCode: 503,
+      });
+
+      // Restoring access changes neither mtime nor size, so a cached failure
+      // would keep being served as the conversation.
+      await chmod(transcriptPath, 0o644);
+      const page = await sessionsService.fetchHistory(sessionId, { limit: 20, offset: 0 });
+      assert.deepEqual(page.messages.map((message) => message.content), ['one', 'reply one']);
     });
   } finally {
     await rm(transcriptDirectory, { recursive: true, force: true });

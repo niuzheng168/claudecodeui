@@ -648,3 +648,40 @@ test('input steered into a running turn shows where the turn took it up', { conc
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('unreadable history reports a retryable failure instead of a successful empty conversation', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-history-failure-'));
+  const sessionId = 'claude-unreadable-session';
+  const transcriptPath = path.join(tempRoot, `${sessionId}.jsonl`);
+  const row = {
+    type: 'user', uuid: 'u1', parentUuid: null, sessionId,
+    timestamp: '2026-10-20T10:00:00.000Z',
+    message: { role: 'user', content: 'Existing history' },
+  };
+  // The CLI may still be writing the next row while history is read.
+  const writeTranscript = () => writeFile(transcriptPath, `${JSON.stringify(row)}\n{"type":"assistant","uu`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      // A first turn that has not recorded a transcript yet really is empty.
+      sessionsDb.createAppSession('app-id', 'claude', tempRoot);
+      sessionsDb.assignProviderSessionId('app-id', 'native-id');
+      assert.deepEqual((await new ClaudeSessionsProvider().fetchHistory('app-id', {
+        providerSessionId: 'native-id',
+      })).messages, []);
+
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempRoot, 'Recorded session', now, now, transcriptPath);
+      await writeTranscript();
+      const fetchHistory = () => new ClaudeSessionsProvider().fetchHistory(sessionId, { providerSessionId: sessionId });
+      assert.deepEqual((await fetchHistory()).messages.map((message) => message.content), ['Existing history']);
+
+      await rm(transcriptPath);
+      await assert.rejects(fetchHistory(), { code: 'CLAUDE_HISTORY_UNAVAILABLE', statusCode: 503 });
+      await writeTranscript();
+      assert.deepEqual((await fetchHistory()).messages.map((message) => message.content), ['Existing history']);
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

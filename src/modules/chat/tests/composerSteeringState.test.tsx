@@ -146,6 +146,39 @@ test('each ordinary Codex send binds its optimistic row to the wire input, inclu
   });
 });
 
+test('ordinary Claude sends and edits carry a prompt uuid bound to their optimistic row, including repeated text', async () => {
+  const view = fixture();
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: false });
+  for (let index = 0; index < 2; index++) {
+    act(() => { view.result.current.setInput('继续'); });
+    await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  }
+  act(() => {
+    view.result.current.beginEditMessage({ type: 'user', content: '继续', transcriptAnchorId: 'row-2', timestamp: new Date() });
+  });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+
+  const frames = view.send.mock.calls.map(([frame]) => frame);
+  expect(frames.map((frame) => frame.type)).toEqual(['chat.send', 'chat.send', 'chat.edit-send']);
+  const identities = frames.map((frame) => frame.clientMessageId);
+  expect(new Set(identities).size).toBe(3);
+  identities.forEach((identity, index) => {
+    // Claude Code only keeps a UUID as the transcript row's uuid.
+    expect(identity).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(view.echo.mock.calls[index][0].clientMessageId).toBe(identity);
+  });
+});
+
+test('a Claude slash command keeps the text match, because Claude Code names its rows itself', async () => {
+  const view = fixture();
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: false });
+  act(() => { view.result.current.setInput('/compact'); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).not.toHaveProperty('clientMessageId');
+  expect(view.echo.mock.calls[0][0]).not.toHaveProperty('clientMessageId');
+});
+
 test('Send queues first; only the queued receipt is appended, without touching the next draft', async () => {
   let accept!: () => void;
   const request = new Promise<void>((resolve) => { accept = resolve; });

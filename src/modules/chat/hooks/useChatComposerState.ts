@@ -958,7 +958,14 @@ export function useChatComposerState({
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
       // A native correction can be persisted under a turn that started long
       // before this send. Correlate the echo by identity, not by its clock.
-      const clientMessageId = provider === 'codex' ? crypto.randomUUID() : undefined;
+      // Claude keeps this id as the prompt row's uuid, which also pairs
+      // identical repeated texts exactly. Claude Code names the rows of local
+      // slash commands (/compact, /context) itself, so those keep the
+      // text-and-time match an echo without an identity falls back to.
+      const clientMessageId = provider === 'codex'
+        || (provider === 'claude' && !messageContent.trimStart().startsWith('/'))
+        ? crypto.randomUUID()
+        : undefined;
       const userMessage: ChatMessage = {
         type: 'user',
         ...(clientMessageId ? { clientMessageId } : {}),

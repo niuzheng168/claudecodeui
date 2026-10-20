@@ -81,6 +81,8 @@ const STEER_FOLLOW_UP_GRACE_MS = 30 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when
 // Workflows are enabled. The catalog offers it as an effort choice for the picker, so the
@@ -950,6 +952,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // `result`. The message list is reusable, but each query attempt needs its
     // own stream because an async generator cannot be replayed once consumed.
     const promptMessages = await buildPromptMessages(command, options.images, options.files, options.cwd);
+    // The transcript keeps the uuid a prompt is submitted with, so the client's
+    // send receipt becomes the persisted row's identity and its optimistic
+    // bubble is retired by that row rather than by matching text and time.
+    // Claude Code only accepts a UUID; anything else is left for it to name.
+    if (typeof options.clientMessageId === 'string' && UUID_PATTERN.test(options.clientMessageId)) {
+      promptMessages[0].uuid = options.clientMessageId;
+    }
 
     sdkOptions.hooks = {
       Notification: [{

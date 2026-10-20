@@ -8,7 +8,8 @@
 // - `cancel_async_message` drops it, otherwise it still runs after an interrupt.
 // The prompt picks the turn: TOOL (tool call that ends when input arrives),
 // SLOW_TOOL (5s tool call only an interrupt ends), WAIT_TEXT (final text,
-// then waits for input).
+// then waits for input), ECHO_UUID (answers with the uuid the prompt carried,
+// which the real CLI keeps as the transcript row's uuid).
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
@@ -60,6 +61,8 @@ async function runTurn(first) {
     assistant([{ type: 'text', text: `answer: ${prompt}` }]);
     // No tool boundary is left, so input arriving now waits for the next turn.
     if (!queue.length) await wait(3000);
+  } else if (prompt.includes('ECHO_UUID')) {
+    assistant([{ type: 'text', text: `uuid: ${first.uuid ?? 'none'}` }]);
   } else {
     assistant([{ type: 'text', text: `answer: ${prompt}` }]);
   }

@@ -163,3 +163,27 @@ test('exact identities reserve their native rows before legacy fuzzy echoes are 
   const legacy = { ...known, id: 'local_legacy', clientMessageId: undefined };
   assert.deepEqual(removeOptimisticUserEchoes([{ ...known, id: 'native' }], [legacy, known]), [legacy]);
 });
+
+test('Claude prompts retire their echoes by the transcript uuid they were sent with', () => {
+  // The Claude reader exposes a prompt row's uuid, which is the uuid the send
+  // carried, as its clientMessageId.
+  const row = (uuid: string, content: string, timestamp: string, overrides: Partial<NormalizedMessage> = {}) =>
+    createUserMessage(uuid, timestamp, { content, clientMessageId: uuid, transcriptAnchorId: uuid, ...overrides });
+  const echo = (persisted: NormalizedMessage, timestamp: string) => createUserMessage(`local_${persisted.id}`, timestamp, {
+    content: persisted.content, clientMessageId: persisted.clientMessageId,
+  });
+  const first = row('0dd54a1a-be5a-4ed2-8e8b-56004a093b1d', '继续', '2026-10-20T17:19:50.000Z');
+  const second = row('68489adc-2755-43ad-877e-4878edc62d50', '继续', '2026-10-20T17:20:01.000Z');
+
+  // The repeated text is still running: the earlier identical row must not
+  // retire its echo, which a text-and-time match would.
+  const secondEcho = echo(second, '2026-10-20T17:20:00.000Z');
+  assert.deepEqual(removeOptimisticUserEchoes([first], [secondEcho]), [secondEcho]);
+  assert.deepEqual(removeOptimisticUserEchoes([first, second], [echo(first, '2026-10-20T17:19:49.000Z'), secondEcho]), []);
+
+  // Local slash commands are persisted under a uuid Claude Code picks, so
+  // their echoes carry no identity and still retire by text and time.
+  const command = row('d5e507af-3385-4aef-9567-1ef04b7677ac', '/compact', '2026-10-20T17:21:00.000Z', { isLocalCommand: true });
+  const commandEcho = createUserMessage('local_compact', '2026-10-20T17:20:58.000Z', { content: '/compact' });
+  assert.deepEqual(removeOptimisticUserEchoes([first, second, command], [commandEcho]), []);
+});

@@ -15,6 +15,7 @@ import type {
 import { parseFilesInputTag } from '@/shared/image-attachments.js';
 import { prepareTranscriptMessages } from '@/shared/message-unification.js';
 import {
+  AppError,
   createNormalizedMessage,
   generateMessageId,
   readObjectRecord,
@@ -419,6 +420,8 @@ async function getSessionMessages(
     // on disk carry the provider-native id — both ids are needed here.
     const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
 
+    // No transcript has been recorded yet (the first turn is still starting),
+    // so the conversation really is empty.
     if (!jsonLPath) {
       return { messages: [], total: 0, hasMore: false };
     }
@@ -549,8 +552,15 @@ async function getSessionMessages(
       limit,
     };
   } catch (error) {
-    console.error(`Error reading messages for session ${sessionId}:`, error);
-    return limit === null ? [] : { messages: [], total: 0, hasMore: false };
+    // A recorded transcript that is missing or cannot be read is not an empty
+    // conversation. Returning [] would let the history cache keep the failure
+    // as this session's history until the file next changed. Half-written rows
+    // never get here: readTranscriptRows skips them.
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[ClaudeProvider] Failed to load session ${sessionId}:`, message);
+    throw new AppError('Cannot read this Claude conversation. Check the node and retry loading its history.', {
+      code: 'CLAUDE_HISTORY_UNAVAILABLE', statusCode: 503,
+    });
   }
 }
 
@@ -1069,16 +1079,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const { limit = null, offset = 0 } = options;
     const providerSessionId = options.providerSessionId ?? sessionId;
 
-    let result: ClaudeHistoryResult;
-    try {
-      // Load full history first so `total` reflects frontend-normalized messages,
-      // not raw JSONL records.
-      result = await getSessionMessages(sessionId, providerSessionId, null, 0);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[ClaudeProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
-    }
+    // Load full history first so `total` reflects frontend-normalized messages,
+    // not raw JSONL records. An unreadable transcript throws a retryable error.
+    const result: ClaudeHistoryResult = await getSessionMessages(sessionId, providerSessionId, null, 0);
 
     const rawMessages = Array.isArray(result) ? result : (result.messages || []);
 

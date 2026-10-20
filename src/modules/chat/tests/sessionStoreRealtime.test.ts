@@ -386,3 +386,33 @@ test('repeated snapshots do not exhaust the realtime row limit or evict earlier 
   assert.equal(messages.length, 2);
   assert.deepEqual(messages.map((message) => message.content), ['earlier', 'Snapshot 599']);
 });
+
+test('a repeated Claude prompt keeps its bubble until its own transcript row arrives, then retires once', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  const claude = (id: string, overrides: Partial<NormalizedMessage>) => row(id, { provider: 'claude', ...overrides });
+  const prompt = (uuid: string, timestamp: string) => claude(uuid, {
+    role: 'user', content: '继续', clientMessageId: uuid, transcriptAnchorId: uuid, timestamp,
+  });
+  const echo = (persisted: NormalizedMessage, timestamp: string) => claude(`local_${persisted.id}`, {
+    role: 'user', content: persisted.content, clientMessageId: persisted.clientMessageId, timestamp,
+  });
+  const first = prompt('11111111-1111-4111-8111-111111111111', '2026-10-20T17:19:50.000Z');
+  const answer = claude('answer-1', { content: 'Nothing to continue.', timestamp: '2026-10-20T17:19:55.000Z' });
+  const second = prompt('22222222-2222-4222-8222-222222222222', '2026-10-20T17:20:01.000Z');
+
+  act(() => { result.current.appendRealtime('session-1', echo(first, '2026-10-20T17:19:49.000Z')); });
+  respondWith([first, answer]);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id), [first.id, answer.id]);
+
+  // The same text again, read back before Claude Code has written it.
+  act(() => { result.current.appendRealtime('session-1', echo(second, '2026-10-20T17:20:00.000Z')); });
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id),
+    [first.id, answer.id, `local_${second.id}`]);
+
+  respondWith([first, answer, second]);
+  await act(async () => { await result.current.refreshLatestFromServer('session-1'); });
+  assert.deepEqual(result.current.getMessages('session-1').map((message) => message.id), [first.id, answer.id, second.id]);
+  assert.equal(result.current.getSessionSlot('session-1')?.realtimeMessages.length, 0);
+});
