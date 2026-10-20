@@ -139,6 +139,8 @@ export type ProviderModelOption = {
 export type ProviderModelsDefinition = {
   OPTIONS: ProviderModelOption[];
   DEFAULT: string;
+  /** Shared Workspace UI uses this capability to distinguish managed Claude API routes from legacy native-login catalogs. */
+  modelApiManaged?: boolean;
 };
 
 /**

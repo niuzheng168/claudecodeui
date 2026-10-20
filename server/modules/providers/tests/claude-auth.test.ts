@@ -20,7 +20,10 @@ type CheckCredentialsResult = {
 const checkCredentials = (auth: ClaudeProviderAuth): Promise<CheckCredentialsResult> =>
   (auth as unknown as { checkCredentials: () => Promise<CheckCredentialsResult> }).checkCredentials();
 
-const ENV_KEYS = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
+const ENV_KEYS = [
+  'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+  'CODEY_MANAGED', 'CODEY_MODEL_API_KEY', 'CODEY_MODEL_BASE_URL',
+] as const;
 
 const withEnv = async (
   overrides: Partial<Record<(typeof ENV_KEYS)[number], string>>,
@@ -52,7 +55,10 @@ const withEnv = async (
 const withTempHome = async (fn: (homeDir: string) => Promise<void>) => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'claude-auth-test-'));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = homeDir;
+  // os.homedir() uses USERPROFILE on Windows, HOME on POSIX.
+  process.env.USERPROFILE = homeDir;
   try {
     await fn(homeDir);
   } finally {
@@ -61,6 +67,8 @@ const withTempHome = async (fn: (homeDir: string) => Promise<void>) => {
     } else {
       process.env.HOME = originalHome;
     }
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
     await rm(homeDir, { recursive: true, force: true });
   }
 };
@@ -76,6 +84,24 @@ const writeSettingsFile = async (homeDir: string, env: Record<string, string>) =
   await mkdir(claudeDir, { recursive: true });
   await writeFile(path.join(claudeDir, 'settings.json'), JSON.stringify({ env }));
 };
+
+test('managed Claude uses the Codey gateway, not personal Claude credentials', async () => {
+  await withEnv({
+    CODEY_MANAGED: 'true', CODEY_MODEL_API_KEY: 'gateway-key', ANTHROPIC_API_KEY: 'personal-key',
+  }, async () => {
+    assert.deepEqual(await checkCredentials(new ClaudeProviderAuth()), {
+      authenticated: true, email: 'Codey model API', method: 'environment',
+    });
+  });
+});
+
+test('managed Claude does not fall back to personal credentials when gateway auth is missing', async () => {
+  await withEnv({ CODEY_MANAGED: 'true', ANTHROPIC_API_KEY: 'personal-key' }, async () => {
+    const status = await checkCredentials(new ClaudeProviderAuth());
+    assert.equal(status.authenticated, false);
+    assert.match(status.error ?? '', /Codey model API key/);
+  });
+});
 
 test('checkCredentials: CLAUDE_CODE_OAUTH_TOKEN set is authenticated via environment, even with a stale credentials file', async () => {
   await withTempHome(async (homeDir) => {

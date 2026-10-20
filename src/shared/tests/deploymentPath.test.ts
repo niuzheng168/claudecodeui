@@ -68,9 +68,10 @@ test('ordinary CloudCLI exposes every provider and starts with Claude', () => {
   expect(resolveEnabledProvider('cursor', false)).toBe('cursor');
 });
 
-test('Codey-managed workspaces expose only Codex and reject stale provider preferences', () => {
-  expect(getEnabledProviders(true)).toEqual(['codex']);
+test('Codey-managed workspaces support model-selected Codex and Claude harnesses', () => {
+  expect(getEnabledProviders(true)).toEqual(['codex', 'claude']);
   expect(getDefaultProvider(true)).toBe('codex');
-  expect(resolveEnabledProvider('claude', true)).toBe('codex');
+  expect(resolveEnabledProvider('claude', true)).toBe('claude');
   expect(resolveEnabledProvider('codex', true)).toBe('codex');
+  expect(resolveEnabledProvider('cursor', true)).toBe('codex');
 });

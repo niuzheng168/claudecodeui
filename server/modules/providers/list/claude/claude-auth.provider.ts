@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import spawn from 'cross-spawn';
 
+import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
@@ -83,6 +84,17 @@ export class ClaudeProviderAuth implements IProviderAuth {
    * Checks Claude credentials in the same priority order used by Claude Code.
    */
   private async checkCredentials(): Promise<ClaudeCredentialsStatus> {
+    if (codeyClaudeGateway.isManaged()) {
+      try {
+        codeyClaudeGateway.buildEnvironment();
+        return { authenticated: true, email: 'Codey model API', method: 'environment' };
+      } catch (error) {
+        return {
+          authenticated: false, email: null, method: null,
+          error: error instanceof Error ? error.message : 'Codey model API is not configured.',
+        };
+      }
+    }
     const missingCredentialsError = 'Claude CLI is not authenticated. Run claude /login or configure ANTHROPIC_API_KEY.';
 
     if (process.env.ANTHROPIC_AUTH_TOKEN?.trim()) {

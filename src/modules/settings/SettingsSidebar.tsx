@@ -1,7 +1,7 @@
-import { Bell, Bot, GitBranch, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle } from 'lucide-react';
+import { Bell, Bot, GitBranch, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Route } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { cn } from '@/shared/utils';
+import { cn, isCodeyManagedDeployment } from '@/shared/utils';
 import { PillBar, Pill } from '@/shared/ui';
 import type { SettingsMainTab } from '@/shared/types';
 
@@ -13,6 +13,7 @@ type SettingsSidebarProps = {
 type NavItem = {
   id: SettingsMainTab;
   labelKey: string;
+  defaultLabel?: string;
   icon: typeof Bot;
 };
 
@@ -21,6 +22,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
   { id: 'git', labelKey: 'mainTabs.git', icon: GitBranch },
   { id: 'api', labelKey: 'mainTabs.apiTokens', icon: Key },
+  ...(isCodeyManagedDeployment() ? [{ id: 'model-api' as const, labelKey: 'mainTabs.modelApi', defaultLabel: 'Model API', icon: Route }] : []),
   { id: 'voice', labelKey: 'mainTabs.voice', icon: Mic },
   { id: 'tasks', labelKey: 'mainTabs.tasks', icon: ListChecks },
   { id: 'browser', labelKey: 'mainTabs.browser', icon: MonitorPlay },
@@ -54,7 +56,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
                 )}
               >
                 <Icon className="h-4 w-4 flex-shrink-0" />
-                {t(item.labelKey)}
+                {t(item.labelKey, { defaultValue: item.defaultLabel })}
               </button>
             );
           })}
@@ -75,7 +77,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
                 className="flex-shrink-0"
               >
                 <Icon className="h-3.5 w-3.5" />
-                {t(item.labelKey)}
+                {t(item.labelKey, { defaultValue: item.defaultLabel })}
               </Pill>
             );
           })}

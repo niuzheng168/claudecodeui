@@ -78,6 +78,13 @@ export const DEFAULT_EFFORT_VALUE = 'default';
 
 // ---------------------------
 
+//----------------- NODE MODEL API SETTINGS ------------
+
+/** Settings notifies chat to reload model choices after node proxy configuration changes. */
+export const CODEY_MODEL_API_SETTINGS_CHANGED_EVENT = 'codey:model-api-settings-changed';
+
+// ---------------------------
+
 //----------------- FILE UPLOAD LIMITS ------------
 
 /** Largest single file the upload endpoint accepts, in megabytes. Source of truth for the two derived limits below. */

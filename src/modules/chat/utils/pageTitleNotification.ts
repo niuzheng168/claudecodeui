@@ -1,4 +1,4 @@
-import { getPageTitle } from '@/shared/utils';
+import { getPageTitle, getWorkspacePageTitle } from '@/shared/utils';
 
 const COMPLETION_TITLE_INDICATOR = '[Done]';
 const TITLE_INDICATOR_CLEAR_DELAY_MS = 2000;
@@ -9,6 +9,16 @@ let returnListenersAttached = false;
 const getIndicatorPrefix = () => `${COMPLETION_TITLE_INDICATOR} `;
 
 const stripIndicator = (title: string): string => {
+  const workspaceTitle = getWorkspacePageTitle();
+  if (workspaceTitle) {
+    if (title === workspaceTitle || title.startsWith(`${workspaceTitle} · `)) {
+      return title;
+    }
+    const markedWorkspaceTitle = `${workspaceTitle} ${COMPLETION_TITLE_INDICATOR}`;
+    if (title === markedWorkspaceTitle || title.startsWith(`${markedWorkspaceTitle} · `)) {
+      return `${workspaceTitle}${title.slice(markedWorkspaceTitle.length)}`;
+    }
+  }
   const prefix = getIndicatorPrefix();
   return title.startsWith(prefix) ? title.slice(prefix.length) : title;
 };
@@ -37,8 +47,9 @@ const clearTitleIndicator = (): void => {
   removeReturnListeners();
   removePageInactiveListener();
 
-  if (document.title.startsWith(getIndicatorPrefix())) {
-    document.title = stripIndicator(document.title);
+  const title = stripIndicator(document.title);
+  if (document.title !== title) {
+    document.title = title;
   }
 };
 
@@ -93,7 +104,11 @@ export const showCompletionTitleIndicator = (): void => {
   }
 
   const baseTitle = stripIndicator(document.title || getPageTitle(null, null));
-  document.title = `${getIndicatorPrefix()}${baseTitle}`;
+  const workspaceTitle = getWorkspacePageTitle();
+  document.title = workspaceTitle
+    && (baseTitle === workspaceTitle || baseTitle.startsWith(`${workspaceTitle} · `))
+    ? `${workspaceTitle} ${COMPLETION_TITLE_INDICATOR}${baseTitle.slice(workspaceTitle.length)}`
+    : `${getIndicatorPrefix()}${baseTitle}`;
 
   if (pageIsActive()) {
     scheduleClear();

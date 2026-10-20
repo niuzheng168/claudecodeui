@@ -32,9 +32,9 @@ test('background completion preserves the node prefix and selected session conte
     id: 'session-1', summary: 'Fix the settings page', __provider: 'codex',
   });
   showCompletionTitleIndicator();
-  expect(document.title).toBe('[Done] cloudcli - linux-gpu · Fix the settings page');
+  expect(document.title).toBe('linux-gpu [Done] · Fix the settings page');
   vi.advanceTimersByTime(10000);
-  expect(document.title).toBe('[Done] cloudcli - linux-gpu · Fix the settings page');
+  expect(document.title).toBe('linux-gpu [Done] · Fix the settings page');
 });
 
 test('completion and focus preserve the human-readable machine label from runtime metadata', () => {
@@ -43,10 +43,10 @@ test('completion and focus preserve the human-readable machine label from runtim
   });
   document.title = getPageTitle(null, { id: 's', summary: 'design', __provider: 'codex' });
   showCompletionTitleIndicator();
-  expect(document.title).toBe('[Done] cloudcli - 我的 A100 · design');
+  expect(document.title).toBe('我的 A100 [Done] · design');
   returnToWorkspace();
   vi.advanceTimersByTime(2000);
-  expect(document.title).toBe('cloudcli - 我的 A100 · design');
+  expect(document.title).toBe('我的 A100 · design');
 });
 
 test('returning to the workspace removes only the completion marker, not its node identity', () => {
@@ -54,21 +54,44 @@ test('returning to the workspace removes only the completion marker, not its nod
   showCompletionTitleIndicator();
   returnToWorkspace();
   vi.advanceTimersByTime(2000);
-  expect(document.title).toBe('cloudcli - linux-gpu');
+  expect(document.title).toBe('linux-gpu');
 });
 
 test('completion before title initialization uses the same node-aware fallback', () => {
   document.title = '';
   showCompletionTitleIndicator();
   showCompletionTitleIndicator();
-  expect(document.title).toBe('[Done] cloudcli - linux-gpu');
+  expect(document.title).toBe('linux-gpu [Done]');
 });
 
 test('clearing an old notification does not restore a stale session title', () => {
-  document.title = 'cloudcli - linux-gpu · Old session';
+  document.title = 'linux-gpu · Old session';
   showCompletionTitleIndicator();
   returnToWorkspace();
-  document.title = 'cloudcli - linux-gpu · New session';
+  document.title = 'linux-gpu · New session';
   vi.advanceTimersByTime(2000);
-  expect(document.title).toBe('cloudcli - linux-gpu · New session');
+  expect(document.title).toBe('linux-gpu · New session');
+});
+
+test('completion preserves machine and session labels that contain the marker', () => {
+  Object.defineProperty(window, '__CLOUDCLI_NODE__', {
+    value: { id: 'linux-gpu', name: '[Done] 我的机器' }, configurable: true,
+  });
+  document.title = getPageTitle(null, { id: 's', summary: '[Done] Session', __provider: 'codex' });
+  showCompletionTitleIndicator();
+  showCompletionTitleIndicator();
+  expect(document.title).toBe('[Done] 我的机器 [Done] · [Done] Session');
+  returnToWorkspace();
+  vi.advanceTimersByTime(2000);
+  expect(document.title).toBe('[Done] 我的机器 · [Done] Session');
+});
+
+test('standalone workspaces retain the existing completion prefix', () => {
+  Object.defineProperty(window, '__CLOUDCLI_BASE_PATH__', { value: '/', configurable: true });
+  document.title = getPageTitle(null, { id: 's', summary: 'Standalone session', __provider: 'codex' });
+  showCompletionTitleIndicator();
+  expect(document.title).toBe('[Done] Standalone session');
+  returnToWorkspace();
+  vi.advanceTimersByTime(2000);
+  expect(document.title).toBe('Standalone session');
 });

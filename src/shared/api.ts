@@ -5,7 +5,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM, withDeploymentBasePath } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { CodeyVoicePreferences, ComposerCompletionRequest, QueuedMessageOperation, SessionHistoryRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
+import type { CodeyProxySettingsUpdate, CodeyVoicePreferences, ComposerCompletionRequest, QueuedMessageOperation, SessionHistoryRequest, StoredQueuedMessage, VoiceRewriteMessage } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -460,6 +460,8 @@ export const api = {
 
   // Server-side settings: API keys, stored credentials, notifications, web push
   settings: {
+    copilotProxies: () => get('/api/settings/copilot-proxies'),
+    saveCopilotProxies: (settings: CodeyProxySettingsUpdate) => put('/api/settings/copilot-proxies', settings),
     apiKeys: () => get('/api/settings/api-keys'),
     createApiKey: (keyName: string) => post('/api/settings/api-keys', { keyName }),
     deleteApiKey: (keyId: string) => del(`/api/settings/api-keys/${keyId}`),

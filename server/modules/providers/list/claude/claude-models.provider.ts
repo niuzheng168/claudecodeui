@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -278,6 +279,7 @@ const readClaudeSessionModelFromJsonl = async (
 
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    if (codeyClaudeGateway.isManaged()) return codeyClaudeGateway.getModels();
     // claude creates a new jsonl file as a separate session for this request.
     // As a result, it lists the workspace where this is invoked when it shouldn't.
     //

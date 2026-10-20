@@ -53,7 +53,7 @@ test('falls back to each routed node ID on older portals without machine metadat
   vi.stubEnv('BASE_URL', '/cloudcli-ui/ui-shared/');
   for (const node of ['linux-gpu', 'node-east-1', 'node-east-2', 'node-west', 'local', 'n-aaaaaaaaaaaaaaaaaaaaaaaa']) {
     setWorkspace(`/cloudcli/${node}/`);
-    assert.equal(getPageTitle(null, null), `cloudcli - ${node}`);
+    assert.equal(getPageTitle(null, null), node);
   }
 });
 
@@ -63,11 +63,11 @@ test('uses the machine name rather than the opaque enrollment ID, preserving ses
   Object.defineProperty(window, '__CLOUDCLI_NODE__', {
     value: { id, name: '  node-west  ' }, configurable: true,
   });
-  assert.equal(getPageTitle(null, null), 'cloudcli - node-west');
-  assert.equal(getPageTitle(project, null), 'cloudcli - node-west · My Project');
+  assert.equal(getPageTitle(null, null), 'node-west');
+  assert.equal(getPageTitle(project, null), 'node-west · My Project');
   assert.equal(getPageTitle(project, {
     id: 'session-1', summary: 'design', __provider: 'codex',
-  }), 'cloudcli - node-west · design');
+  }), 'node-west · design');
 });
 
 test('ignores foreign, empty or malformed machine metadata', () => {
@@ -77,7 +77,7 @@ test('ignores foreign, empty or malformed machine metadata', () => {
     { id: 'node-a', name: 123 }, null,
   ]) {
     Object.defineProperty(window, '__CLOUDCLI_NODE__', { value: identity, configurable: true });
-    assert.equal(getPageTitle(null, null), 'cloudcli - node-a');
+    assert.equal(getPageTitle(null, null), 'node-a');
   }
   setWorkspace('/');
   Object.defineProperty(window, '__CLOUDCLI_NODE__', {
@@ -88,20 +88,35 @@ test('ignores foreign, empty or malformed machine metadata', () => {
 
 test('keeps node identity first when selecting a project or a session', () => {
   setWorkspace('/cloudcli/linux-gpu/');
-  assert.equal(getPageTitle(project, null), 'cloudcli - linux-gpu · My Project');
+  assert.equal(getPageTitle(project, null), 'linux-gpu · My Project');
   assert.equal(getPageTitle(project, {
     id: 'session-1', summary: 'Fix browser tab title', __provider: 'codex',
-  }), 'cloudcli - linux-gpu · Fix browser tab title');
+  }), 'linux-gpu · Fix browser tab title');
   assert.equal(getPageTitle(project, {
     id: 'session-2', name: 'Cursor session name', __provider: 'cursor',
-  }), 'cloudcli - linux-gpu · Cursor session name');
+  }), 'linux-gpu · Cursor session name');
 });
 
 test('supports older node-scoped builds and preserves the runtime node spelling', () => {
   vi.stubEnv('BASE_URL', '/cloudcli/linux-gpu/');
-  assert.equal(getPageTitle(null, null), 'cloudcli - linux-gpu');
+  assert.equal(getPageTitle(null, null), 'linux-gpu');
   setWorkspace('/cloudcli/node-east-1');
-  assert.equal(getPageTitle(null, null), 'cloudcli - node-east-1');
+  assert.equal(getPageTitle(null, null), 'node-east-1');
+});
+
+test('keeps each machine name visible at the start of long mobile tab titles', () => {
+  for (const [index, name] of ['devbox', 'node-east-1', 'node-east-2', 'node-west'].entries()) {
+    const id = `n-${index.toString(16).padStart(24, '0')}`;
+    setWorkspace(`/cloudcli/${id}/`);
+    Object.defineProperty(window, '__CLOUDCLI_NODE__', {
+      value: { id, name }, configurable: true,
+    });
+    const title = getPageTitle(project, {
+      id: 'session-1', summary: 'A long conversation summary that will be truncated on a phone', __provider: 'codex',
+    });
+    assert.equal(title.slice(0, name.length), name);
+    assert.equal(title, `${name} · A long conversation summary that will be truncated on a phone`);
+  }
 });
 
 test('does not mistake other deployment paths or an uninitialized shared release for a node', () => {
