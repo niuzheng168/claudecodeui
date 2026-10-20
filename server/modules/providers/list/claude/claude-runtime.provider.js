@@ -226,6 +226,23 @@ function matchesToolPermission(entry, toolName, input) {
   return false;
 }
 
+/**
+ * The CLI the SDK should launch, or undefined for the binary the SDK ships.
+ * Shared by runs and by slash-command discovery, which must ask the same CLI.
+ * @returns {string|undefined}
+ */
+export function resolveClaudeExecutableOption() {
+  // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
+  // which does not reliably follow npm's shell wrappers like cross-spawn does.
+  // When nothing resolves the option stays unset on purpose: the SDK then falls back to the
+  // binary it ships, which beats handing it a bare `claude` that raw spawn can never launch.
+  // Managed deployments already bundle a tested SDK binary. An explicitly
+  // configured executable still wins; do not pick an unrelated global CLI.
+  return codeyClaudeGateway.isManaged() && !process.env.CLAUDE_CLI_PATH
+    ? undefined
+    : resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
+}
+
 function mapCliOptionsToSDK(options = {}) {
   const { providerSessionId, cwd, toolsSettings, permissionMode, effort, resumeAnchorId, resumeFromScratch } = options;
 
@@ -238,15 +255,7 @@ function mapCliOptionsToSDK(options = {}) {
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(BG_WAIT_CEILING_MS),
   };
 
-  // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
-  // which does not reliably follow npm's shell wrappers like cross-spawn does.
-  // When nothing resolves the option stays unset on purpose: the SDK then falls back to the
-  // binary it ships, which beats handing it a bare `claude` that raw spawn can never launch.
-  // Managed deployments already bundle a tested SDK binary. An explicitly
-  // configured executable still wins; do not pick an unrelated global CLI.
-  const claudeExecutablePath = codeyClaudeGateway.isManaged() && !process.env.CLAUDE_CLI_PATH
-    ? undefined
-    : resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
+  const claudeExecutablePath = resolveClaudeExecutableOption();
   if (claudeExecutablePath) {
     sdkOptions.pathToClaudeCodeExecutable = claudeExecutablePath;
   }
@@ -436,6 +445,18 @@ function readNumber(value) {
 }
 
 /**
+ * True for the all-zero usage Claude Code stamps on `<synthetic>` replies —
+ * local command output such as /context, and the `result` of a turn that never
+ * called the model. It describes no prompt, so publishing it zeroed the
+ * counter; the history reader skips the same rows.
+ * @param {TokenBudget} budget
+ * @returns {boolean}
+ */
+function isEmptyTokenBudget(budget) {
+  return budget.inputTokens === 0 && budget.outputTokens === 0;
+}
+
+/**
  * The window a budget reports: the managed catalog's when the run has one,
  * otherwise the CONTEXT_WINDOW setting.
  * @param {number} [contextWindow] - Catalog window of the run's model
@@ -524,7 +545,8 @@ function extractTokenBudget(sdkMessage, contextWindow) {
     return null;
   }
 
-  return buildTokenBudget(messageUsage, contextWindow);
+  const budget = buildTokenBudget(messageUsage, contextWindow);
+  return isEmptyTokenBudget(budget) ? null : budget;
 }
 
 /**
@@ -550,7 +572,8 @@ function extractCumulativeTokenBudget(sdkMessage, contextWindow) {
   }
 
   if (sdkMessage.usage && typeof sdkMessage.usage === 'object') {
-    return buildTokenBudget(sdkMessage.usage, contextWindow);
+    const budget = buildTokenBudget(sdkMessage.usage, contextWindow);
+    return isEmptyTokenBudget(budget) ? null : budget;
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
@@ -609,6 +632,42 @@ function startsBackgroundWork(sdkMessage) {
     }
     return DEFERRED_WORK_TOOLS.has(block.name);
   });
+}
+
+/**
+ * Input Claude Code takes as a slash command (`/compact`, `/simplify app.py`),
+ * as opposed to text that merely starts with a path like `/etc/hosts`.
+ */
+const SLASH_COMMAND_INPUT = /^\/[\w:.-]+(?:\s|$)/;
+
+/**
+ * True for a replayed row that carries a local command's output.
+ *
+ * The CLI replays what a command produced alongside the input it took up —
+ * /compact reports "Compacted" this way — but unlike an input echo it is not
+ * already on screen, and history shows it.
+ * @param {Object} sdkMessage - SDK stream message
+ * @returns {boolean}
+ */
+function isLocalCommandOutput(sdkMessage) {
+  const content = sdkMessage?.message?.content;
+  return typeof content === 'string' && /^<local-command-std(?:out|err)>/.test(content);
+}
+
+/**
+ * Uuids of the rows a compaction kept verbatim. The CLI streams them again
+ * right after the boundary for clients rebuilding the conversation; this run
+ * already sent them, and history shows them once, where they first happened.
+ * @param {Object} sdkMessage - `compact_boundary` system message
+ * @returns {string[]}
+ */
+function readPreservedMessageIds(sdkMessage) {
+  const metadata = sdkMessage?.compact_metadata;
+  return [
+    ...(metadata?.preserved_messages?.uuids ?? []),
+    metadata?.preserved_segment?.head_uuid,
+    metadata?.preserved_segment?.tail_uuid,
+  ].filter((uuid) => typeof uuid === 'string' && uuid);
 }
 
 /**
@@ -808,6 +867,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
+  // Rows a compaction kept, which the CLI streams a second time after it.
+  const preservedByCompaction = new Set();
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -842,6 +903,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
      * @returns {Promise<{ clientMessageId: string }>} The uuid the transcript keeps
      */
     async steer(command, steerOptions = {}) {
+      // The CLI runs a slash command as a turn of its own once this one ends
+      // and never echoes it back, so the turn would sit out the follow-up
+      // grace waiting for it. Left queued, it simply runs as the next turn.
+      if (SLASH_COMMAND_INPUT.test(String(command ?? '').trimStart())) {
+        throw new AppError('A slash command runs as its own turn. Keep it queued for the next turn.', {
+          code: 'STEER_UNAVAILABLE', statusCode: 409
+        });
+      }
       let message;
       try {
         [message] = await buildPromptMessages(command, steerOptions.images, steerOptions.files, options.cwd);
@@ -1130,7 +1199,31 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // The CLI took up input this run wrote. The prompt is already on screen
         // and accepted steering echoes its own row, so this only settles it.
         pendingSteerIds.delete(message.uuid);
+        if (!isLocalCommandOutput(message)) {
+          continue;
+        }
+      }
+
+      if (preservedByCompaction.has(message.uuid)) {
         continue;
+      }
+      if (message.type === 'system' && message.subtype === 'compact_boundary') {
+        for (const uuid of readPreservedMessageIds(message)) {
+          preservedByCompaction.add(uuid);
+        }
+      }
+
+      if (message.type === 'system' && message.subtype === 'status' && !turnCompleteSent
+        && (message.status === 'compacting' || message.compact_result)) {
+        // Compacting a large context can take a minute: name it instead of
+        // the generic activity label, and hand the label back once it is done.
+        ws.send(createNormalizedMessage({
+          kind: 'status',
+          text: message.status === 'compacting' ? 'Compacting conversation' : '',
+          canInterrupt: true,
+          sessionId: capturedSessionId || sessionId || null,
+          provider: 'claude'
+        }));
       }
 
       if (steerFollowUpTimer && message.type === 'system' && message.subtype === 'init') {

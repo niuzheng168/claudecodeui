@@ -660,6 +660,43 @@ function stripAnsiFormatting(text: string): string {
 }
 
 /**
+ * What a local command printed, or `null` when the text is not command output.
+ * A command that fails reports on stderr instead (`/compact` with nothing to
+ * compact); both are the command's reply to the user.
+ */
+function readLocalCommandOutput(text: string): string | null {
+  const output = extractTaggedContent(text, 'local-command-stdout')
+    ?? extractTaggedContent(text, 'local-command-stderr');
+  return output === null ? null : stripAnsiFormatting(output).trim();
+}
+
+/**
+ * Live, the SDK streams a compaction summary as a synthetic user message that
+ * lacks the `isCompactSummary` flag its transcript row carries. Claude Code
+ * opens every summary with this sentence.
+ */
+const COMPACT_SUMMARY_PREFIX = 'This session is being continued from a previous conversation';
+
+function isCompactSummaryRow(raw: AnyRecord, text: string): boolean {
+  return raw.isCompactSummary === true
+    || (raw.isSynthetic === true && text.startsWith(COMPACT_SUMMARY_PREFIX));
+}
+
+/**
+ * The reply Claude Code writes into the transcript when it resumes a session
+ * whose last row is a local command, so the conversation alternates again. It
+ * is never streamed and answers nothing the user said.
+ */
+function isNoResponsePlaceholder(raw: AnyRecord): boolean {
+  const content = raw.message?.content;
+  return raw.message?.model === '<synthetic>'
+    && Array.isArray(content)
+    && content.length === 1
+    && content[0]?.type === 'text'
+    && content[0].text === 'No response requested.';
+}
+
+/**
  * Input sent while a turn was running is folded into that turn as a
  * `queued_command` attachment rather than a user row. Returns the user row it
  * stands for and the uuid it was submitted with; queued task notifications and
@@ -738,6 +775,56 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    if (raw.type === 'system') {
+      // Compaction boundaries render through the summary row that follows them,
+      // and the other system events are lifecycle noise.
+      if (raw.subtype !== 'local_command' || typeof raw.content !== 'string' || raw.isMeta === true) {
+        return messages;
+      }
+
+      /**
+       * The transcript keeps a local command's output (`/context`) as a system
+       * row. Live, the SDK streams the same output as a `<synthetic>` assistant
+       * reply with this row's uuid, so the id matches the one that reply gets.
+       */
+      const output = readLocalCommandOutput(raw.content);
+      if (output !== null) {
+        if (output) {
+          messages.push(createNormalizedMessage({
+            id: `${baseId}_0`,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            kind: 'text',
+            role: 'assistant',
+            content: output,
+            isLocalCommandStdout: true,
+          }));
+        }
+        return messages;
+      }
+
+      // A command the CLI cannot run headless (`/model`) is echoed here as
+      // plain text instead of a `<command-name>` user row.
+      const echoedCommand = raw.content.trim();
+      if (echoedCommand.startsWith('/')) {
+        const [commandName, ...commandArgs] = echoedCommand.split(/\s+/);
+        messages.push(createNormalizedMessage({
+          id: baseId,
+          sessionId,
+          timestamp: ts,
+          provider: PROVIDER,
+          kind: 'text',
+          role: 'user',
+          content: echoedCommand,
+          commandName,
+          commandArgs: commandArgs.join(' '),
+          isLocalCommand: true,
+        }));
+      }
+      return messages;
+    }
 
     if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
       if (Array.isArray(raw.message.content)) {
@@ -839,7 +926,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
          * text; otherwise it is both filtered by the generic internal-prefix
          * check and visually mislabeled as a user message.
          */
-        if (raw.isCompactSummary === true && text.trim()) {
+        if (isCompactSummaryRow(raw, text) && text.trim()) {
           messages.push(createNormalizedMessage({
             id: baseId,
             sessionId,
@@ -886,9 +973,8 @@ export class ClaudeSessionsProvider implements IProviderSessions {
          * command. Re-label it as assistant text so the chat transcript matches
          * the actual conversational flow seen by the user.
          */
-        const localCommandStdout = extractTaggedContent(text, 'local-command-stdout');
-        if (localCommandStdout !== null) {
-          const stdoutText = stripAnsiFormatting(localCommandStdout).trim();
+        const stdoutText = readLocalCommandOutput(text);
+        if (stdoutText !== null) {
           if (stdoutText) {
             messages.push(createNormalizedMessage({
               id: baseId,
@@ -965,6 +1051,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     }
 
     if (raw.message?.role === 'assistant' && raw.message?.content) {
+      if (isNoResponsePlaceholder(raw)) {
+        return messages;
+      }
       if (Array.isArray(raw.message.content)) {
         let partIndex = 0;
         for (const part of raw.message.content) {

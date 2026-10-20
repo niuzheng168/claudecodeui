@@ -4,7 +4,7 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 import { api } from '@/shared/api';
 import { safeLocalStorage } from '@/modules/chat/utils/chatStorage';
 import type { LLMProvider, Project, SlashCommand } from '@/shared/types';
-import { isNativeCodexCommand } from '@/shared/utils';
+import { isNativeClaudeCommand, isNativeCodexCommand } from '@/shared/utils';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -60,6 +60,11 @@ const isPromiseLike = (value: unknown): value is Promise<unknown> =>
 
 const isSkillCommand = (command: SlashCommand) =>
   command.type === 'skill' || command.metadata?.type === 'skill';
+
+// Provider-native commands are completed into the input on selection and only
+// run from an exact Enter, like a typed message.
+const isNativeCommand = (command: SlashCommand) =>
+  isNativeCodexCommand(command) || isNativeClaudeCommand(command);
 
 const dedupeProviderSkills = (skills: ProviderSkill[]): ProviderSkill[] => {
   const seenCommands = new Set<string>();
@@ -184,16 +189,22 @@ export function useSlashCommands({
           : null;
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
+        const customCommands = ((data.custom || []) as SlashCommand[]).map((command) => ({
+          ...command,
+          type: 'custom',
+        }));
+        // The user's own skill or command of the same name takes the slot of a
+        // Claude Code command rather than being listed twice.
+        const userCommandNames = new Set([...skillCommands, ...customCommands].map((command) => command.name));
         const allCommands: SlashCommand[] = [
-          ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
-            ...command,
-            type: 'built-in',
-          })),
+          ...((data.builtIn || []) as SlashCommand[])
+            .filter((command) => !(isNativeClaudeCommand(command) && userCommandNames.has(command.name)))
+            .map((command) => ({
+              ...command,
+              type: 'built-in',
+            })),
           ...skillCommands,
-          ...((data.custom || []) as SlashCommand[]).map((command) => ({
-            ...command,
-            type: 'custom',
-          })),
+          ...customCommands,
         ];
 
         const parsedHistory = readCommandHistory(selectedProject.projectId);
@@ -309,11 +320,11 @@ export function useSlashCommands({
 
   const selectCommandFromKeyboard = useCallback(
     (command: SlashCommand, executeNative = false) => {
-      if (isNativeCodexCommand(command) && executeNative && input.trimEnd() === command.name) {
+      if (isNativeCommand(command) && executeNative && input.trimEnd() === command.name) {
         executeNonSkillCommand(command);
         return;
       }
-      if (isSkillCommand(command) || isNativeCodexCommand(command)) {
+      if (isSkillCommand(command) || isNativeCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
@@ -335,7 +346,7 @@ export function useSlashCommands({
       }
 
       trackCommandUsage(command);
-      if (isSkillCommand(command) || isNativeCodexCommand(command)) {
+      if (isSkillCommand(command) || isNativeCommand(command)) {
         insertCommandIntoInput(command);
         return;
       }
@@ -410,7 +421,7 @@ export function useSlashCommands({
         // An exact native command must not select a different item while the
         // search debounce still holds the previous query. Tab only completes.
         const exact = slashCommands.find((command) =>
-          isNativeCodexCommand(command) && command.name === input.trimEnd());
+          isNativeCommand(command) && command.name === input.trimEnd());
         if (exact) {
           event.preventDefault();
           selectCommandFromKeyboard(exact, event.key === 'Enter');

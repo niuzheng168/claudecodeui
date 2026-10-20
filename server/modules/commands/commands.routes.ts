@@ -10,6 +10,8 @@ type CommandsRouterDependencies = {
   homeDirectory(): string;
   appRoot: string;
   models: typeof import('../providers/index.js').providerModelsService;
+  /** Claude Code's own commands for Claude chats; absent lists none. */
+  claudeNativeCommands?: () => Promise<Array<{ name: string; description: string }>>;
   runtime: {
     uptime(): number;
     memoryUsage(): NodeJS.MemoryUsage;
@@ -220,8 +222,38 @@ const codexCommands = [
     metadata: { type: "native", provider: "codex" },
   },
 ];
-const commandsForProvider = (provider) =>
-  provider === "codex" ? [...builtInCommands, ...codexCommands] : builtInCommands;
+/**
+ * Claude Code's own commands for a Claude chat. The composer sends them to
+ * Claude as an ordinary message, so they only take names Codey's built-ins
+ * leave free (`/cost`, `/status`, `/help`...), and `/goal` stays the Codex
+ * command. When discovery fails the built-ins are listed on their own.
+ */
+const listClaudeNativeCommands = async () => {
+  let discovered = [];
+  try {
+    discovered = (await dependencies.claudeNativeCommands?.()) ?? [];
+  } catch (error) {
+    console.warn("Error listing Claude Code commands:", error?.message ?? error);
+  }
+  const reserved = new Set([...builtInCommands, ...codexCommands].map((command) => command.name));
+  return discovered
+    .filter((command) => !reserved.has(command.name))
+    .map((command) => ({
+      name: command.name,
+      description: command.description,
+      namespace: "builtin",
+      metadata: { type: "native", provider: "claude" },
+    }));
+};
+
+const commandsForProvider = async (provider) => {
+  if (provider === "codex") {
+    return [...builtInCommands, ...codexCommands];
+  }
+  return provider === "claude"
+    ? [...builtInCommands, ...(await listClaudeNativeCommands())]
+    : builtInCommands;
+};
 
 /**
  * Built-in command handlers
@@ -229,7 +261,7 @@ const commandsForProvider = (provider) =>
  */
 const builtInHandlers = {
   "/help": async (args, context) => {
-    const availableCommands = commandsForProvider(readModelProvider(context?.provider));
+    const availableCommands = await commandsForProvider(readModelProvider(context?.provider));
     const helpText = `# ${MODEL_PROVIDER_LABELS[readModelProvider(context?.provider)]} Commands
 
 ## Built-in Commands
@@ -464,7 +496,7 @@ Custom commands can be created in:
 router.post("/list", async (req, res) => {
   try {
     const { projectPath, provider } = req.body;
-    const availableCommands = commandsForProvider(readModelProvider(provider));
+    const availableCommands = await commandsForProvider(readModelProvider(provider));
     const allCommands = [...availableCommands];
 
     // Scan project-level commands (.claude/commands/)

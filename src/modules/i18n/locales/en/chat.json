@@ -71,6 +71,9 @@
     "codex": "Codex",
     "opencode": "OpenCode"
   },
+  "compactSummary": {
+    "title": "Summary of the compacted conversation"
+  },
   "tools": {
     "settings": "Tool Settings",
     "error": "Tool Error",

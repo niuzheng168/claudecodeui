@@ -276,6 +276,21 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   )
                 )}
               </>
+            ) : message.isCompactSummary ? (
+              /* The summary Claude continues from after a compaction is long
+                 and written for the model, so it stays folded under one line. */
+              <Reasoning defaultOpen={isExporting}>
+                <ReasoningTrigger
+                  getThinkingMessage={() => (
+                    <p>{t('compactSummary.title', { defaultValue: 'Summary of the compacted conversation' })}</p>
+                  )}
+                />
+                <ReasoningContent>
+                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                    {formattedMessageContent}
+                  </Markdown>
+                </ReasoningContent>
+              </Reasoning>
             ) : message.isThinking ? (
               /* Thinking messages — Reasoning component (ai-elements pattern) */
               <Reasoning defaultOpen={isExporting}>

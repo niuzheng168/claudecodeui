@@ -121,3 +121,15 @@ test('a managed run reports its catalog window instead of the CONTEXT_WINDOW gue
     else process.env.CONTEXT_WINDOW = previous;
   }
 });
+
+test('a reply that never called the model emits no budget', () => {
+  // Local commands (/context, /compact) answer with a `<synthetic>` reply and
+  // a result whose usage is all zeros; publishing either showed "0" until the
+  // next real turn.
+  const zero = { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+  assert.equal(extractTokenBudget({
+    type: 'assistant',
+    message: { model: '<synthetic>', usage: zero, content: [{ type: 'text', text: '## Context Usage' }] },
+  }), null);
+  assert.equal(extractCumulativeTokenBudget({ type: 'result', usage: zero }), null);
+});

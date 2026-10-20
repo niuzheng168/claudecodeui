@@ -3,7 +3,7 @@ import os from 'node:os';
 
 import express from 'express';
 
-import { codexCommandsService, providerModelsService } from '@/modules/providers/index.js';
+import { claudeNativeCommandsService, codexCommandsService, providerModelsService } from '@/modules/providers/index.js';
 import { findApplicationRoot, getModuleDirectory } from '@/shared/index.js';
 
 import { createCommandsRouter } from './commands.routes.js';
@@ -17,6 +17,7 @@ commandsRoutes.use(createCommandsRouter({
   homeDirectory: os.homedir,
   appRoot: findApplicationRoot(getModuleDirectory(import.meta.url)),
   models: providerModelsService,
+  claudeNativeCommands: () => claudeNativeCommandsService.list(),
   runtime: {
     uptime: process.uptime,
     memoryUsage: process.memoryUsage,

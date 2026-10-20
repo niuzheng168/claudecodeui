@@ -33,6 +33,12 @@ export function isNativeCodexCommand(command: SlashCommand): boolean {
     && command.metadata?.type === 'native' && command.metadata.provider === 'codex';
 }
 
+/** Claude Code's own commands (`/compact`, `/context`...), which chat sends to Claude as an ordinary message. */
+export function isNativeClaudeCommand(command: SlashCommand): boolean {
+  return command.namespace === 'builtin'
+    && command.metadata?.type === 'native' && command.metadata.provider === 'claude';
+}
+
 /** Chat's canonical keyboard handler and input shell recognize the same explicit mode chord, excluding AltGr. */
 export function isComposerModeShortcut(event: {
   key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean;

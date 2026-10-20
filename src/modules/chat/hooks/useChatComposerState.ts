@@ -16,7 +16,7 @@ import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { StoredQueuedMessage, SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
-import { isComposerModeShortcut, isNativeCodexCommand } from '@/shared/utils';
+import { isComposerModeShortcut, isNativeClaudeCommand, isNativeCodexCommand } from '@/shared/utils';
 import {
   clearQueuedMessage,
   enqueueQueuedMessage,
@@ -402,7 +402,7 @@ export function useChatComposerState({
         return;
       }
 
-      if (isNativeCodexCommand(command)) {
+      if (isNativeCodexCommand(command) || isNativeClaudeCommand(command)) {
         // Exact native commands selected with Enter go through the same
         // guarded submit path; the legacy custom-command executor is not used.
         await handleSubmitRef.current?.(createFakeSubmitEvent());
@@ -862,7 +862,9 @@ export function useChatComposerState({
                 metadata: { type: 'builtin' },
               } as SlashCommand)
             : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
+        // Skills and Claude Code's own commands are Claude's to run, so they
+        // go out as an ordinary message.
+        if (matchedCommand && matchedCommand.type !== 'skill' && !isNativeClaudeCommand(matchedCommand)) {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           setInput('');
           inputValueRef.current = '';
