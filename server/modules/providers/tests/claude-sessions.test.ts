@@ -571,3 +571,80 @@ test('resolving an edit anchor skips rows that are not conversation turns', { co
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('input steered into a running turn shows where the turn took it up', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-steered-history-'));
+  const sessionId = 'claude-steered-session';
+
+  try {
+    const transcriptPath = path.join(tempRoot, `${sessionId}.jsonl`);
+    // The shape the CLI writes when stdin input arrives mid-turn: it is folded
+    // in after the next tool result as a `queued_command` attachment carrying
+    // the uuid it was submitted with. Queued task notifications share the shape.
+    const rows = [
+      {
+        type: 'user', uuid: 'q1', parentUuid: null, sessionId,
+        timestamp: '2026-10-20T10:00:00.000Z',
+        message: { role: 'user', content: 'run the two checks' },
+      },
+      {
+        type: 'assistant', uuid: 'qa1', parentUuid: 'q1', sessionId,
+        timestamp: '2026-10-20T10:00:01.000Z',
+        message: {
+          role: 'assistant', model: 'claude-opus-5.5',
+          content: [{ type: 'tool_use', id: 'tool-q1', name: 'Bash', input: { command: 'sleep 5' } }],
+        },
+      },
+      {
+        type: 'user', uuid: 'qr1', parentUuid: 'qa1', sessionId,
+        timestamp: '2026-10-20T10:00:06.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-q1', content: 'one' }] },
+      },
+      {
+        type: 'attachment', uuid: 'qat1', parentUuid: 'qr1', sessionId,
+        timestamp: '2026-10-20T10:00:06.100Z',
+        attachment: {
+          type: 'queued_command', prompt: 'also end with PINEAPPLE',
+          source_uuid: '11111111-2222-4333-8444-555555555555', commandMode: 'prompt',
+        },
+      },
+      {
+        type: 'attachment', uuid: 'qat2', parentUuid: 'qat1', sessionId,
+        timestamp: '2026-10-20T10:00:06.200Z',
+        attachment: {
+          type: 'queued_command', prompt: '<task-notification>done</task-notification>',
+          source_uuid: '22222222-2222-4333-8444-555555555555', commandMode: 'task-notification',
+        },
+      },
+      {
+        type: 'assistant', uuid: 'qa2', parentUuid: 'qat2', sessionId,
+        timestamp: '2026-10-20T10:00:09.000Z',
+        message: { role: 'assistant', model: 'claude-opus-5.5', content: [{ type: 'text', text: 'Both ran. PINEAPPLE' }] },
+      },
+    ];
+    await writeFile(transcriptPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(sessionId, 'claude', tempRoot, 'Steered session', now, now, transcriptPath);
+
+      const history = await new ClaudeSessionsProvider().fetchHistory(sessionId, { providerSessionId: sessionId });
+      const userRows = history.messages.filter((message) => message.kind === 'text' && message.role === 'user');
+
+      assert.deepEqual(
+        history.messages.filter((message) => message.kind === 'text').map((message) => message.content),
+        ['run the two checks', 'also end with PINEAPPLE', 'Both ran. PINEAPPLE'],
+      );
+      // The steering echo carries the submitted uuid, so it retires against
+      // this row instead of leaving a second bubble behind.
+      assert.deepEqual(userRows.map((message) => message.clientMessageId), [
+        'q1', '11111111-2222-4333-8444-555555555555',
+      ]);
+      // Editing resumes before a prompt; mid-turn that would cut off a tool result.
+      assert.deepEqual(userRows.map((message) => message.transcriptAnchorId), ['q1', undefined]);
+      assert.equal(userRows[1].forkAnchorId, 'qat1');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

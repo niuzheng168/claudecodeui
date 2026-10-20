@@ -33,7 +33,7 @@ async function fixture(t: TestContext, body: (f: {
     canInterrupt?: () => boolean;
     prepareObservation?: (provider: string, sessionId: string) => Promise<ProviderRuntimeObservation | null>;
     canSteer: () => boolean;
-    steer: (provider: string, sessionId: string, command: string, options: AnyRecord) => Promise<void>;
+    steer: (provider: string, sessionId: string, command: string, options: AnyRecord) => Promise<void | AnyRecord>;
   };
 }) => Promise<void>) {
   t.mock.method(sessionsDb, 'getSessionById', (id: string) => id === 'session-a'
@@ -94,6 +94,19 @@ test('accepted corrections use the same run and are echoed once to all subscribe
     assert.equal(client.frames.at(-1)?.accepted, true);
     assert.equal(observer.frames.some((frame) => frame.kind === 'chat_steer_result'), false);
     assert.equal(chatRunRegistry.replayEvents('session-a', 0)[0].content, 'Focus on the tests');
+  });
+});
+
+test('the echo carries the identity a runtime reports for the native input', async (t) => {
+  await fixture(t, async ({ send, client, observer, runtime }) => {
+    // Claude keeps the uuid it chose as the transcript row's identity; the echo
+    // must carry that one so history retires it instead of showing it twice.
+    t.mock.method(runtime, 'steer', async () => ({ clientMessageId: 'native-input-uuid' }));
+    await send();
+    for (const ws of [client, observer]) {
+      assert.deepEqual(ws.frames.filter((frame) => frame.role === 'user').map((frame) => frame.clientMessageId), ['native-input-uuid']);
+    }
+    assert.equal(client.frames.at(-1)?.accepted, true);
   });
 });
 

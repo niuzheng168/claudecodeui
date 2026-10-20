@@ -14,6 +14,7 @@ import type {
   ProviderRunFunction,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
+  ProviderSteerReceipt,
 } from '@/shared/index.js';
 
 type ProviderRuntimeServiceDependencies = {
@@ -143,14 +144,14 @@ export function createProviderRuntimeService(
       return dependencies.resolveProvider(providerName).runtime.canSteer?.(sessionId) === true;
     },
 
-    async steer(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void> {
+    async steer(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt> {
       const runtime = dependencies.resolveProvider(providerName).runtime;
       if (!runtime.steer) {
         throw new AppError('This runtime does not support steering. Queue the message instead.', {
           code: 'STEER_UNSUPPORTED', statusCode: 409,
         });
       }
-      await runtime.steer(sessionId, command, options);
+      return runtime.steer(sessionId, command, options);
     },
 
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {

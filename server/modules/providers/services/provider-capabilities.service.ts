@@ -34,6 +34,11 @@ type ProviderCapabilities = {
    * Whether a session's transcript can be branched into an independent one.
    */
   supportsSessionForking: boolean;
+  /**
+   * Whether a running turn can take a queued message immediately. Each run
+   * still advertises it live, since not every turn of a provider accepts input.
+   */
+  supportsSteering: boolean;
 };
 
 /**
@@ -57,6 +62,8 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // `forkSession` copies a transcript prefix into a new session file.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    // Input written to the CLI's open stdin joins the turn at its next tool boundary.
+    supportsSteering: true,
   },
   cursor: {
     provider: 'cursor',
@@ -70,6 +77,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsEffort: false,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsSteering: false,
   },
   codex: {
     provider: 'codex',
@@ -87,6 +95,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // which is how Codex's own IDE clients do it.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    supportsSteering: true,
   },
   opencode: {
     provider: 'opencode',
@@ -103,6 +112,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsEffort: true,
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsSteering: false,
   },
 };
 

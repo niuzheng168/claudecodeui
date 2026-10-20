@@ -1053,7 +1053,7 @@ export function useChatComposerState({
     const scope = sessionKey;
     const saved = scope ? readQueuedMessages(scope).find((message, index) => messageId ? message.id === messageId : index === 0) : null;
     const draft = queuedDrafts.find(candidate => matchesQueuedDraft(candidate, saved ?? null));
-    if (!scope || !isLoading || provider !== 'codex' || !steerMessage || editingAnchorId
+    if (!scope || !isLoading || !steerMessage || editingAnchorId
       || steeringInFlightRef.current || queuedDraftSessionRef.current !== scope
       || !saved || saved.steerHold || !draft || draft.steerHold) return;
 
@@ -1093,7 +1093,7 @@ export function useChatComposerState({
       void hydrateChatDrafts();
     }
   }, [
-    editingAnchorId, isLoading, provider, queuedDrafts,
+    editingAnchorId, isLoading, queuedDrafts,
     scrollToBottom, sessionKey, setIsUserScrolledUp, steerMessage,
   ]);
 

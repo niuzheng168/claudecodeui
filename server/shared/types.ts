@@ -600,6 +600,14 @@ export type ProviderAbortOptions = {
 };
 
 /**
+ * Returned by a steering runtime that names the native input itself, so the
+ * accepted echo carries the identity its persisted history row reports.
+ */
+export type ProviderSteerReceipt = {
+  clientMessageId?: string;
+};
+
+/**
  * A read-only, verified external run prepared by a provider for the websocket
  * gateway. Preparation must not submit input, start/resume an idle task or
  * change settings. The gateway atomically reserves its app-session run before

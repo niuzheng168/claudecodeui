@@ -125,6 +125,7 @@ function ChatInterface({
     resolvePermissionModeForProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    supportsSteering,
   } = useChatProviderState({
     selectedSession,
     selectedProject,
@@ -270,7 +271,7 @@ function ChatInterface({
     activeRunId: steering.runId,
     tokenBudget,
     sendMessage,
-    steerMessage: steering.steerMessage,
+    steerMessage: supportsSteering ? steering.steerMessage : undefined,
     sendByCtrlEnter,
     onSessionProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -514,7 +515,7 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
-          onSteerQueued={provider === 'codex' ? handleSteerQueued : undefined}
+          onSteerQueued={supportsSteering ? handleSteerQueued : undefined}
           canSteer={steering.canSteerQueued}
           steerUnavailableReason={steering.queuedUnavailableReason}
           isSteering={isSteering}

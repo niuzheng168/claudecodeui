@@ -52,7 +52,7 @@ function consumeQueue(scope = 'a') {
   if (draft) mocks.drafts.set(scope, { ...draft, queuedMessage: null });
 }
 
-function fixture(steerMessage: SteerChatMessage = vi.fn(async (scope) => consumeQueue(scope))) {
+function fixture(steerMessage: SteerChatMessage | null = vi.fn(async (scope) => consumeQueue(scope))) {
   const send = vi.fn();
   const echo = vi.fn();
   const processing = vi.fn();
@@ -64,7 +64,7 @@ function fixture(steerMessage: SteerChatMessage = vi.fn(async (scope) => consume
       resolvePermissionModeForProvider: resolvePermissionMode, currentProviderModel: 'test-model',
       currentProviderEffort: 'high', isLoading: busy, canAbortSession: busy, tokenBudget: null,
       activeRunId: busy ? `run-${sessionId}` : null,
-      sendMessage: send, steerMessage, onSessionProcessing: processing,
+      sendMessage: send, steerMessage: steerMessage ?? undefined, onSessionProcessing: processing,
       scrollToBottom: noop, addMessage: echo, setIsUserScrolledUp: noop,
       setPendingPermissionRequests: noop,
     }),
@@ -301,16 +301,32 @@ test('a failed upload keeps unsent input and cannot produce a partial queued app
   errorLog.mockRestore();
 });
 
-test('no queue, idle or non-Codex sessions cannot be steered', async () => {
+test('no queue or idle sessions cannot be steered', async () => {
   const view = fixture();
   act(() => view.result.current.setInput('Not sent yet'));
   await act(async () => { await view.result.current.handleSteerQueued(); });
   await queue(view);
   view.rerender({ sessionId: 'a', provider: 'codex', busy: false });
   await act(async () => { await view.result.current.handleSteerQueued(); });
-  view.rerender({ sessionId: 'a', provider: 'claude', busy: true });
-  await act(async () => { await view.result.current.handleSteerQueued(); });
   expect(view.steerMessage).not.toHaveBeenCalled();
+});
+
+test('a running Claude turn promotes its queued message', async () => {
+  const view = fixture();
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true });
+  const saved = await queue(view, 'Also check X');
+  await act(async () => { await view.result.current.handleSteerQueued(); });
+  expect(view.steerMessage).toHaveBeenCalledWith('a', 'Also check X', [], saved);
+  expect(readQueuedMessage('a')).toBeNull();
+});
+
+test('a queued message stays queued when the node cannot steer the provider', async () => {
+  // ChatInterface passes no steerMessage when the node backend cannot steer it.
+  const view = fixture(null);
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true });
+  const waiting = await queue(view, 'Stays queued');
+  await act(async () => { await view.result.current.handleSteerQueued(); });
+  expect(readQueuedMessages('a')).toEqual([waiting]);
 });
 
 test('restoring or hydrating consumed/remote queues never writes them back to the server', async () => {

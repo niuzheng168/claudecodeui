@@ -7,7 +7,7 @@ import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings
 import type { ProviderModelsDefinition } from '@/shared/types';
 import { CODEY_MODEL_API_SETTINGS_CHANGED_EVENT } from '@/shared/constants';
 
-const providerApiMocks = vi.hoisted(() => ({ models: vi.fn(), deleteModel: vi.fn() }));
+const providerApiMocks = vi.hoisted(() => ({ models: vi.fn(), deleteModel: vi.fn(), capabilities: vi.fn() }));
 
 const managedCodexModels: ProviderModelsDefinition = {
   DEFAULT: 'gpt-6.1-sol',
@@ -44,7 +44,7 @@ vi.mock('@/shared/api', () => ({
     },
     providers: {
       models: providerApiMocks.models,
-      capabilities: () => okJson({ success: true, data: null }),
+      capabilities: providerApiMocks.capabilities,
       sessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveEffort: () => okJson({ success: true, data: null }),
@@ -68,6 +68,7 @@ beforeEach(() => {
   localStorage.clear();
   providerApiMocks.models.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   providerApiMocks.deleteModel.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
+  providerApiMocks.capabilities.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
   resetUserPreferences();
@@ -336,4 +337,34 @@ test('the active provider’s model is what currentProviderModel reports', async
     assert.equal(result.current.provider, 'cursor');
   });
   assert.equal(result.current.currentProviderModel, 'cursor-active');
+});
+
+const capabilityRow = (provider: string, extra: Record<string, unknown> = {}) => ({
+  provider, permissionModes: ['default'], defaultPermissionMode: 'default', supportsImages: true,
+  supportsFiles: true, supportsAbort: true, supportsPermissionRequests: false, supportsTokenUsage: true, ...extra,
+});
+
+test('queued-message steering follows the node backend’s capability matrix', async () => {
+  providerApiMocks.capabilities.mockImplementation(() => okJson({ success: true, data: { providers: [
+    capabilityRow('claude', { supportsSteering: true }), capabilityRow('codex', { supportsSteering: true }),
+    capabilityRow('cursor', { supportsSteering: false }),
+  ] } }));
+  writeUserPreference('selectedProvider', 'claude');
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.supportsSteering, true));
+  act(() => result.current.setProvider('cursor'));
+  assert.equal(result.current.supportsSteering, false);
+});
+
+test('a node backend that predates the steering capability keeps it Codex-only', async () => {
+  providerApiMocks.capabilities.mockImplementation(() => okJson({ success: true, data: { providers: [
+    capabilityRow('claude'), capabilityRow('codex'),
+  ] } }));
+  writeUserPreference('selectedProvider', 'claude');
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(providerApiMocks.capabilities.mock.calls.length > 0, true));
+  await act(async () => {});
+  assert.equal(result.current.supportsSteering, false);
+  act(() => result.current.setProvider('codex'));
+  assert.equal(result.current.supportsSteering, true);
 });

@@ -21,6 +21,7 @@ import type {
   ProviderAbortOptions,
   ProviderRuntimeObservation,
   ProviderRuntimeWriter,
+  ProviderSteerReceipt,
 } from '@/shared/types.js';
 import { AppError, createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
 import { generateMessageId, readObjectRecord } from '@/shared/index.js';
@@ -81,7 +82,7 @@ export type ProviderRuntimeGateway = {
   canInterrupt?(provider: LLMProvider, sessionId: string): boolean;
   prepareObservation?(provider: LLMProvider, sessionId: string): Promise<ProviderRuntimeObservation | null>;
   canSteer?(provider: LLMProvider, sessionId: string): boolean;
-  steer?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void>;
+  steer?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
 };
@@ -295,8 +296,13 @@ async function performChatSteer(
     }
     // Distinct from the HTTP/WebSocket request id: every native submission has
     // its own persisted identity, including intentionally repeated text.
-    const clientMessageId = generateMessageId('codey_user');
-    await dependencies.runtime.steer(run.provider, sessionId, command, { images, files, clientMessageId });
+    const requestedClientMessageId = generateMessageId('codey_user');
+    const receipt = await dependencies.runtime.steer(run.provider, sessionId, command, {
+      images, files, clientMessageId: requestedClientMessageId,
+    });
+    // A runtime that names the native input itself reports that name, so the
+    // echo below and the persisted history row retire each other.
+    const clientMessageId = receipt?.clientMessageId ?? requestedClientMessageId;
     // The daemon owns persistence. This accepted echo goes to every watching
     // Codey tab and is replayable without a duplicate optimistic client row.
     try {

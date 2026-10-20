@@ -19,6 +19,7 @@ import type {
   ProviderRuntimeContext,
   ProviderAbortOptions,
   ProviderRuntimeObservation,
+  ProviderSteerReceipt,
   ProviderRuntimePermissionGateway,
   ProviderRuntimeWriter,
   UpsertProviderMcpServerInput,
@@ -83,7 +84,7 @@ export interface IProviderRuntime {
   /** True while this adapter tracks a running turn that accepts extra input; this does not grant interruption ownership. */
   canSteer?(sessionId: string): boolean;
   /** Append input to the current turn; never interrupt, restart, or queue it. */
-  steer?(sessionId: string, command: string, options: AnyRecord): Promise<void>;
+  steer?(sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt>;
   permissions?: ProviderRuntimePermissionGateway;
 }
 

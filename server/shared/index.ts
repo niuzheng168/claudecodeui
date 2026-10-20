@@ -17,7 +17,7 @@ export type {
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
   NewCodexSessionTitleRequest, ProviderRunFunction,
   LLMProvider, NativeTranscriptPosition, ProviderAbortOptions, ProviderRuntimeObservation,
-  CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
+  ProviderSteerReceipt, CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
 } from './types.js';
 export {
   createCompleteMessage, createNormalizedMessage, resolveCodexHomeDirectory,

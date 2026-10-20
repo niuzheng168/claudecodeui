@@ -40,7 +40,7 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import { AppError, createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -73,6 +73,11 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 // that never reports at all, so an abandoned session cannot leak a CLI process
 // forever. The timer resets on every message, so it measures silence, not total time.
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
+
+// Steering that misses a turn's last tool boundary runs as a follow-up turn,
+// which the CLI starts (with a `system init`) right after the `result`. If none
+// starts within this grace period, the turn is settled instead of left running.
+const STEER_FOLLOW_UP_GRACE_MS = 30 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -332,8 +337,9 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
+ * @param {Object} steering - The run's { canSteer, steer, cancelPending } handle
  */
-function addSession(sessionId, queryInstance, writer = null, releaseInput = null) {
+function addSession(sessionId, queryInstance, writer = null, releaseInput = null, steering = null) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
   // superseded without being stopped (e.g. an abort that raced run setup and
@@ -348,6 +354,7 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
   if (superseding) {
     supersededInstances.add(existing.instance);
     Promise.resolve()
+      .then(() => existing.steering?.cancelPending())
       .then(() => existing.instance.interrupt())
       .catch((error) => {
         console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
@@ -361,7 +368,8 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
     status: 'active',
     writer,
     // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    steering: steering || carried?.steering || null
   });
 }
 
@@ -640,24 +648,51 @@ async function buildPromptMessages(command, images, files, cwd) {
  * The SDK closes the CLI's stdin as soon as its input iterable is exhausted (and
  * immediately on `result` for string prompts). The CLI reads that EOF as the end
  * of the run and kills anything still going in the background, so the iterable
- * has to stay pending until we actually want the process gone.
+ * has to stay pending until we actually want the process gone. While it parks,
+ * `push` writes steering input to the same stdin.
  *
  * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
+ * @returns {{ stream: AsyncIterable, release: () => void, push: (message: Object) => boolean }}
+ *   Stream, its closer, and an appender that refuses once the stream is released
  */
 function createHeldPromptStream(messages) {
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
+  const queued = [...messages];
+  let released = false;
+  let wake = null;
+  const notify = () => {
+    const resolve = wake;
+    wake = null;
+    resolve?.();
+  };
 
   const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
+    for (;;) {
+      while (queued.length > 0) {
+        yield queued.shift();
+      }
+      if (released) {
+        return;
+      }
+      // Keeps stdin open — the CLI stays alive until release() is called.
+      await new Promise((resolve) => { wake = resolve; });
     }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
   })();
 
-  return { stream, release };
+  return {
+    stream,
+    release: () => {
+      released = true;
+      notify();
+    },
+    push: (message) => {
+      if (released) {
+        return false;
+      }
+      queued.push(message);
+      notify();
+      return true;
+    }
+  };
 }
 
 /**
@@ -749,7 +784,16 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Closes the held stdin stream so the CLI can wind down. Replaced once the
   // stream exists; the finally block calls it no matter how the run ends.
   let releasePromptStream = () => {};
+  // Appends steering input to the same stdin; replaced alongside the closer.
+  let pushPrompt = () => false;
   let idleReleaseTimer = null;
+  // True while the client-facing turn is running and can take steering input.
+  let acceptsSteering = false;
+  // Steering written to stdin that the CLI has not taken up yet, by SDK uuid.
+  // The CLI folds each into the running turn at its next tool boundary, or runs
+  // it as a follow-up turn when none comes; its replay marks it consumed.
+  const pendingSteerIds = new Set();
+  let steerFollowUpTimer = null;
   // The client is told the turn is over as soon as `result` lands, even though
   // the process lingers, so the UI never waits out the idle hold.
   let turnCompleteSent = false;
@@ -786,6 +830,81 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Hoisted above the try so the catch's cleanup can tell whether this run
   // still owns the activeSessions entry (or was superseded by a newer run).
   let queryInstance = null;
+
+  const steering = {
+    canSteer: () => acceptsSteering,
+
+    /**
+     * Writes the input to the running CLI without interrupting it. Model,
+     * effort and permissions stay those of the run.
+     * @returns {Promise<{ clientMessageId: string }>} The uuid the transcript keeps
+     */
+    async steer(command, steerOptions = {}) {
+      const [message] = await buildPromptMessages(command, steerOptions.images, steerOptions.files, options.cwd);
+      const uuid = crypto.randomUUID();
+      pendingSteerIds.add(uuid);
+      // 'next' folds the input into the running turn at its next tool boundary.
+      if (!acceptsSteering || !pushPrompt({ ...message, uuid, priority: 'next' })) {
+        pendingSteerIds.delete(uuid);
+        throw new AppError('This turn cannot be steered now. Keep the draft or queue it for the next turn.', {
+          code: 'STEER_UNAVAILABLE', statusCode: 409
+        });
+      }
+      return { clientMessageId: uuid };
+    },
+
+    // Stop must not let queued steering start a new turn after the interrupt.
+    cancelPending: () => Promise.all([...pendingSteerIds].map((uuid) => (
+      Promise.resolve(queryInstance?.cancelAsyncMessage?.(uuid)).catch(() => {})
+    )))
+  };
+
+  // Ends the client-facing turn once its `result` is in: reports completion and
+  // lets the CLI exit unless background work still has to report back.
+  const settleTurn = () => {
+    acceptsSteering = false;
+    const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
+    if (!turnCompleteSent && !abortPending) {
+      turnCompleteSent = true;
+      ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+      notifyRunStopped({
+        userId: ws?.userId || null,
+        provider: 'claude',
+        sessionId: sessionId || capturedSessionId || null,
+        sessionName: sessionSummary,
+        stopReason: 'completed'
+      });
+    } else if (heldForBackgroundWork && !abortPending) {
+      // A result after the turn already reported complete means the work we
+      // held the process open for has finished and pushed a follow-up turn.
+      notifyBackgroundWorkCompleted({
+        userId: ws?.userId || null,
+        provider: 'claude',
+        sessionId: sessionId || capturedSessionId || null,
+        sessionName: sessionSummary
+      });
+    }
+    if (backgroundWorkPending) {
+      // Work started during this turn is still running. Hold the process
+      // open so it can finish and report back in a follow-up turn; the
+      // ceiling is only a backstop for work that never reports.
+      backgroundWorkPending = false;
+      heldForBackgroundWork = true;
+      scheduleRelease();
+    } else {
+      // Either nothing was backgrounded, or the background work just
+      // reported in — let the CLI exit now, as it always has.
+      heldForBackgroundWork = false;
+      releasePromptStream();
+    }
+  };
+
+  const clearSteerFollowUp = () => {
+    if (steerFollowUpTimer) {
+      clearTimeout(steerFollowUpTimer);
+      steerFollowUpTimer = null;
+    }
+  };
 
   try {
     const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
@@ -931,8 +1050,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
+    // The CLI echoes stdin input back when it takes it up. That echo is how
+    // steering learns its input was consumed; it is never forwarded.
+    sdkOptions.extraArgs = { ...sdkOptions.extraArgs, 'replay-user-messages': null };
+
     let heldPrompt = createHeldPromptStream(promptMessages);
     releasePromptStream = heldPrompt.release;
+    pushPrompt = heldPrompt.push;
     try {
       queryInstance = query({
         prompt: heldPrompt.stream,
@@ -947,15 +1071,18 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages);
       releasePromptStream = heldPrompt.release;
+      pushPrompt = heldPrompt.push;
       queryInstance = query({
         prompt: heldPrompt.stream,
         options: sdkOptions
       });
     }
 
-    // Track the query instance for abort capability
+    // Track the query instance for abort and steering capability
+    acceptsSteering = true;
     if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+      addSession(sessionKey(), queryInstance, ws, releasePromptStream, steering);
+      ws.send(createNormalizedMessage({ kind: 'status', canSteer: true, canInterrupt: true, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     }
 
     // Process streaming messages
@@ -965,7 +1092,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, releasePromptStream);
+        addSession(sessionKey(), queryInstance, ws, releasePromptStream, steering);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -979,6 +1106,18 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         }
       } else {
         // session_id already captured
+      }
+
+      if (message.isReplay === true) {
+        // The CLI took up input this run wrote. The prompt is already on screen
+        // and accepted steering echoes its own row, so this only settles it.
+        pendingSteerIds.delete(message.uuid);
+        continue;
+      }
+
+      if (steerFollowUpTimer && message.type === 'system' && message.subtype === 'init') {
+        // The CLI started the follow-up turn for steering that missed the last one.
+        clearSteerFollowUp();
       }
 
       // Transform and normalize message via adapter
@@ -1015,40 +1154,20 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (message.type === 'result') {
-        // The turn is done as far as the client is concerned.
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
-        if (!turnCompleteSent && !abortPending) {
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
-        } else if (heldForBackgroundWork && !abortPending) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
-          });
-        }
-        if (backgroundWorkPending) {
-          // Work started during this turn is still running. Hold the process
-          // open so it can finish and report back in a follow-up turn; the
-          // ceiling is only a backstop for work that never reports.
-          backgroundWorkPending = false;
-          heldForBackgroundWork = true;
-          scheduleRelease();
+        if (pendingSteerIds.size > 0 && acceptsSteering && !abortPending) {
+          // Steering that missed this turn's last tool boundary runs as a
+          // follow-up turn in the same process, so the client's turn goes on.
+          clearSteerFollowUp();
+          steerFollowUpTimer = setTimeout(() => {
+            steerFollowUpTimer = null;
+            pendingSteerIds.clear();
+            settleTurn();
+          }, STEER_FOLLOW_UP_GRACE_MS);
+          steerFollowUpTimer.unref?.();
         } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
-          heldForBackgroundWork = false;
-          releasePromptStream();
+          // The turn is done as far as the client is concerned.
+          settleTurn();
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
@@ -1131,6 +1250,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   } finally {
     // Always close stdin — otherwise an aborted or failed run leaves the CLI
     // process (and its MCP servers) alive until the server exits.
+    acceptsSteering = false;
+    clearSteerFollowUp();
     if (idleReleaseTimer) {
       clearTimeout(idleReleaseTimer);
       idleReleaseTimer = null;
@@ -1159,6 +1280,9 @@ async function abortClaudeSDKSession(sessionId) {
     // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
 
+    // Interrupting alone would let queued steering run as a fresh turn.
+    await session.steering?.cancelPending();
+
     // Call interrupt() on the query instance
     await session.instance.interrupt();
 
@@ -1179,6 +1303,32 @@ async function abortClaudeSDKSession(sessionId) {
     abortedSessionIds.delete(sessionId);
     return false;
   }
+}
+
+/**
+ * Whether the session's running turn takes steering input right now.
+ * @param {string} sessionId - Session identifier
+ * @returns {boolean}
+ */
+function canSteerClaudeSDKSession(sessionId) {
+  const session = getSession(sessionId);
+  return Boolean(session?.status === 'active' && session.steering?.canSteer());
+}
+
+/**
+ * Appends input to the session's running turn without interrupting it.
+ * @param {string} sessionId - Session identifier
+ * @param {string} command - Steering text
+ * @param {Object} options - Validated { images, files } attachments
+ * @returns {Promise<{ clientMessageId: string }>} Identity the transcript keeps
+ */
+async function steerClaudeSDKSession(sessionId, command, options = {}) {
+  if (!canSteerClaudeSDKSession(sessionId)) {
+    throw new AppError('This turn cannot be steered now. Keep the draft or queue it for the next turn.', {
+      code: 'STEER_UNAVAILABLE', statusCode: 409
+    });
+  }
+  return getSession(sessionId).steering.steer(command, options);
 }
 
 /**
@@ -1239,6 +1389,8 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  canSteer: canSteerClaudeSDKSession,
+  steer: steerClaudeSDKSession,
   permissions: {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,

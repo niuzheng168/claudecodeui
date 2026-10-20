@@ -649,6 +649,30 @@ function stripAnsiFormatting(text: string): string {
   return text.replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
+/**
+ * Input sent while a turn was running is folded into that turn as a
+ * `queued_command` attachment rather than a user row. Returns the user row it
+ * stands for and the uuid it was submitted with; queued task notifications and
+ * meta input are not user-visible and yield null.
+ */
+function readQueuedPromptRow(raw: AnyRecord | null): { row: AnyRecord; sourceUuid: string | null } | null {
+  const attachment = readObjectRecord(raw?.attachment);
+  if (raw?.type !== 'attachment' || attachment?.type !== 'queued_command'
+    || attachment.commandMode !== 'prompt' || attachment.isMeta === true) {
+    return null;
+  }
+
+  const prompt = attachment.prompt;
+  if (typeof prompt !== 'string' && !Array.isArray(prompt)) {
+    return null;
+  }
+
+  return {
+    row: { uuid: raw.uuid, timestamp: raw.timestamp, type: 'user', message: { role: 'user', content: prompt } },
+    sourceUuid: typeof attachment.source_uuid === 'string' && attachment.source_uuid ? attachment.source_uuid : null,
+  };
+}
+
 export class ClaudeSessionsProvider implements IProviderSessions {
   /**
    * Normalizes one Claude JSONL entry or live SDK stream event into the shared
@@ -659,19 +683,29 @@ export class ClaudeSessionsProvider implements IProviderSessions {
    * applied here rather than at each `createNormalizedMessage` call because the
    * row-shape branches below have several exits, and an anchor missing from one
    * of them would show up as a message the user silently cannot edit.
+   *
+   * Prompts also carry the uuid they were submitted with as `clientMessageId`,
+   * which is the identity an accepted steering echo carries.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
-    const messages = this.normalizeMessageRows(rawMessage, sessionId);
+    const raw = readObjectRecord(rawMessage);
+    const queued = readQueuedPromptRow(raw);
+    const messages = this.normalizeMessageRows(queued?.row ?? rawMessage, sessionId);
     // A synthesized id is useless as an anchor — it changes on every read — so
     // a row without its own uuid produces messages with no anchor at all.
-    const raw = readObjectRecord(rawMessage);
     const anchorId = typeof raw?.uuid === 'string' && raw.uuid ? raw.uuid : null;
-    if (anchorId) {
-      for (const message of messages) {
+    const inputId = queued ? queued.sourceUuid : anchorId;
+    for (const message of messages) {
+      if (anchorId) {
         message.forkAnchorId = anchorId;
-        if (message.role === 'user') {
+        // Editing resumes at the nearest assistant row before the prompt; for
+        // input folded into a turn that is a tool call whose result is cut off.
+        if (message.role === 'user' && !queued) {
           message.transcriptAnchorId = anchorId;
         }
+      }
+      if (inputId && message.kind === 'text' && message.role === 'user') {
+        message.clientMessageId = inputId;
       }
     }
 
