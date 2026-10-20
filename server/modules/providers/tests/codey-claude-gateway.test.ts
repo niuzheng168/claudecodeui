@@ -77,7 +77,7 @@ test('catalog retains exact gateway model IDs and native Messages capabilities',
   assert.equal(models.DEFAULT, model.id);
   assert.equal(models.modelApiManaged, true);
   assert.deepEqual(models.OPTIONS.map(option => option.value), [model.id]);
-  assert.equal(models.OPTIONS[0].label, model.name);
+  assert.equal(models.OPTIONS[0].label, 'Claude Opus 5.5 (1M context)');
   assert.deepEqual(models.OPTIONS[0].effort, {
     default: 'high', values: ['low', 'high', 'max'].map(value => ({ value })),
   });
@@ -91,6 +91,20 @@ test('only a positive integer catalog window is reported', async () => {
   }));
   const models = await gateway(managed, (async () => Response.json({ data })) as typeof fetch).getModels();
   assert.deepEqual(models.OPTIONS.map(option => option.contextWindow), [1_000_000, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(models.OPTIONS.map(option => option.label), [
+    'claude-0 (1M context)', 'claude-1', 'claude-2', 'claude-3', 'claude-4',
+  ]);
+});
+
+test('picker labels show the catalog window like the Codex catalog', async () => {
+  const data = [922_000, 1_500_000, 200_000].map((value, index) => ({
+    id: `claude-${index}`, name: `Claude ${index}`, supported_endpoints: ['/v1/messages'],
+    capabilities: { limits: { max_context_window_tokens: value } },
+  }));
+  const models = await gateway(managed, (async () => Response.json({ data })) as typeof fetch).getModels();
+  assert.deepEqual(models.OPTIONS.map(option => option.label), [
+    'Claude 0 (922K context)', 'Claude 1 (1.5M context)', 'Claude 2 (200K context)',
+  ]);
 });
 
 test('usage readers share one catalog read and reuse its windows', async () => {

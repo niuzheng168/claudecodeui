@@ -11,6 +11,12 @@ const CLAUDE_CODE_MIN_COMPACT_WINDOW = 100_000;
 const CLAUDE_CODE_COMPACT_RESERVE = 20_000 + 13_000;
 const AUTO_COMPACT_RATIO = 0.6;
 
+/** Picker label suffix in the Codex catalog's style, e.g. 1M or 922K. */
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(2))}M`;
+  return `${Math.round(tokens / 1000)}K`;
+}
+
 /**
  * Used by the Claude runtime for managed models. Claude Code sizes its context
  * from the model id, not the gateway: it reads `claude-opus-5.5` as a 200K
@@ -119,14 +125,14 @@ export function createCodeyClaudeGateway(dependencies: {
           typeof value === 'string' && CLAUDE_EFFORTS.has(value)
         ))
         : [];
-      const contextWindow = readObjectRecord(capabilities?.limits)?.max_context_window_tokens;
+      const limit = readObjectRecord(capabilities?.limits)?.max_context_window_tokens;
+      const contextWindow = Number.isSafeInteger(limit) && Number(limit) > 0 ? Number(limit) : undefined;
+      const name = typeof model.name === 'string' && model.name.trim() ? model.name : model.id;
       options.push({
         value: model.id,
-        label: typeof model.name === 'string' && model.name.trim() ? model.name : model.id,
+        label: contextWindow ? `${name} (${formatContextWindow(contextWindow)} context)` : name,
         description: 'Claude Code harness · Codey Messages API',
-        ...(Number.isSafeInteger(contextWindow) && Number(contextWindow) > 0
-          ? { contextWindow: Number(contextWindow) }
-          : {}),
+        ...(contextWindow ? { contextWindow } : {}),
         ...(efforts.length ? {
           effort: {
             default: efforts.includes('high') ? 'high' : efforts[0],
