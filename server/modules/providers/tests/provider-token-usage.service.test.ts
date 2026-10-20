@@ -53,13 +53,14 @@ test('token usage lookup requires only the app-facing session id for Claude', as
     ].join('\n'));
 
     const service = createProviderTokenUsageService({
-      getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath }),
-      getClaudeContextWindow: () => '180000',
+      getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath, model: 'claude-opus-5.5' }),
+      // A managed catalog reports the session model's own window.
+      getClaudeContextWindow: async (model) => (model === 'claude-opus-5.5' ? 1_000_000 : undefined),
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
       used: 155,
-      total: 180_000,
+      total: 1_000_000,
       inputTokens: 125,
       outputTokens: 30,
       cacheReadTokens: 20,
@@ -275,7 +276,7 @@ test('Claude token usage reads only the tail of a large transcript', async () =>
 
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath }),
-      getClaudeContextWindow: () => '180000',
+      getClaudeContextWindow: async () => '180000',
       // Reading the whole file here would defeat the tail read; fail loudly.
       readTextFile: () => { throw new Error('full read must not happen when the tail has usage'); },
     });
@@ -300,7 +301,7 @@ test('Claude token usage falls back to the whole file when the tail has no usage
 
     const service = createProviderTokenUsageService({
       getSessionById: () => createSessionRow({ jsonl_path: sessionFilePath }),
-      getClaudeContextWindow: () => '180000',
+      getClaudeContextWindow: async () => '180000',
     });
 
     const usage = await service.getSessionTokenUsage('app-session');

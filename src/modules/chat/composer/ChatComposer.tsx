@@ -723,6 +723,7 @@ export default function ChatComposer({
               ) : undefined}
             </PromptInputSubmit>}
           tokenUsage={tokenBudget}
+          contextWindow={availableModelOptions.find((option) => option.value === model)?.contextWindow}
           onShowTokenUsage={onShowTokenUsage}
           commandsCount={slashCommandsCount}
           onShowCommands={onToggleCommandMenu}

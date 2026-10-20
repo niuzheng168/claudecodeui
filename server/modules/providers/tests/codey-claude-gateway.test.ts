@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createCodeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
+import {
+  buildClaudeContextLaunch,
+  createCodeyClaudeGateway,
+} from '@/modules/providers/services/codey-claude-gateway.service.js';
 
 const managed = { CODEY_MANAGED: 'true', CODEY_MODEL_API_KEY: 'private-test-key' };
 const gateway = (environment: NodeJS.ProcessEnv, fetch?: typeof globalThis.fetch) => (
@@ -54,7 +57,10 @@ test('catalog retains exact gateway model IDs and native Messages capabilities',
   const model = {
     id: 'loki/claude-opus-5.5', name: 'Claude Opus 5.5',
     supported_endpoints: ['/v1/messages'],
-    capabilities: { supports: { reasoning_effort: ['low', 'high', 'max', 'ultra', 'high', 10] } },
+    capabilities: {
+      supports: { reasoning_effort: ['low', 'high', 'max', 'ultra', 'high', 10] },
+      limits: { max_context_window_tokens: 1_000_000 },
+    },
   };
   const fetch = (async (url, init) => {
     assert.equal(url, 'http://127.0.0.1:4141/models');
@@ -75,6 +81,63 @@ test('catalog retains exact gateway model IDs and native Messages capabilities',
   assert.deepEqual(models.OPTIONS[0].effort, {
     default: 'high', values: ['low', 'high', 'max'].map(value => ({ value })),
   });
+  assert.equal(models.OPTIONS[0].contextWindow, 1_000_000);
+});
+
+test('only a positive integer catalog window is reported', async () => {
+  const data = [1_000_000, '1000000', -1, 1.5, null].map((value, index) => ({
+    id: `claude-${index}`, supported_endpoints: ['/v1/messages'],
+    capabilities: { limits: { max_context_window_tokens: value } },
+  }));
+  const models = await gateway(managed, (async () => Response.json({ data })) as typeof fetch).getModels();
+  assert.deepEqual(models.OPTIONS.map(option => option.contextWindow), [1_000_000, undefined, undefined, undefined, undefined]);
+});
+
+test('usage readers share one catalog read and reuse its windows', async () => {
+  let reads = 0;
+  const fetch = (async () => {
+    reads += 1;
+    return Response.json({ data: [{
+      id: 'claude-opus-5.5', supported_endpoints: ['/v1/messages'],
+      capabilities: { limits: { max_context_window_tokens: 1_000_000 } },
+    }] });
+  }) as typeof globalThis.fetch;
+  const managedGateway = gateway(managed, fetch);
+  assert.deepEqual(await Promise.all([
+    managedGateway.getContextWindow('claude-opus-5.5'),
+    managedGateway.getContextWindow('claude-opus-5.5'),
+  ]), [1_000_000, 1_000_000]);
+  assert.equal(await managedGateway.getContextWindow('claude-unlisted'), undefined);
+  assert.equal(reads, 1);
+  assert.equal(await gateway({}, fetch).getContextWindow('claude-opus-5.5'), undefined);
+  assert.equal(await gateway(managed, (async () => { throw new Error('down'); }) as typeof fetch)
+    .getContextWindow('claude-opus-5.5'), undefined);
+  assert.equal(reads, 1);
+});
+
+test('a catalog window above Claude Code\'s default selects 1M and compacts at 60%', () => {
+  const env = { PATH: 'host-path' };
+  const launch = buildClaudeContextLaunch('claude-opus-5.5', 1_000_000, env);
+  assert.equal(launch.model, 'claude-opus-5.5[1m]');
+  // Claude Code compacts 33K below this window: at 600K, 60% of 1M.
+  assert.equal(launch.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '633000');
+  assert.equal(launch.env.PATH, 'host-path');
+  assert.deepEqual(env, { PATH: 'host-path' });
+  assert.equal(buildClaudeContextLaunch('claude-opus-5.5[1m]', 1_000_000, env).model, 'claude-opus-5.5[1m]');
+});
+
+test('standard and small windows keep their model id and compact inside the window', () => {
+  const standard = buildClaudeContextLaunch('claude-sonnet-5', 200_000, {});
+  assert.equal(standard.model, 'claude-sonnet-5');
+  assert.equal(standard.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000');
+  assert.equal(buildClaudeContextLaunch('claude-small', 120_000, {}).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '105000');
+  assert.equal(buildClaudeContextLaunch('claude-tiny', 64_000, {}).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '64000');
+});
+
+test('an explicit compaction window is never overridden', () => {
+  const launch = buildClaudeContextLaunch('claude-opus-5.5', 1_000_000, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' });
+  assert.equal(launch.model, 'claude-opus-5.5[1m]');
+  assert.equal(launch.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '400000');
 });
 
 test('no available Claude model never falls back to public Anthropic or GPT', async () => {

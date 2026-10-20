@@ -63,6 +63,8 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** Tokens the model's context holds, when its catalog reports it. */
+  contextWindow?: number;
   effort?: {
     default?: string;
     values: {

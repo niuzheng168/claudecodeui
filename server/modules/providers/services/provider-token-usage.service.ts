@@ -6,6 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
 
@@ -25,7 +26,7 @@ type ProviderTokenUsageServiceDependencies = {
   readDirectory: (directoryPath: string) => Promise<Dirent[]>;
   readTextFile: (filePath: string) => Promise<string>;
   readTextFileTail: (filePath: string, maxBytes: number) => Promise<FileTail>;
-  getClaudeContextWindow: () => string | undefined;
+  getClaudeContextWindow: (model: string | null | undefined) => Promise<number | string | undefined>;
   isProviderSessionSuperseded: (providerSessionId: string, provider: string) => boolean;
 };
 
@@ -91,10 +92,21 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
       await handle.close();
     }
   },
-  getClaudeContextWindow: () => process.env.CONTEXT_WINDOW,
+  getClaudeContextWindow: (model) => resolveClaudeContextWindow(model),
   isProviderSessionSuperseded: (providerSessionId, provider) =>
     sessionsDb.isProviderSessionSuperseded(providerSessionId, provider),
 };
+
+/**
+ * Window a Claude session's counter reports. Used by both Claude usage readers:
+ * a managed node's model catalog knows the session model's real window, while
+ * native-login Claude falls back to the CONTEXT_WINDOW setting.
+ */
+export async function resolveClaudeContextWindow(
+  model: string | null | undefined,
+): Promise<number | string | undefined> {
+  return await codeyClaudeGateway.getContextWindow(model) ?? process.env.CONTEXT_WINDOW;
+}
 
 function readUsageNumber(value: unknown): number {
   const parsedValue = Number(value);
@@ -196,7 +208,7 @@ function emptyCodexTokenUsage(): TokenUsageResult {
  */
 export function summarizeClaudeTokenUsage(
   entries: AnyRecord[],
-  configuredContextWindow: string | undefined = process.env.CONTEXT_WINDOW,
+  configuredContextWindow: number | string | undefined = process.env.CONTEXT_WINDOW,
 ): TokenUsageResult {
   let inputTokens = 0;
   let outputTokens = 0;
@@ -244,7 +256,7 @@ export function summarizeClaudeTokenUsage(
     break;
   }
 
-  const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
+  const parsedContextWindow = Number.parseInt(String(configuredContextWindow ?? ''), 10);
   const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160_000;
   const cacheTokens = cacheReadTokens + cacheCreationTokens;
 
@@ -473,7 +485,7 @@ export function createProviderTokenUsageService(
       if (!claudeEntriesHaveUsage(entries) && !tail.isComplete) {
         entries = parseClaudeUsageEntries(await dependencies.readTextFile(sessionFilePath));
       }
-      return summarizeClaudeTokenUsage(entries, dependencies.getClaudeContextWindow());
+      return summarizeClaudeTokenUsage(entries, await dependencies.getClaudeContextWindow(session.model));
     },
   };
 }
