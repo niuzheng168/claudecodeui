@@ -50,6 +50,32 @@ export const providerMcpService = {
   },
 
   /**
+   * Lists one scope's MCP servers for every provider. Like the all-provider
+   * add/remove helpers, an unreadable provider config is reported on its own
+   * row so it does not hide the other providers.
+   */
+  async listMcpServersFromAllProviders(
+    input: { scope: McpScope; workspacePath?: string },
+  ): Promise<Array<{ provider: LLMProvider; servers: ProviderMcpServer[]; error?: string }>> {
+    const results: Array<{ provider: LLMProvider; servers: ProviderMcpServer[]; error?: string }> = [];
+    const providers = providerRegistry.listProviders();
+    for (const provider of providers) {
+      try {
+        const servers = await provider.mcp.listServersForScope(input.scope, { workspacePath: input.workspacePath });
+        results.push({ provider: provider.id, servers });
+      } catch (error) {
+        results.push({
+          provider: provider.id,
+          servers: [],
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    return results;
+  },
+
+  /**
    * Adds one HTTP/stdio MCP server to every provider.
    */
   async addMcpServerToAllProviders(

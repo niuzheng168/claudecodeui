@@ -3,12 +3,14 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
 import spawn from 'cross-spawn';
 
 import { appConfigDb } from '@/modules/database/index.js';
 import { providerMcpService } from '@/modules/providers/index.js';
+import type { LLMProvider, ProviderMcpServer } from '@/shared/types.js';
 import { getModuleDirectory } from '@/shared/utils.js';
 
 import { getBrowserUseRuntime } from './browser-use-runtime.js';
@@ -71,6 +73,22 @@ type RuntimeReadiness = {
 
 type RuntimeProbe = Omit<RuntimeReadiness, 'installInProgress' | 'installMessage'>;
 
+type AgentMcpServerInput = {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+};
+
+type AgentMcpReconcileDependencies = {
+  readSettings(): BrowserUseSettings;
+  getServerInput(): AgentMcpServerInput;
+  mcp: Pick<
+    typeof providerMcpService,
+    'listMcpServersFromAllProviders' | 'upsertProviderMcpServer' | 'removeProviderMcpServer'
+  >;
+  logger: Pick<Console, 'log' | 'warn'>;
+};
+
 const sessions = new Map<string, BrowserUseSession>();
 const handles = new Map<string, RuntimeHandle>();
 let installPromise: Promise<{ success: boolean; message: string }> | null = null;
@@ -84,6 +102,7 @@ const AGENT_OWNER_ID = 'agent';
 const PROFILE_ROOT = path.join(os.homedir(), '.cloudcli', 'browser-use', 'profiles');
 const MCP_SERVER_NAME = 'cloudcli-browser';
 const LEGACY_MCP_SERVER_NAMES = ['cloudcli-browser-use'];
+const MCP_SCRIPT_NAME = 'browser-use-mcp.js';
 const RUNTIME_READINESS_CACHE_TTL_MS = 30_000;
 
 function readSettings(): BrowserUseSettings {
@@ -147,7 +166,7 @@ function getPlaywright(): any | null {
 }
 
 function getMcpCommand(): { command: string; args: string[] } {
-  const mcpScriptPath = path.join(__dirname, 'browser-use-mcp.js');
+  const mcpScriptPath = path.join(__dirname, MCP_SCRIPT_NAME);
   if (fs.existsSync(mcpScriptPath)) {
     return {
       command: process.execPath,
@@ -166,12 +185,110 @@ function getMcpApiUrl(): string {
   return `http://127.0.0.1:${port}/api/browser-use-mcp`;
 }
 
+function getMcpServerInput(): AgentMcpServerInput {
+  return {
+    ...getMcpCommand(),
+    env: {
+      CLOUDCLI_BROWSER_USE_MCP_TOKEN: getOrCreateMcpToken(),
+      CLOUDCLI_BROWSER_USE_API_URL: getMcpApiUrl(),
+    },
+  };
+}
+
 async function removeMcpServerFromAllProviders(name: string) {
   const results = await providerMcpService.removeMcpServerFromAllProviders({
     name,
     scope: 'user',
   });
   return results.map((result) => ({ ...result, name }));
+}
+
+const defaultReconcileDependencies: AgentMcpReconcileDependencies = {
+  readSettings,
+  getServerInput: getMcpServerInput,
+  mcp: providerMcpService,
+  logger: console,
+};
+
+function matchesMcpServerInput(server: ProviderMcpServer, input: AgentMcpServerInput): boolean {
+  return server.transport === 'stdio'
+    && server.command === input.command
+    && isDeepStrictEqual(server.args ?? [], input.args)
+    && Object.entries(input.env).every(([key, value]) => server.env?.[key] === value);
+}
+
+/**
+ * Recognizes the entry this service registers from a release directory that a
+ * later update or reinstall has deleted. Same-name entries without a missing
+ * absolute browser-use-mcp.js path may be the user's own and are never stale.
+ */
+function hasMissingMcpScript(server: ProviderMcpServer): boolean {
+  if (server.transport !== 'stdio') {
+    return false;
+  }
+
+  const scriptPath = server.args?.find((arg) => path.basename(arg) === MCP_SCRIPT_NAME);
+  return Boolean(scriptPath && path.isAbsolute(scriptPath) && !fs.existsSync(scriptPath));
+}
+
+/**
+ * Brings every provider's user-scope registration in line with this install.
+ * Registration only happens when Browser is toggled, but it embeds the running
+ * release's script path and this DB's token, so an update or reinstall leaves
+ * agents launching a server that fails on every turn.
+ */
+async function reconcileAgentMcpRegistration(dependencies: AgentMcpReconcileDependencies): Promise<void> {
+  const desired = dependencies.readSettings().enabled ? dependencies.getServerInput() : null;
+  // Disabled installs only drop entries that are provably ours and broken; the
+  // legacy name is never rewritten, so it follows the same rule either way.
+  const staleCandidateNames = desired ? LEGACY_MCP_SERVER_NAMES : [MCP_SERVER_NAME, ...LEGACY_MCP_SERVER_NAMES];
+  const listings = await dependencies.mcp.listMcpServersFromAllProviders({ scope: 'user' });
+  const updated: LLMProvider[] = [];
+  const removed: string[] = [];
+  const failed: LLMProvider[] = [];
+
+  for (const { provider, servers, error } of listings) {
+    if (error) {
+      failed.push(provider);
+      continue;
+    }
+
+    try {
+      const serversByName = new Map(servers.map((server) => [server.name, server]));
+      const current = serversByName.get(MCP_SERVER_NAME);
+      if (desired && (!current || !matchesMcpServerInput(current, desired))) {
+        await dependencies.mcp.upsertProviderMcpServer(provider, {
+          name: MCP_SERVER_NAME,
+          scope: 'user',
+          transport: 'stdio',
+          ...desired,
+        });
+        updated.push(provider);
+      }
+
+      for (const name of staleCandidateNames) {
+        const server = serversByName.get(name);
+        if (server && hasMissingMcpScript(server)) {
+          await dependencies.mcp.removeProviderMcpServer(provider, { name, scope: 'user' });
+          removed.push(`${provider}/${name}`);
+        }
+      }
+    } catch {
+      failed.push(provider);
+    }
+  }
+
+  const changes = [
+    updated.length > 0 ? `updated ${MCP_SERVER_NAME} for ${updated.join(', ')}` : null,
+    removed.length > 0 ? `removed ${removed.join(', ')} (script missing)` : null,
+  ].filter(Boolean);
+  if (changes.length > 0) {
+    dependencies.logger.log(`[Browser] Reconciled agent MCP registration: ${changes.join('; ')}`);
+  }
+  if (failed.length > 0) {
+    // Config parse errors can quote file contents, so only the provider is named.
+    dependencies.logger.warn(`[Browser] Could not reconcile agent MCP registration for ${failed.join(', ')}; left unchanged`);
+  }
 }
 
 function normalizeProfileName(profileName?: string | null): string | null {
@@ -456,7 +573,7 @@ export const browserUseService = {
   },
 
   async registerAgentMcp() {
-    const { command, args } = getMcpCommand();
+    const { command, args, env } = getMcpServerInput();
     await Promise.all(LEGACY_MCP_SERVER_NAMES.map((name) => removeMcpServerFromAllProviders(name)));
     const results = await providerMcpService.addMcpServerToAllProviders({
       name: MCP_SERVER_NAME,
@@ -464,12 +581,22 @@ export const browserUseService = {
       transport: 'stdio',
       command,
       args,
-      env: {
-        CLOUDCLI_BROWSER_USE_MCP_TOKEN: getOrCreateMcpToken(),
-        CLOUDCLI_BROWSER_USE_API_URL: getMcpApiUrl(),
-      },
+      env,
     });
     return { name: MCP_SERVER_NAME, command, args, results };
+  },
+
+  /**
+   * Startup repair for the provider MCP registrations. Never throws, so a bad
+   * provider config cannot delay or break server startup.
+   */
+  async reconcileAgentMcp(dependencyOverrides: Partial<AgentMcpReconcileDependencies> = {}) {
+    const dependencies = { ...defaultReconcileDependencies, ...dependencyOverrides };
+    try {
+      await reconcileAgentMcpRegistration(dependencies);
+    } catch (error: any) {
+      dependencies.logger.warn('[Browser] Could not reconcile agent MCP registration:', error?.message || error);
+    }
   },
 
   getMcpToken() {

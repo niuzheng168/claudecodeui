@@ -376,6 +376,10 @@ async function startServer() {
             console.log(`${terminalTextStyles.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
 
+            // Updates and reinstalls replace the release path and token baked
+            // into provider MCP configs; repair them in the background.
+            void browserUseService.reconcileAgentMcp();
+
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
             // Sends anything that came due while the server was not running,
