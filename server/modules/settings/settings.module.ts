@@ -9,9 +9,12 @@ import {
   getPublicKey,
   notifyUserIfEnabled,
 } from '@/modules/notifications/index.js';
+import { isCodeyOwnerRequest } from '@/modules/auth/index.js';
 
 import { createSettingsRouter } from './settings.routes.js';
 import { createSettingsService } from './settings.service.js';
+import { createCodeyProxiesService } from './codey-proxies.service.js';
+import { createCodeyProxiesRouter } from './codey-proxies.routes.js';
 
 const settingsService = createSettingsService({
   apiKeys: {
@@ -48,3 +51,4 @@ const settingsService = createSettingsService({
 
 /** Settings router assembled for the authenticated server mount. */
 export const settingsRoutes = createSettingsRouter(settingsService);
+settingsRoutes.use('/copilot-proxies', createCodeyProxiesRouter(createCodeyProxiesService(), isCodeyOwnerRequest));

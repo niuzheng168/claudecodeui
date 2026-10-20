@@ -18,6 +18,7 @@ import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
 
 import {
   appendFilesInputTag,
@@ -222,13 +223,20 @@ function mapCliOptionsToSDK(options = {}) {
 
   // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
-  sdkOptions.env = { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(BG_WAIT_CEILING_MS) };
+  sdkOptions.env = {
+    ...codeyClaudeGateway.buildEnvironment(),
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(BG_WAIT_CEILING_MS),
+  };
 
   // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
   // which does not reliably follow npm's shell wrappers like cross-spawn does.
   // When nothing resolves the option stays unset on purpose: the SDK then falls back to the
   // binary it ships, which beats handing it a bare `claude` that raw spawn can never launch.
-  const claudeExecutablePath = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
+  // Managed deployments already bundle a tested SDK binary. An explicitly
+  // configured executable still wins; do not pick an unrelated global CLI.
+  const claudeExecutablePath = codeyClaudeGateway.isManaged() && !process.env.CLAUDE_CLI_PATH
+    ? undefined
+    : resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
   if (claudeExecutablePath) {
     sdkOptions.pathToClaudeCodeExecutable = claudeExecutablePath;
   }
@@ -761,7 +769,13 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     try {
       effortModels = await context.getProviderModels();
     } catch (error) {
+      if (codeyClaudeGateway.isManaged()) throw error;
       console.warn('[Claude SDK] Unable to load provider models for effort validation:', error);
+    }
+
+    if (codeyClaudeGateway.isManaged()
+      && !effortModels.OPTIONS.some(({ value }) => value === (resolvedModel || options.model))) {
+      throw new Error('This Claude model is not available through the Codey Messages API.');
     }
 
     const sdkOptions = mapCliOptionsToSDK({

@@ -1,11 +1,13 @@
 // Auth uses the deployment flag; WebSocket uses the shared authenticated request contract.
 export { IS_PLATFORM } from './utils.js';
 export type { AuthenticatedWebSocketRequest } from './types.js';
-// Projects tests consume the shared path-validation and error contracts through this barrel.
+// Projects, Providers and Settings consume shared validation/error contracts through this barrel.
 export { AppError, normalizeProjectPath, validateWorkspacePath } from './utils.js';
 // Queued delivery uses exact persistence receipts and safe JSON parsing across module boundaries.
 export type { QueuedMessageOperation, QueuedSessionMessageRecord } from './types.js';
 export { readObjectRecord } from './utils.js';
+// Providers' managed model API adapter uses the shared catalog contracts.
+export type { ProviderModelOption, ProviderModelsDefinition } from './types.js';
 // WebSocket acceptance assigns one persisted input identity per native submission.
 export { generateMessageId } from './utils.js';
 // Codex provider transports/runtime share the RPC, message and attachment contracts.

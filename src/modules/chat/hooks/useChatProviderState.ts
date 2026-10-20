@@ -9,7 +9,7 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelActions,
   ProviderModelOption,
   ProviderModelsDefinition } from '@/shared/types';
-import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
+import { CODEY_MODEL_API_SETTINGS_CHANGED_EVENT, DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 import { isCodeyManagedDeployment } from '@/shared/utils';
 
@@ -30,13 +30,17 @@ const toProviderEffortOptions = (
 ): NonNullable<ProviderModelOption['effort']>['values'] => values.map((value) => ({ value }));
 
 const fallbackDefaultModel: Record<LLMProvider, string> = {
-  claude: 'default',
+  claude: isCodeyManagedDeployment() ? '' : 'default',
   cursor: 'gpt-5.3-codex',
   codex: isCodeyManagedDeployment() ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
   opencode: 'anthropic/claude-sonnet-4-5',
 };
 
 const providers = Object.keys(fallbackDefaultModel) as LLMProvider[];
+// Native-login aliases are not gateway model IDs; migrate only these placeholders.
+const LEGACY_CLAUDE_MODEL_ALIASES = new Set([
+  'default', 'best', 'fable', 'sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'haiku',
+]);
 
 /** localStorage key holding the user's default model for one provider. */
 const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
@@ -203,6 +207,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
             return null;
           }
 
+          // One shared UI serves mixed backend versions. Never expose an old
+          // node's personal-login Claude defaults as Codey API capabilities.
+          if (isCodeyManagedDeployment() && p === 'claude' && !body.data.models.modelApiManaged) {
+            return null;
+          }
+          if (isCodeyManagedDeployment() && p === 'codex') {
+            return {
+              ...body.data.models,
+              OPTIONS: body.data.models.OPTIONS.filter(option => !/(^|\/)claude[-/]/i.test(option.value)),
+            };
+          }
           return body.data.models;
         }),
       );
@@ -234,6 +249,18 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     void loadProviderModels();
+  }, [loadProviderModels]);
+
+  useEffect(() => {
+    if (!isCodeyManagedDeployment()) return undefined;
+    const refresh = () => { void loadProviderModels(); };
+    window.addEventListener(CODEY_MODEL_API_SETTINGS_CHANGED_EVENT, refresh);
+    // Covers owner/bulk edits performed outside this browser while it was inactive.
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.removeEventListener(CODEY_MODEL_API_SETTINGS_CHANGED_EVENT, refresh);
+      window.removeEventListener('focus', refresh);
+    };
   }, [loadProviderModels]);
 
   useEffect(() => {
@@ -295,11 +322,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     def: ProviderModelsDefinition,
   ): string => {
     const stored = localStorage.getItem(storageKey);
-    const honorSelection = targetProvider === 'codex' && isCodeyManagedDeployment();
-    if (stored && (honorSelection || def.OPTIONS.some((o) => o.value === stored))) {
+    const managed = isCodeyManagedDeployment();
+    const honorSelection = managed && (targetProvider === 'codex' || targetProvider === 'claude');
+    const legacyAlias = (value: string) => managed && targetProvider === 'claude'
+      && LEGACY_CLAUDE_MODEL_ALIASES.has(value);
+    if (stored && !legacyAlias(stored) && (honorSelection || def.OPTIONS.some((o) => o.value === stored))) {
       return stored;
     }
-    if (current && (honorSelection || def.OPTIONS.some((o) => o.value === current))) {
+    if (current && !legacyAlias(current) && (honorSelection || def.OPTIONS.some((o) => o.value === current))) {
       return current;
     }
     return def.DEFAULT;

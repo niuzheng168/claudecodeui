@@ -76,6 +76,8 @@ export type ProviderModelOption = {
 export type ProviderModelsDefinition = {
   OPTIONS: ProviderModelOption[];
   DEFAULT: string;
+  /** Only upgraded nodes advertise Claude models bound to the configured Codey model API. */
+  modelApiManaged?: boolean;
 };
 
 /** User-supplied fields for creating or editing a custom provider model entry. */
@@ -1350,7 +1352,34 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
+export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'model-api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
+
+//----------------- NODE MODEL API SETTINGS ------------
+
+/** A redacted additional proxy read from the current node's Codey settings file. */
+export type CodeyProxySetting = {
+  id: string;
+  enabled: boolean;
+  endpoint: string;
+  models: string[];
+  keyConfigured: boolean;
+};
+
+/** The file revision prevents a browser save from overwriting a concurrent bulk edit. */
+export type CodeyProxySettingsSnapshot = {
+  enabled: boolean;
+  settingsFile: string;
+  revision: string;
+  additionalCopilotProxies: CodeyProxySetting[];
+};
+
+/** Only new/replacement keys are sent; an omitted key preserves the existing node secret. */
+export type CodeyProxySettingsUpdate = {
+  revision: string;
+  additionalCopilotProxies: (Omit<CodeyProxySetting, 'keyConfigured'> & { key?: string })[];
+};
+
+// ---------------------------
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;

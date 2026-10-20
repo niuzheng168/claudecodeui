@@ -130,6 +130,25 @@ const createTestService = (options: {
   return { service, catalog, sessions };
 };
 
+test('managed Claude models belong to the Claude harness, never legacy Codex custom rows', async () => {
+  const model = 'loki/claude-opus-5.5';
+  const { service, catalog, sessions } = createTestService({
+    codeyManaged: true,
+    models: { claude: createModels(model) },
+    sessions: createSessionStore({ 'legacy-codex': model }),
+  });
+  catalog.createCustomProviderModel('codex', { id: model, model: 'Claude Opus 5.5' });
+  catalog.createCustomProviderModel('claude', { id: 'claude-unavailable', model: 'Unavailable' });
+  assert.ok(!(await service.getProviderModels('codex')).OPTIONS.some(option => option.value === model));
+  assert.deepEqual((await service.getProviderModels('claude')).OPTIONS.map(option => option.value), [model]);
+  await assert.rejects(service.resolveResumeModel('codex', 'legacy-codex'), /Claude Code session/);
+  await assert.rejects(service.resolveResumeModel('codex', undefined, model), /Claude Code session/);
+  assert.throws(() => service.setSessionModel('codex', 'legacy-codex', model), /Claude Code session/);
+  assert.equal(sessions.getSessionById('legacy-codex')?.model, model);
+  assert.equal(catalog.listCustomProviderModels('codex').length, 1);
+  assert.equal(await service.resolveResumeModel('claude', undefined, model), model);
+});
+
 test('provider catalogs merge source-controlled defaults with custom persistence rows', async () => {
   const calls: LLMProvider[] = [];
   const { service, catalog } = createTestService({ onCatalogRead: (provider) => calls.push(provider) });

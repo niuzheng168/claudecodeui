@@ -7,5 +7,7 @@ export { authenticateToken } from './auth.middleware.js';
 export { authenticateWebSocket } from './auth.middleware.js';
 // Strict Codey SSO: used by the HTTP entrypoint and WebSocket handshake verifier.
 export { portalSsoMiddleware, authenticatePortalWebSocket } from './portal-sso.module.js';
+// Node-wide model settings must be restricted to the owner verified by strict SSO.
+export { isCodeyOwnerRequest } from './portal-sso.module.js';
 // validateApiKey: used by the server entrypoint for optional API-wide key validation.
 export { validateApiKey } from './auth.middleware.js';

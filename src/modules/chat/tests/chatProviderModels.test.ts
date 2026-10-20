@@ -5,6 +5,7 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
 import type { ProviderModelsDefinition } from '@/shared/types';
+import { CODEY_MODEL_API_SETTINGS_CHANGED_EVENT } from '@/shared/constants';
 
 const providerApiMocks = vi.hoisted(() => ({ models: vi.fn(), deleteModel: vi.fn() }));
 
@@ -77,6 +78,47 @@ afterEach(() => {
   vi.resetModules();
 });
 
+test('managed Claude model selection retains the Claude harness across new chats', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  const model = 'loki/claude-opus-5.5';
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: { models: provider === 'claude'
+      ? { DEFAULT: model, OPTIONS: [{ value: model, label: 'Claude Opus 5.5' }], modelApiManaged: true }
+      : managedCodexModels },
+  }));
+  writeUserPreference('selectedProvider', 'claude');
+  const { result, unmount } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.providerModelsLoading, false));
+  assert.equal(result.current.provider, 'claude');
+  assert.equal(result.current.currentProviderModel, model);
+  assert.equal(result.current.providerModels.codex, 'gpt-6.1-sol');
+  unmount();
+  const restored = await renderProviderState();
+  await waitFor(() => assert.equal(restored.result.current.providerModelsLoading, false));
+  assert.equal(restored.result.current.provider, 'claude');
+  assert.equal(restored.result.current.currentProviderModel, model);
+});
+
+test('saving proxy settings refreshes available models without changing the active harness', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  let enabled = false;
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: { models: provider === 'claude'
+      ? { DEFAULT: enabled ? 'claude-opus-5.5' : '', OPTIONS: enabled ? [{ value: 'claude-opus-5.5', label: 'Claude Opus 5.5' }] : [], modelApiManaged: true }
+      : managedCodexModels },
+  }));
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.providerModelsLoading, false));
+  assert.equal(result.current.provider, 'codex');
+  enabled = true;
+  await act(async () => { window.dispatchEvent(new Event(CODEY_MODEL_API_SETTINGS_CHANGED_EVENT)); });
+  await waitFor(() => assert.equal(result.current.providerModelCatalog.claude?.OPTIONS.length, 1));
+  assert.equal(result.current.provider, 'codex');
+  assert.equal(result.current.providerModels.claude, 'claude-opus-5.5');
+});
+
 test('managed chat offers Astra, persists its selection, and restores it for the next chat', async () => {
   vi.stubEnv('VITE_CODEY_MANAGED', 'true');
   providerApiMocks.models.mockImplementation((provider: string) => okJson({
@@ -108,6 +150,55 @@ test('managed chat offers Astra, persists its selection, and restores it for the
     assert.equal(restored.result.current.providerModelsLoading, false);
   });
   assert.equal(restored.result.current.currentProviderModel, 'gpt-6-astra');
+});
+
+test('shared UI does not offer legacy Claude login models or Claude-in-Codex rows on old nodes', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  localStorage.setItem('claude-model', 'claude-opus-5.5');
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: { models: provider === 'claude'
+      ? { DEFAULT: 'sonnet', OPTIONS: [{ value: 'sonnet', label: 'Sonnet' }, { value: 'claude-opus-5.5', label: 'Legacy custom Claude' }] }
+      : { ...managedCodexModels, OPTIONS: [...managedCodexModels.OPTIONS, { value: 'loki/claude-opus-5.5', label: 'Wrong harness' }] } },
+  }));
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.providerModelsLoading, false));
+  assert.equal(result.current.providerModelCatalog.claude, undefined);
+  assert.equal(result.current.provider, 'codex');
+  assert.equal(result.current.currentProviderModelOptions.length, 2);
+  // Missing capabilities must not erase another node's remembered model.
+  assert.equal(localStorage.getItem('claude-model'), 'claude-opus-5.5');
+});
+
+test('managed Claude preserves an unavailable explicit model instead of switching to another Claude model', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  localStorage.setItem('claude-model', 'claude-opus-5.5');
+  writeUserPreference('selectedProvider', 'claude');
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: provider === 'claude' ? {
+      models: { DEFAULT: 'claude-other', OPTIONS: [{ value: 'claude-other', label: 'Other Claude' }], modelApiManaged: true },
+    } : { models: managedCodexModels },
+  }));
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.providerModelsLoading, false));
+  assert.equal(result.current.currentProviderModel, 'claude-opus-5.5');
+  assert.equal(localStorage.getItem('claude-model'), 'claude-opus-5.5');
+});
+
+test('managed Claude migrates an old native default alias to the actual gateway default', async () => {
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  localStorage.setItem('claude-model', 'default');
+  writeUserPreference('selectedProvider', 'claude');
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true,
+    data: provider === 'claude' ? {
+      models: { DEFAULT: 'claude-opus-5.5', OPTIONS: [{ value: 'claude-opus-5.5', label: 'Claude Opus 5.5' }], modelApiManaged: true },
+    } : { models: managedCodexModels },
+  }));
+  const { result } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.providerModelsLoading, false));
+  assert.equal(result.current.currentProviderModel, 'claude-opus-5.5');
 });
 
 test('managed catalog hydration never replaces a saved model missing from the list', async () => {

@@ -130,13 +130,14 @@ export function returnToCodeyLogin(): void {
 const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
 
 /**
- * Returns the providers users may select in this deployment. Codey nodes expose
- * only Codex because their runtime and credentials are centrally configured.
+ * Returns the harnesses behind this deployment's model picker. Codey models
+ * run with Codex or Claude Code; the model selection carries its harness ID,
+ * while both harnesses use the independently configured Codey model API.
  */
 export function getEnabledProviders(
   codeyManaged = isCodeyManagedDeployment(),
 ): LLMProvider[] {
-  return codeyManaged ? ['codex'] : [...cloudCliProviders];
+  return codeyManaged ? ['codex', 'claude'] : [...cloudCliProviders];
 }
 
 /**

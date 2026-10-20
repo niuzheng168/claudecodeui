@@ -34,3 +34,8 @@ export const portalSsoMiddleware: RequestHandler = (req, res, next) => {
 
 /** Used by WebSocket composition; absent outside strict Codey SSO mode. */
 export const authenticatePortalWebSocket = portalSso.enabled ? portalSso.authenticate : undefined;
+
+/** Settings uses the SSO middleware's unforgeable owner mark for node-wide changes. */
+export function isCodeyOwnerRequest(request: Parameters<typeof portalSso.authenticatedUser>[0]): boolean {
+  return process.env.CODEY_MANAGED === 'true' && portalSso.authenticatedUser(request) !== null;
+}

@@ -124,7 +124,7 @@ export default function ProviderSelectionEmptyState({
       id: p.id,
       name: p.name,
       models: providerModelCatalog[p.id]?.OPTIONS ?? [],
-    }));
+    })).filter(group => group.models.length > 0);
   }, [providerModelCatalog]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
