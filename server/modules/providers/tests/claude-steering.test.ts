@@ -66,6 +66,22 @@ test('steering a running Claude turn folds the input in at its next tool boundar
   await assert.rejects(claudeRuntime.steer('steer-tool', 'too late', {}), { code: 'STEER_UNAVAILABLE' });
 });
 
+test('input that cannot be prepared is refused before anything reaches the CLI', { concurrency: false }, async () => {
+  const run = await startRun('run TOOL', 'steer-refused');
+  await until(() => run.sent.some((message) => message.kind === 'tool_use'), 'the turn never reached its tool call');
+
+  // A definitive refusal lets the gateway put the queued card back instead of
+  // holding it as an unconfirmed delivery.
+  const unreadable = [{ get path(): string { throw new Error('descriptor unavailable'); } }];
+  await assert.rejects(claudeRuntime.steer('steer-refused', 'with a broken attachment', { images: unreadable }), {
+    code: 'STEER_UNAVAILABLE',
+  });
+  assert.equal(claudeRuntime.canSteer('steer-refused'), true);
+  await run.done();
+
+  assert.deepEqual(run.texts(), ['assistant:done: run TOOL']);
+});
+
 test('steering after the last tool boundary runs as a follow-up of the same turn', { concurrency: false }, async () => {
   const run = await startRun('WAIT_TEXT first', 'steer-follow-up');
   await until(() => run.texts().length > 0, 'the turn never answered');

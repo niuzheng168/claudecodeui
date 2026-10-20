@@ -840,7 +840,16 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
      * @returns {Promise<{ clientMessageId: string }>} The uuid the transcript keeps
      */
     async steer(command, steerOptions = {}) {
-      const [message] = await buildPromptMessages(command, steerOptions.images, steerOptions.files, options.cwd);
+      let message;
+      try {
+        [message] = await buildPromptMessages(command, steerOptions.images, steerOptions.files, options.cwd);
+      } catch (error) {
+        // Nothing reached the CLI, so this is a refusal the queue can keep,
+        // not an uncertain delivery that has to be held for review.
+        throw new AppError(`The steering input could not be prepared: ${error?.message || error}`, {
+          code: 'STEER_UNAVAILABLE', statusCode: 409
+        });
+      }
       const uuid = crypto.randomUUID();
       pendingSteerIds.add(uuid);
       // 'next' folds the input into the running turn at its next tool boundary.
