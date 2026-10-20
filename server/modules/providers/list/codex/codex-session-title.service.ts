@@ -2,7 +2,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted } from '@/modules/websocket/index.js';
 import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 import { generateCodexSessionTitle } from '@/modules/providers/list/codex/codex-title-generator.service.js';
-import type { ICodexRpcClient, NewCodexSessionTitleRequest } from '@/shared/index.js';
+import type { ICodexRpcClient, NewSessionTitleRequest } from '@/shared/index.js';
 
 type TitleSession = Pick<NonNullable<ReturnType<typeof sessionsDb.getSessionById>>,
   'session_id' | 'provider' | 'provider_session_id' | 'project_path' | 'custom_name_source'
@@ -49,7 +49,7 @@ export function createCodexSessionTitleService(overrides: Partial<TitleDependenc
   const pending: Array<() => void> = [];
   let active = 0;
 
-  function eligible(input: NewCodexSessionTitleRequest): TitleSession | null {
+  function eligible(input: NewSessionTitleRequest): TitleSession | null {
     const row = dependencies.getSession(input.sessionId);
     return row?.provider === 'codex' && row.session_id !== input.providerSessionId
       && row.provider_session_id === input.providerSessionId && row.project_path
@@ -57,7 +57,7 @@ export function createCodexSessionTitleService(overrides: Partial<TitleDependenc
       ? row : null;
   }
 
-  async function generate(input: NewCodexSessionTitleRequest): Promise<void> {
+  async function generate(input: NewSessionTitleRequest): Promise<void> {
     const row = eligible(input);
     if (!row) return;
     const controller = new AbortController();
@@ -132,7 +132,7 @@ export function createCodexSessionTitleService(overrides: Partial<TitleDependenc
   }
 
   return {
-    schedule(input: NewCodexSessionTitleRequest): Promise<void> {
+    schedule(input: NewSessionTitleRequest): Promise<void> {
       const existing = jobs.get(input.providerSessionId);
       if (existing) return existing;
       if (!input.initialMessage.trim() || jobs.size >= 32) return Promise.resolve();

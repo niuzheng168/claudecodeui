@@ -545,15 +545,15 @@ export type ProviderRuntimeWriter = {
 };
 
 // ---------------------------
-//----------------- NEW CODEX SESSION NAMING ------------
+//----------------- NEW SESSION NAMING ------------
 /**
  * Provider-runtime notification that one newly allocated Codey conversation
- * has acquired its first native thread ID. Background naming consumes only
- * the original user text; attachments, tool output and conversation history
- * must not be read or injected into the title request. Not used for resumes,
- * imported desktop threads, forks or passive observations.
+ * has acquired its first native Codex thread or Claude session ID. Background
+ * naming consumes only the original user text; attachments, tool output and
+ * conversation history must not be read or injected into the title request.
+ * Not used for resumes, imported native sessions, forks or passive observations.
  */
-export type NewCodexSessionTitleRequest = {
+export type NewSessionTitleRequest = {
   sessionId: string;
   providerSessionId: string;
   initialMessage: string;

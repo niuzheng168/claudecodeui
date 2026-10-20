@@ -45,7 +45,7 @@ export function buildClaudeContextLaunch(
 }
 
 /**
- * Used by the Claude model, auth and runtime adapters. A managed node's model
+ * Used by the Claude model, auth, runtime and title adapters. A managed node's model
  * gateway owns credentials/upstream routing; the Claude harness only consumes
  * its Messages API. Tests inject the environment and HTTP transport.
  */
@@ -170,6 +170,21 @@ export function createCodeyClaudeGateway(dependencies: {
     getModels,
 
     /**
+     * Used by Claude automatic session titles for one direct Messages API
+     * request with the same validated endpoint and key the managed harness
+     * gets. Null on unmanaged nodes, so personal Claude credentials are never
+     * used; throws like `buildEnvironment` when the gateway is misconfigured.
+     */
+    messagesRequest(): { url: string; headers: Record<string, string> } | null {
+      if (environment().CODEY_MANAGED !== 'true') return null;
+      const { key, baseUrl } = configuration();
+      return {
+        url: `${baseUrl}/v1/messages`,
+        headers: { Authorization: `Bearer ${key}`, 'anthropic-version': '2023-06-01' },
+      };
+    },
+
+    /**
      * Used by the Claude usage readers to label a session's counter. Reads the
      * catalog once when none has been loaded; undefined when it is unavailable
      * or does not report this model's window.
@@ -186,5 +201,5 @@ export function createCodeyClaudeGateway(dependencies: {
   };
 }
 
-/** Shared by the Claude auth, model catalog and SDK runtime adapters. */
+/** Shared by the Claude auth, model catalog, SDK runtime and automatic title adapters. */
 export const codeyClaudeGateway = createCodeyClaudeGateway();

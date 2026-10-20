@@ -19,6 +19,37 @@ type ParsedSession = {
 };
 
 /**
+ * Returns the newest non-empty `field` of this session's `type` metadata rows.
+ * Claude appends each as one small JSON line, so only lines containing the
+ * quoted type are parsed instead of every message in a long transcript.
+ */
+function findNewestMetadataValue(
+  content: string,
+  sessionId: string,
+  type: string,
+  field: string,
+): string | undefined {
+  const marker = `"${type}"`;
+  for (let index = content.lastIndexOf(marker); index >= 0;) {
+    const start = content.lastIndexOf('\n', index) + 1;
+    const end = content.indexOf('\n', index);
+    let row: unknown;
+    try {
+      row = JSON.parse(content.slice(start, end < 0 ? undefined : end));
+    } catch {
+      // A partially written or unrelated line.
+    }
+    const data = row && typeof row === 'object' ? row as Record<string, unknown> : undefined;
+    const value = data?.type === type && data.sessionId === sessionId ? data[field] : undefined;
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+    index = start > 0 ? content.lastIndexOf(marker, start - 1) : -1;
+  }
+  return undefined;
+}
+
+/**
  * Session indexer for Claude transcript artifacts.
  */
 export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
@@ -139,65 +170,41 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     // ids must be resolved through the provider-id mapping first.
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
-    const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
-      return {
-        ...parsed,
-        sessionName: normalizeSessionName(existingSessionName, 'Untitled Claude Session'),
-      };
+    // The upsert keeps the stored name when none is given, so an explicit
+    // rename, or an automatic name written after this read, is never reverted.
+    if (existingSession?.custom_name_source === 'user') {
+      return parsed;
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
-    if (!sessionName) {
-      sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
-    }
-
-    return {
-      ...parsed,
-      sessionName: normalizeSessionName(sessionName, 'Untitled Claude Session'),
-    };
-  }
-
-  private async extractSessionAiTitleFromEnd(
-    filePath: string,
-    sessionId: string
-  ): Promise<string | undefined> {
+    let content: string | undefined;
     try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
-
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const data = parsed as Record<string, unknown>;
-        const eventType = typeof data.type === 'string' ? data.type : undefined;
-        const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-        const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
-        const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
-        const claudeRenamedTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
-
-        if (
-          (eventType === 'ai-title' && eventSessionId === sessionId && aiTitle?.trim()) ||
-          (eventType === 'last-prompt' && eventSessionId === sessionId && lastPrompt?.trim()) ||
-          (eventType === "custom-title" && eventSessionId === sessionId && claudeRenamedTitle?.trim())
-        ) {
-          return aiTitle || lastPrompt || claudeRenamedTitle;
-        }
-      }
+      content = await readFile(filePath, 'utf8');
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }
 
-    return undefined;
+    // Like Claude Code, a native /rename outranks its generated title. Both
+    // replace automatic names, including Codey's own generated title.
+    const nativeTitle = content && (
+      findNewestMetadataValue(content, parsed.sessionId, 'custom-title', 'customTitle')
+      ?? findNewestMetadataValue(content, parsed.sessionId, 'ai-title', 'aiTitle')
+    );
+    if (nativeTitle) {
+      return { ...parsed, sessionName: normalizeSessionName(nativeTitle, 'Untitled Claude Session') };
+    }
+
+    // The prompt fallbacks only name a session that has no name yet.
+    const existingSessionName = existingSession?.custom_name;
+    if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
+      return parsed;
+    }
+
+    const sessionName = nameMap.get(parsed.sessionId)
+      || (content && findNewestMetadataValue(content, parsed.sessionId, 'last-prompt', 'lastPrompt'));
+
+    return {
+      ...parsed,
+      sessionName: normalizeSessionName(sessionName || undefined, 'Untitled Claude Session'),
+    };
   }
 }

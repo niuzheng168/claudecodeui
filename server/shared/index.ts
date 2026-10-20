@@ -15,12 +15,16 @@ export type { ICodexRpcClient, ICodexDesktopThreadOwner, IProvider, IProviderRun
 export type {
   AnyRecord, CodexRpcRequestId, CodexRpcServerReply, CodexDesktopThreadState, ProviderRuntimeContext,
   ProviderRuntimeWriter, ProviderPermissionDecision, ProviderRuntimePermissionGateway,
-  NewCodexSessionTitleRequest, ProviderRunFunction,
+  NewSessionTitleRequest, ProviderRunFunction,
   LLMProvider, NativeTranscriptPosition, ProviderAbortOptions, ProviderRuntimeObservation,
   ProviderSteerReceipt, CodexGoal, CodexGoalCommand, CodexGoalCommandResult,
 } from './types.js';
 export {
   createCompleteMessage, createNormalizedMessage, resolveCodexHomeDirectory,
+} from './utils.js';
+// Codex and Claude automatic session titles share one prompt, output schema and validator.
+export {
+  SESSION_TITLE_INSTRUCTIONS, SESSION_TITLE_SCHEMA, parseSessionTitle, readBoundedJsonResponse,
 } from './utils.js';
 export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.js';
 // Commands resolves application metadata and parses local custom command frontmatter.

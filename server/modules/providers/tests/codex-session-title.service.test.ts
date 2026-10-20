@@ -3,9 +3,9 @@ import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises'
 import test from 'node:test';
 
 import { createCodexSessionTitleService } from '@/modules/providers/list/codex/codex-session-title.service.js';
-import type { AnyRecord, ICodexRpcClient, NewCodexSessionTitleRequest } from '@/shared/index.js';
+import type { AnyRecord, ICodexRpcClient, NewSessionTitleRequest } from '@/shared/index.js';
 
-const REQUEST: NewCodexSessionTitleRequest = {
+const REQUEST: NewSessionTitleRequest = {
   sessionId: 'codey-app', providerSessionId: 'native-thread', initialMessage: 'Find why my Mac node is offline',
 };
 

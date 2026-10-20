@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { createProviderRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
-import type { IProvider, IProviderRuntime, LLMProvider, NewCodexSessionTitleRequest, ProviderRuntimeWriter } from '@/shared/index.js';
+import type { IProvider, IProviderRuntime, LLMProvider, NewSessionTitleRequest, ProviderRuntimeWriter } from '@/shared/index.js';
 
 function createRuntime(overrides: Partial<IProviderRuntime> = {}): IProviderRuntime {
   return {
@@ -87,7 +87,7 @@ test('providerRegistry owns one runtime for every registered provider', () => {
 test('new native and SDK creation notifications schedule one title after the original writer records the mapping', async () => {
   for (const channel of ['setSessionId', 'event', 'json-event'] as const) {
     const order: string[] = [];
-    const titles: NewCodexSessionTitleRequest[] = [];
+    const titles: NewSessionTitleRequest[] = [];
     let resolveTitle!: () => void;
     const titleWork = new Promise<void>(resolve => { resolveTitle = resolve; });
     const event = { kind: 'session_created', newSessionId: 'new-native' };
@@ -104,7 +104,8 @@ test('new native and SDK creation notifications schedule one title after the ori
     });
     const service = createService([createProvider('codex', runtime)], {
       resolveProviderSessionId: () => null,
-      scheduleTitle: input => {
+      scheduleTitle: (input, provider) => {
+        assert.equal(provider, 'codex');
         order.push('title');
         titles.push(input);
         return titleWork;
@@ -127,9 +128,9 @@ test('new native and SDK creation notifications schedule one title after the ori
   }
 });
 
-test('resumes, direct calls without an app ID, and other providers never schedule Codex titles', async () => {
-  for (const scenario of ['resume', 'no-app-id', 'claude'] as const) {
-    const provider = scenario === 'claude' ? 'claude' : 'codex';
+test('resumes, direct calls without an app ID, and providers without a namer never schedule titles', async () => {
+  for (const scenario of ['resume', 'no-app-id', 'unmanaged-claude', 'cursor'] as const) {
+    const provider = scenario === 'unmanaged-claude' ? 'claude' : scenario === 'cursor' ? 'cursor' : 'codex';
     let titles = 0;
     const writer: ProviderRuntimeWriter = { send() {}, setSessionId() {} };
     const runtime = createRuntime({
@@ -141,10 +142,41 @@ test('resumes, direct calls without an app ID, and other providers never schedul
     });
     const service = createService([createProvider(provider, runtime)], {
       resolveProviderSessionId: () => scenario === 'resume' ? 'existing' : null,
+      namesNewSessions: name => name === 'codex',
       scheduleTitle: async () => { titles++; },
     });
     await service.run(provider, 'Continue', scenario === 'no-app-id' ? {} : { sessionId: 'app' }, writer);
     assert.equal(titles, 0);
+  }
+});
+
+test('new Claude sessions are named only on managed gateway nodes, by the Claude namer', async () => {
+  const previous = process.env.CODEY_MANAGED;
+  try {
+    for (const managed of [true, false]) {
+      if (managed) process.env.CODEY_MANAGED = 'true';
+      else delete process.env.CODEY_MANAGED;
+      const scheduled: Array<[NewSessionTitleRequest, LLMProvider]> = [];
+      const writer: ProviderRuntimeWriter = { send() {}, setSessionId() {} };
+      const runtime = createRuntime({
+        async run(_command, _options, output) {
+          assert.equal(output === writer, !managed, 'unmanaged runs keep the original writer');
+          output.setSessionId?.('native-claude');
+          output.send({ kind: 'session_created', newSessionId: 'native-claude', provider: 'claude' });
+        },
+      });
+      const service = createService([createProvider('claude', runtime)], {
+        resolveProviderSessionId: () => null,
+        scheduleTitle: async (input, provider) => { scheduled.push([input, provider]); },
+      });
+      await service.run('claude', 'Fix the heartbeat', { sessionId: 'app' }, writer);
+      assert.deepEqual(scheduled, managed ? [[{
+        sessionId: 'app', providerSessionId: 'native-claude', initialMessage: 'Fix the heartbeat',
+      }, 'claude']] : []);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CODEY_MANAGED;
+    else process.env.CODEY_MANAGED = previous;
   }
 });
 

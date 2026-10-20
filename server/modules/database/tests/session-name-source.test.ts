@@ -36,6 +36,35 @@ test('Codex app-generated names follow native names without changing app/provide
   });
 });
 
+test('Claude app-created names follow native and generated titles until the user renames', async () => {
+  await withDatabase(() => {
+    sessionsDb.createAppSession('app-id', 'claude', '/workspace/demo', 'First prompt');
+    sessionsDb.assignProviderSessionId('app-id', 'native-id');
+    // A synchronizer that passes no name keeps the current one.
+    assert.equal(sessionsDb.createSession('native-id', 'claude', '/workspace/demo'), 'app-id');
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name, 'First prompt');
+    assert.equal(sessionsDb.updateSessionSyncedName('app-id', 'Generated title', 'native-id'), true);
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name, 'Generated title');
+    sessionsDb.createSession('native-id', 'claude', '/workspace/demo', 'Native rename');
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name, 'Native rename');
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name_source, 'auto');
+    sessionsDb.updateSessionCustomName('app-id', 'Manual title');
+    sessionsDb.createSession('native-id', 'claude', '/workspace/demo', 'Later native rename');
+    assert.equal(sessionsDb.updateSessionSyncedName('app-id', 'Late generated title', 'native-id'), false);
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name, 'Manual title');
+    assert.equal(sessionsDb.getSessionById('native-id'), null);
+  });
+});
+
+test('other providers keep their app-created name when the transcript is indexed', async () => {
+  await withDatabase(() => {
+    sessionsDb.createAppSession('app-id', 'cursor', '/workspace/demo', 'First prompt');
+    sessionsDb.assignProviderSessionId('app-id', 'native-id');
+    sessionsDb.createSession('native-id', 'cursor', '/workspace/demo', 'Disk name');
+    assert.equal(sessionsDb.getSessionById('app-id')?.custom_name, 'First prompt');
+  });
+});
+
 test('both upsert paths protect explicit local names, including the old default-title string', async () => {
   await withDatabase(() => {
     for (const id of ['mapped', 'legacy']) {
@@ -63,8 +92,8 @@ test('metadata-only title refresh leaves recency and archives unchanged', async 
     assert.equal(sessionsDb.updateSessionSyncedName('native', 'Archived change'), false);
     assert.equal(sessionsDb.getSessionById('native')?.custom_name, 'After');
     assert.equal(sessionsDb.getSessionById('native')?.isArchived, 1);
-    sessionsDb.createAppSession('claude-app', 'claude', '/workspace/demo', 'Claude app name');
-    assert.equal(sessionsDb.updateSessionSyncedName('claude-app', 'Disk name'), false);
+    sessionsDb.createAppSession('cursor-app', 'cursor', '/workspace/demo', 'Cursor app name');
+    assert.equal(sessionsDb.updateSessionSyncedName('cursor-app', 'Disk name'), false);
   });
 });
 

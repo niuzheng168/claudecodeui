@@ -45,14 +45,15 @@ test('disk-discovered sessions are keyed by the provider id for both columns', a
 
 test('app sessions get the provider id assigned without creating a duplicate row', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-id-1', 'claude', '/workspace/demo', 'Initial CloudCLI message');
+    // Cursor keeps the app-created name; Codex and Claude follow native names.
+    sessionsDb.createAppSession('app-id-1', 'cursor', '/workspace/demo', 'Initial CloudCLI message');
     sessionsDb.assignProviderSessionId('app-id-1', 'provider-xyz');
 
     // A later synchronizer pass that discovers the transcript on disk must
     // update the app row in place instead of inserting a provider-keyed row.
     const returnedId = sessionsDb.createSession(
       'provider-xyz',
-      'claude',
+      'cursor',
       '/workspace/demo',
       'Synced Name',
       undefined,

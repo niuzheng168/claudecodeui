@@ -2,12 +2,14 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { codexSessionTitleService } from '@/modules/providers/list/codex/codex-session-title.service.js';
+import { claudeSessionTitleService } from '@/modules/providers/list/claude/claude-session-title.service.js';
+import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
 import { AppError, readObjectRecord } from '@/shared/index.js';
 import type {
   AnyRecord,
   IProvider,
   LLMProvider,
-  NewCodexSessionTitleRequest,
+  NewSessionTitleRequest,
   ProviderPermissionDecision,
   ProviderAbortOptions,
   ProviderRuntimeObservation,
@@ -27,7 +29,8 @@ type ProviderRuntimeServiceDependencies = {
     requestedModel?: string | null,
   ): Promise<string | undefined>;
   getProviderModels: typeof providerModelsService.getProviderModels;
-  scheduleTitle(input: NewCodexSessionTitleRequest): Promise<void>;
+  namesNewSessions(provider: LLMProvider): boolean;
+  scheduleTitle(input: NewSessionTitleRequest, provider: LLMProvider): Promise<void>;
 };
 
 const defaultDependencies: ProviderRuntimeServiceDependencies = {
@@ -37,7 +40,11 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
   resolveResumeModel: (provider, sessionId, requestedModel) =>
     providerModelsService.resolveResumeModel(provider, sessionId, requestedModel),
   getProviderModels: (provider) => providerModelsService.getProviderModels(provider),
-  scheduleTitle: input => codexSessionTitleService.schedule(input),
+  // Claude titles need the managed gateway; other installs keep the first-message name.
+  namesNewSessions: provider => provider === 'codex' || (provider === 'claude' && codeyClaudeGateway.isManaged()),
+  scheduleTitle: (input, provider) => (
+    provider === 'claude' ? claudeSessionTitleService : codexSessionTitleService
+  ).schedule(input),
 };
 
 /**
@@ -78,7 +85,8 @@ export function createProviderRuntimeService(
   ): Promise<unknown> => {
     const provider = dependencies.resolveProvider(providerName);
     const sessionId = typeof options.sessionId === 'string' ? options.sessionId : null;
-    if (providerName !== 'codex' || !sessionId || dependencies.resolveProviderSessionId(sessionId)) {
+    if (!dependencies.namesNewSessions(providerName) || !sessionId
+      || dependencies.resolveProviderSessionId(sessionId)) {
       return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
     }
 
@@ -87,9 +95,10 @@ export function createProviderRuntimeService(
       if (scheduled || typeof providerSessionId !== 'string' || !providerSessionId) return;
       scheduled = true;
       try {
-        // The original writer persists the native ID first. Naming runs on
-        // its own metadata connection and never delays chat/queue completion.
-        void dependencies.scheduleTitle({ sessionId, providerSessionId, initialMessage: command }).catch(() => {});
+        // The original writer persists the native ID first. Naming runs in
+        // the background and never delays chat/queue completion.
+        void dependencies.scheduleTitle({ sessionId, providerSessionId, initialMessage: command }, providerName)
+          .catch(() => {});
       } catch { /* Metadata generation cannot fail the provider's user turn. */ }
     };
     const namingWriter: ProviderRuntimeWriter = {
