@@ -124,6 +124,8 @@ export type ProviderModelOption = {
   recordId?: number;
   /** True for user-created rows; false for immutable CloudCLI defaults. */
   isCustom?: boolean;
+  /** Tokens the model's context holds, when its catalog reports it. */
+  contextWindow?: number;
   effort?: {
     default?: string;
     values: {

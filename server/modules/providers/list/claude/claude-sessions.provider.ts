@@ -22,7 +22,10 @@ import {
   truncateSubagentActivity,
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
-import { summarizeClaudeTokenUsage } from '@/modules/providers/services/provider-token-usage.service.js';
+import {
+  resolveClaudeContextWindow,
+  summarizeClaudeTokenUsage,
+} from '@/modules/providers/services/provider-token-usage.service.js';
 
 const PROVIDER = 'claude';
 
@@ -1103,7 +1106,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // Carried on every page, like the Codex and OpenCode readers do, so the
       // composer's counter tracks the conversation instead of being frozen at
       // whatever it was when the session was opened.
-      tokenUsage: summarizeClaudeTokenUsage(rawMessages),
+      tokenUsage: summarizeClaudeTokenUsage(
+        rawMessages,
+        await resolveClaudeContextWindow(sessionsDb.getSessionById(sessionId)?.model),
+      ),
     };
   }
 }

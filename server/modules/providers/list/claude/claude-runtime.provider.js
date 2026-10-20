@@ -18,7 +18,10 @@ import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
+import {
+  buildClaudeContextLaunch,
+  codeyClaudeGateway
+} from '@/modules/providers/services/codey-claude-gateway.service.js';
 
 import {
   appendFilesInputTag,
@@ -287,6 +290,16 @@ function mapCliOptionsToSDK(options = {}) {
     options.effortModels || CLAUDE_PREDEFINED_MODELS,
   ));
 
+  // Only a managed catalog knows the model's real window; Claude Code would
+  // otherwise size it from the model id. After effort, which keys on the id.
+  if (options.contextWindow) {
+    ({ model: sdkOptions.model, env: sdkOptions.env } = buildClaudeContextLaunch(
+      sdkOptions.model,
+      options.contextWindow,
+      sdkOptions.env,
+    ));
+  }
+
   sdkOptions.systemPrompt = {
     type: 'preset',
     preset: 'claude_code'
@@ -413,6 +426,16 @@ function readNumber(value) {
 }
 
 /**
+ * The window a budget reports: the managed catalog's when the run has one,
+ * otherwise the CONTEXT_WINDOW setting.
+ * @param {number} [contextWindow] - Catalog window of the run's model
+ * @returns {number}
+ */
+function resolveContextWindow(contextWindow) {
+  return contextWindow || parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+}
+
+/**
  * @typedef {Object} TokenBudget
  * @property {number} used
  * @property {number} total
@@ -430,20 +453,20 @@ function readNumber(value) {
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  * @param {Object} messageUsage - Anthropic usage payload
+ * @param {number} [contextWindow] - Catalog window of the run's model
  * @returns {TokenBudget} Token budget object
  */
-function buildTokenBudget(messageUsage) {
+function buildTokenBudget(messageUsage, contextWindow) {
   const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
   const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
   const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
   const cacheTokens = cacheCreationTokens + cacheReadTokens;
   const inputTokens = directInputTokens + cacheTokens;
   const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
 
   return {
     used: inputTokens + outputTokens,
-    total: contextWindow,
+    total: resolveContextWindow(contextWindow),
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -463,9 +486,10 @@ function buildTokenBudget(messageUsage) {
  * prompt its own request carried. The turn-ending `result` is deliberately not
  * a source here — see `extractCumulativeTokenBudget`.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {number} [contextWindow] - Catalog window of the run's model
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractTokenBudget(sdkMessage) {
+function extractTokenBudget(sdkMessage, contextWindow) {
   if (!sdkMessage || typeof sdkMessage !== 'object') {
     return null;
   }
@@ -490,7 +514,7 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
-  return buildTokenBudget(messageUsage);
+  return buildTokenBudget(messageUsage, contextWindow);
 }
 
 /**
@@ -507,15 +531,16 @@ function extractTokenBudget(sdkMessage) {
  * message ever emits, so it stays available for the caller to use when a turn
  * produced no assistant budget at all.
  * @param {Object} sdkMessage - SDK stream message
+ * @param {number} [contextWindow] - Catalog window of the run's model
  * @returns {TokenBudget|null} Token budget object or null
  */
-function extractCumulativeTokenBudget(sdkMessage) {
+function extractCumulativeTokenBudget(sdkMessage, contextWindow) {
   if (!sdkMessage || typeof sdkMessage !== 'object' || sdkMessage.type !== 'result') {
     return null;
   }
 
   if (sdkMessage.usage && typeof sdkMessage.usage === 'object') {
-    return buildTokenBudget(sdkMessage.usage);
+    return buildTokenBudget(sdkMessage.usage, contextWindow);
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
@@ -533,11 +558,10 @@ function extractCumulativeTokenBudget(sdkMessage) {
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
 
   return {
     used: totalUsed,
-    total: contextWindow,
+    total: resolveContextWindow(contextWindow),
     inputTokens,
     outputTokens,
     breakdown: {
@@ -773,16 +797,20 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       console.warn('[Claude SDK] Unable to load provider models for effort validation:', error);
     }
 
-    if (codeyClaudeGateway.isManaged()
-      && !effortModels.OPTIONS.some(({ value }) => value === (resolvedModel || options.model))) {
+    const managedModel = codeyClaudeGateway.isManaged()
+      ? effortModels.OPTIONS.find(({ value }) => value === (resolvedModel || options.model))
+      : null;
+    if (codeyClaudeGateway.isManaged() && !managedModel) {
       throw new Error('This Claude model is not available through the Codey Messages API.');
     }
+    const contextWindow = managedModel?.contextWindow;
 
     const sdkOptions = mapCliOptionsToSDK({
       ...options,
       providerSessionId,
       model: resolvedModel || options.model,
       effortModels,
+      contextWindow,
     });
 
     const mcpServers = await loadMcpConfig(options.cwd);
@@ -973,8 +1001,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
+      const tokenBudgetData = extractTokenBudget(message, contextWindow)
+        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, contextWindow));
       if (tokenBudgetData) {
         if (message.type === 'assistant') {
           assistantBudgetSent = true;

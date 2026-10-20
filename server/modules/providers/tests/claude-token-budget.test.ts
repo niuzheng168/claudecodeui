@@ -102,3 +102,22 @@ test('the cumulative reader ignores anything that is not a result', () => {
     null,
   );
 });
+
+test('a managed run reports its catalog window instead of the CONTEXT_WINDOW guess', () => {
+  const usage = { input_tokens: 10, output_tokens: 2 };
+  assert.equal(extractTokenBudget({ type: 'assistant', message: { usage } }, 1_000_000)?.total, 1_000_000);
+  assert.equal(extractCumulativeTokenBudget({ type: 'result', usage }, 1_000_000)?.total, 1_000_000);
+  assert.equal(extractCumulativeTokenBudget({
+    type: 'result',
+    modelUsage: { 'claude-opus-5.5': { inputTokens: 10, outputTokens: 2 } },
+  }, 1_000_000)?.total, 1_000_000);
+
+  const previous = process.env.CONTEXT_WINDOW;
+  process.env.CONTEXT_WINDOW = '180000';
+  try {
+    assert.equal(extractTokenBudget({ type: 'assistant', message: { usage } })?.total, 180_000);
+  } finally {
+    if (previous === undefined) delete process.env.CONTEXT_WINDOW;
+    else process.env.CONTEXT_WINDOW = previous;
+  }
+});

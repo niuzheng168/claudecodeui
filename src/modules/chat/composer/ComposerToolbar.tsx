@@ -16,6 +16,7 @@ type Props = {
   permissionControl: ReactNode;
   submitControl: ReactNode;
   tokenUsage: Record<string, unknown> | null;
+  contextWindow?: number;
   onShowTokenUsage: () => void;
   commandsCount: number;
   onShowCommands: () => void;
@@ -44,7 +45,7 @@ function revealFocusedTool({ currentTarget, target }: FocusEvent<HTMLDivElement>
 /** ChatComposer keeps primary actions on one line, with secondary status below and scrollable tools on narrow panes. */
 export function ComposerToolbar({
   onAttachFiles, completionControl, voiceControl, rewriteControl, modelControl, permissionControl, submitControl,
-  tokenUsage, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
+  tokenUsage, contextWindow, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
   canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError, collapseControl,
 }: Props) {
   const { t } = useTranslation('chat');
@@ -74,7 +75,7 @@ export function ComposerToolbar({
         {submitControl}
       </div>
       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 px-1" data-slot="composer-status">
-        <TokenUsageSummary usage={tokenUsage} onClick={onShowTokenUsage} />
+        <TokenUsageSummary usage={tokenUsage} contextWindow={contextWindow} onClick={onShowTokenUsage} />
         {voiceStatus ? (
           <span aria-hidden="true" className="min-w-0 truncate text-[11px] text-primary">{voiceStatus}</span>
         ) : (

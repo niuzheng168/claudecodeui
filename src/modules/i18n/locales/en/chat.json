@@ -281,6 +281,8 @@
     "tokenUsage": "Show token usage",
     "tokensUsed": "{{tokens}} tokens used",
     "tokenCount": "{{tokens}} tokens",
+    "tokenCountOfTotal": "{{tokens}} / {{total}} tokens",
+    "tokensUsedOfTotal": "{{tokens}} of {{total}} tokens used",
     "reasoning": "Reasoning",
     "model": "Model",
     "effortDefault": "Default",

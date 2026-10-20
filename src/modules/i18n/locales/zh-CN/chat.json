@@ -388,6 +388,8 @@
     "tokenUsage": "查看 Token 用量",
     "tokensUsed": "已使用 {{tokens}} tokens",
     "tokenCount": "{{tokens}} tokens",
+    "tokenCountOfTotal": "{{tokens}} / {{total}} tokens",
+    "tokensUsedOfTotal": "已使用 {{tokens}} / {{total}} tokens",
     "reasoning": "推理强度",
     "model": "模型",
     "effortDefault": "默认",

@@ -21,6 +21,8 @@ vi.mock('react-i18next', () => ({
         'voiceSettings.refresh': 'Refresh voice services', 'composer.moreTools': 'More tools',
         'composer.backToTools': 'Back to tools', 'composer.tokenUsage': 'Show token usage',
         'composer.tokenCount': '{{tokens}} tokens', 'composer.tokensUsed': '{{tokens}} tokens used',
+        'composer.tokenCountOfTotal': '{{tokens}} / {{total}} tokens',
+        'composer.tokensUsedOfTotal': '{{tokens}} of {{total}} tokens used',
         'input.showAllCommands': 'Show all commands', 'input.clearInput': 'Clear input',
         'input.attachFiles': 'Attach files', 'schedule.trigger': 'Schedule message',
         'schedule.heading': 'Send later', 'schedule.customLabel': 'Choose time',
@@ -47,8 +49,12 @@ afterEach(() => {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalViewport.height });
 });
 
-function fixture({ hasInput = false, state = 'idle', error = null, rewritten = false, hasModelOptions = true }: {
+function fixture({
+  hasInput = false, state = 'idle', error = null, rewritten = false, hasModelOptions = true,
+  tokenUsage = { used: 12345 }, contextWindow,
+}: {
   hasInput?: boolean; state?: VoiceInputState; error?: string | null; rewritten?: boolean; hasModelOptions?: boolean;
+  tokenUsage?: Record<string, unknown> | null; contextWindow?: number;
 } = {}) {
   const callbacks = {
     attach: vi.fn(), mic: vi.fn(), cancel: vi.fn(), voiceChange: vi.fn(), refresh: vi.fn(),
@@ -76,7 +82,7 @@ function fixture({ hasInput = false, state = 'idle', error = null, rewritten = f
         permissionControl={<ComposerPermissionMenu permissionMode="default" permissionModes={['default', 'plan']}
           providerLabel="Codex" onSelectPermissionMode={callbacks.permission} />}
         submitControl={<PromptInputSubmit aria-label="Send" disabled={!hasInput} className="h-9 w-9" />}
-        tokenUsage={{ used: 12345 }} onShowTokenUsage={callbacks.tokens}
+        tokenUsage={tokenUsage} contextWindow={contextWindow} onShowTokenUsage={callbacks.tokens}
         commandsCount={12} onShowCommands={callbacks.commands} hasInput={hasInput} onClearInput={callbacks.clear}
         canSchedule={hasInput} onSchedule={callbacks.schedule} submitHint="Enter to send" hideHint={false}
         voiceError={error} />
@@ -101,6 +107,29 @@ test('the primary row hides secondary settings, uses a short model label and kee
   expect(f.callbacks.attach).toHaveBeenCalledOnce();
   expect(f.callbacks.tokens).toHaveBeenCalledOnce();
   expect(f.callbacks.submit).not.toHaveBeenCalled();
+});
+
+test.each([
+  { name: 'usage alone', tokenUsage: { used: 12345 }, text: '12K tokens', title: '12,345 tokens used' },
+  {
+    name: 'the catalog window before the first turn', tokenUsage: null, contextWindow: 1_000_000,
+    text: '0 / 1M tokens', title: '0 of 1,000,000 tokens used',
+  },
+  {
+    name: 'the catalog window over a guessed total', tokenUsage: { used: 404_009, total: 160_000 },
+    contextWindow: 1_000_000, text: '404K / 1M tokens', title: '404,009 of 1,000,000 tokens used',
+  },
+  {
+    name: 'a provider-reported window', tokenUsage: { used: 12345, total: 922_000 },
+    text: '12K / 922K tokens', title: '12,345 of 922,000 tokens used',
+  },
+  { name: 'no guessed total below the usage', tokenUsage: { used: 404_009, total: 160_000 }, text: '404K tokens' },
+  { name: 'no reported total before usage', tokenUsage: { used: 0, total: 200_000 }, text: '0 tokens' },
+])('the token status shows $name', ({ tokenUsage, contextWindow, text, title }) => {
+  fixture({ tokenUsage, contextWindow });
+  const tokens = screen.getByRole('button', { name: 'Show token usage' });
+  expect(tokens.textContent).toBe(text);
+  if (title) expect(tokens.getAttribute('title')).toBe(title);
 });
 
 test('completion shares the attachment tool row instead of reserving a settings row', () => {
