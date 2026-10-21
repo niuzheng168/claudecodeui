@@ -1,3 +1,7 @@
+import {
+  claudeCodeRefusesBypassPermissions,
+  codeyClaudeGateway,
+} from '@/modules/providers/services/codey-claude-gateway.service.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 /**
@@ -122,8 +126,18 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
     const value = PROVIDER_CAPABILITIES[provider];
-    return provider === 'codex' && process.platform === 'win32' && process.env.CODEY_CODEX_RUNTIME_TRANSPORT === 'stdio'
-      ? { ...value, supportsPermissionRequests: true } : value;
+    if (provider === 'codex' && process.platform === 'win32' && process.env.CODEY_CODEX_RUNTIME_TRANSPORT === 'stdio') {
+      return { ...value, supportsPermissionRequests: true };
+    }
+    // Managed nodes run Codex with full access by default, and a Claude chat
+    // left on `default` stalls on every tool call while nobody is watching.
+    // Questions and plan approvals still reach the UI in this mode. Root
+    // nodes keep `default`, because Claude Code refuses full access there.
+    if (provider === 'claude' && codeyClaudeGateway.isManaged()
+      && !claudeCodeRefusesBypassPermissions(process.env)) {
+      return { ...value, defaultPermissionMode: 'bypassPermissions' };
+    }
+    return value;
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {

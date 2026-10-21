@@ -368,3 +368,50 @@ test('a node backend that predates the steering capability keeps it Codex-only',
   act(() => result.current.setProvider('codex'));
   assert.equal(result.current.supportsSteering, true);
 });
+
+test('a new Claude chat starts in the permission mode the node advertises as default', async () => {
+  providerApiMocks.capabilities.mockImplementation(() => okJson({ success: true, data: { providers: [
+    // Unlike the pre-load fallback list, this one has no 'auto', so its arrival is observable.
+    capabilityRow('claude', {
+      permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+      defaultPermissionMode: 'bypassPermissions',
+    }),
+    capabilityRow('codex'),
+  ] } }));
+  writeUserPreference('selectedProvider', 'claude');
+  const { result, unmount } = await renderProviderState();
+  await waitFor(() => assert.equal(result.current.permissionMode, 'bypassPermissions'));
+  unmount();
+
+  // A mode the user picked earlier still wins over the node's default.
+  localStorage.setItem('permissionMode-last-claude', 'default');
+  const remembered = await renderProviderState();
+  await waitFor(() => assert.equal(remembered.result.current.availablePermissionModes.includes('auto'), false));
+  assert.equal(remembered.result.current.permissionMode, 'default');
+});
+
+test('a managed node names the effort "Default" runs at; other installs leave it to the CLI', async () => {
+  const model = 'claude-opus-5.5';
+  const claudeModels = {
+    DEFAULT: model, modelApiManaged: true,
+    OPTIONS: [{ value: model, label: 'Claude Opus 5.5', effort: { default: 'max', values: [{ value: 'high' }, { value: 'max' }] } }],
+  };
+  providerApiMocks.models.mockImplementation((provider: string) => okJson({
+    success: true, data: { models: provider === 'claude' ? claudeModels : managedCodexModels },
+  }));
+  writeUserPreference('selectedProvider', 'claude');
+  localStorage.setItem('claude-model', model);
+
+  const unmanaged = await renderProviderState();
+  await waitFor(() => assert.equal(unmanaged.result.current.providerModelsLoading, false));
+  assert.equal(unmanaged.result.current.currentProviderEffort, 'default');
+  assert.equal(unmanaged.result.current.currentProviderDefaultEffort, null);
+  unmanaged.unmount();
+  vi.resetModules();
+
+  vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+  const managed = await renderProviderState();
+  await waitFor(() => assert.equal(managed.result.current.providerModelsLoading, false));
+  assert.equal(managed.result.current.currentProviderEffort, 'default');
+  assert.equal(managed.result.current.currentProviderDefaultEffort, 'max');
+});

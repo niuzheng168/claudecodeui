@@ -19,6 +19,8 @@ type ComposerModelMenuProps = {
   effort: string;
   /** Effort values the active provider/model actually accepts; empty hides the section. */
   effortOptions: EffortOption[];
+  /** What "Default" runs at, when the node guarantees it; otherwise the provider decides. */
+  defaultEffort?: string | null;
   onSelectEffort: (effort: string) => void;
   model: string;
   /** Model catalog for the active provider; empty hides the section. */
@@ -34,6 +36,7 @@ type ComposerModelMenuProps = {
 function ComposerModelMenu({
   effort,
   effortOptions,
+  defaultEffort = null,
   onSelectEffort,
   model,
   modelOptions,
@@ -48,7 +51,8 @@ function ComposerModelMenu({
   const close = useCallback(() => { setIsOpen(false); setIsModelSectionOpen(false); }, []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close);
 
-  const defaultEffortLabel = t('composer.effortDefault', { defaultValue: 'Default' });
+  const defaultEffortName = t('composer.effortDefault', { defaultValue: 'Default' });
+  const defaultEffortLabel = defaultEffort ? `${defaultEffortName} (${defaultEffort})` : defaultEffortName;
   const resolvedEffortOptions = useMemo<EffortOption[]>(
     () => (effortOptions.length > 0 ? [{ value: DEFAULT_EFFORT_VALUE }, ...effortOptions] : []),
     [effortOptions],

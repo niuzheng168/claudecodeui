@@ -109,6 +109,7 @@ function ChatInterface({
     setStoredProviderModel,
     currentProviderEffort,
     currentProviderEffortOptions,
+    currentProviderDefaultEffort,
     currentProviderModel,
     currentProviderModelOptions,
     permissionMode,
@@ -527,6 +528,7 @@ function ChatInterface({
           providerLabel={selectedProviderLabel}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
+          defaultEffort={currentProviderDefaultEffort}
           onSelectEffort={handleSelectComposerEffort}
           model={currentProviderModel}
           availableModelOptions={currentProviderModelOptions}

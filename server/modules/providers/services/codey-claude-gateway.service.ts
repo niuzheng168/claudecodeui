@@ -2,6 +2,9 @@ import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/ind
 import { AppError, readObjectRecord } from '@/shared/index.js';
 
 const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+// Managed Codex runs at max by default. Claude matches it, stepping down only
+// for models the gateway does not offer max on.
+const PREFERRED_DEFAULT_EFFORTS = ['max', 'xhigh', 'high'];
 
 // Claude Code's own default window, and the range it clamps
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW to.
@@ -42,6 +45,20 @@ export function buildClaudeContextLaunch(
     model: launchModel,
     env: { ...env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactWindow) },
   };
+}
+
+/**
+ * Used by the Claude capabilities and runtime. Claude Code exits at startup,
+ * printing only to stderr, when bypassPermissions is requested by root outside
+ * a sandbox it recognises; this mirrors that check (Claude Code 2.1.165) so a
+ * run can fall back before spawning instead of failing with a bare exit code.
+ */
+export function claudeCodeRefusesBypassPermissions(
+  env: NodeJS.ProcessEnv,
+  uid: number | undefined = process.getuid?.(),
+): boolean {
+  return uid === 0 && env.IS_SANDBOX !== '1'
+    && !/^(1|true|yes|on)$/i.test(env.CLAUDE_CODE_BUBBLEWRAP?.trim() ?? '');
 }
 
 /**
@@ -135,7 +152,7 @@ export function createCodeyClaudeGateway(dependencies: {
         ...(contextWindow ? { contextWindow } : {}),
         ...(efforts.length ? {
           effort: {
-            default: efforts.includes('high') ? 'high' : efforts[0],
+            default: PREFERRED_DEFAULT_EFFORTS.find(value => efforts.includes(value)) ?? efforts[0],
             values: [...new Set(efforts)].map(value => ({ value })),
           },
         } : {}),

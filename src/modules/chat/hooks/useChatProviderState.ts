@@ -731,6 +731,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);
+  // Only a managed node runs "Default" at the catalog's default (Codex through
+  // the config Codey writes, Claude through its runtime). Elsewhere the CLI's
+  // own configuration decides, which the catalog cannot vouch for.
+  const currentProviderDefaultEffort = useMemo(() => {
+    if (!isCodeyManagedDeployment() || currentProviderEffortOptions.length === 0) {
+      return null;
+    }
+    return getModelOption(provider, currentProviderModel)?.effort?.default ?? null;
+  }, [currentProviderEffortOptions, currentProviderModel, getModelOption, provider]);
   const currentProviderEffort = useMemo(() => {
     return reconcileStoredEffort(
       provider,
@@ -856,6 +865,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setStoredProviderModel,
     currentProviderEffort,
     currentProviderEffortOptions,
+    currentProviderDefaultEffort,
     currentProviderModel,
     currentProviderModelOptions,
     permissionMode,

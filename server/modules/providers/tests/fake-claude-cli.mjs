@@ -9,7 +9,11 @@
 // The prompt picks the turn: TOOL (tool call that ends when input arrives),
 // SLOW_TOOL (5s tool call only an interrupt ends), WAIT_TEXT (final text,
 // then waits for input), ECHO_UUID (answers with the uuid the prompt carried,
-// which the real CLI keeps as the transcript row's uuid). `/context` and
+// which the real CLI keeps as the transcript row's uuid), ECHO_FLAGS (answers
+// with the effort and permission flags it was launched with), ASK_USER (an
+// AskUserQuestion call; like the real CLI it asks the host through
+// `can_use_tool` even in bypassPermissions mode, then answers with the
+// decision it got). `/context` and
 // `/compact` replay what the real CLI streams for those local commands, and
 // `initialize` reports a command list shaped like the real one. ECHO_PID
 // answers with the process id, so tests can tell a reused process from a new
@@ -21,11 +25,16 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
 const replay = process.argv.includes('--replay-user-messages');
+const flag = (name) => {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : 'none';
+};
 // Resuming keeps the session id, like the real CLI.
-const resumeAt = process.argv.indexOf('--resume');
-const sessionId = resumeAt > 0 ? process.argv[resumeAt + 1] : randomUUID();
+const sessionId = flag('--resume') === 'none' ? randomUUID() : flag('--resume');
 const BG_REPORT_DELAY_MS = 150;
 const queue = [];
+// Host answers to control requests this CLI sent, by request id.
+const pendingControl = new Map();
 let turn = null;
 let inputEnded = false;
 let wakeTurn = null;
@@ -136,6 +145,20 @@ async function runTurn(first) {
     }
   } else if (prompt.includes('ECHO_UUID')) {
     assistant([{ type: 'text', text: `uuid: ${first.uuid ?? 'none'}` }]);
+  } else if (prompt.includes('ECHO_FLAGS')) {
+    const allowFlag = process.argv.includes('--allow-dangerously-skip-permissions');
+    assistant([{ type: 'text', text: `effort=${flag('--effort')} permission-mode=${flag('--permission-mode')} allow-dangerously-skip=${allowFlag}` }]);
+  } else if (prompt.includes('ASK_USER')) {
+    const input = { questions: [{ question: 'Pick a color', header: 'Color', options: [{ label: 'red' }, { label: 'blue' }], multiSelect: false }] };
+    assistant([{ type: 'tool_use', id: 'toolu_ask', name: 'AskUserQuestion', input }]);
+    const requestId = randomUUID();
+    const decision = await new Promise((resolve) => {
+      pendingControl.set(requestId, resolve);
+      process.stdout.write(`${JSON.stringify({ type: 'control_request', request_id: requestId, request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input, tool_use_id: 'toolu_ask' } })}\n`);
+    });
+    const answers = JSON.stringify(decision.updatedInput?.answers ?? null);
+    emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answers }] } });
+    assistant([{ type: 'text', text: `${decision.behavior}: ${answers}` }]);
   } else {
     assistant([{ type: 'text', text: `answer: ${prompt}` }]);
   }
@@ -160,6 +183,12 @@ function respond(request, response = {}) {
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) return;
   const message = JSON.parse(line);
+  if (message.type === 'control_response') {
+    const resolve = pendingControl.get(message.response?.request_id);
+    pendingControl.delete(message.response?.request_id);
+    resolve?.(message.response?.response ?? {});
+    return;
+  }
   if (message.type === 'control_request') {
     const { subtype } = message.request;
     if (subtype === 'cancel_async_message') {

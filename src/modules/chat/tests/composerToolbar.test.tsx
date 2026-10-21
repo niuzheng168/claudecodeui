@@ -346,3 +346,15 @@ test('a trigger near the top opens its controls below instead of clipping them a
   expect(hook.result.current.anchor?.top).toBe(52);
   expect(hook.result.current.anchor?.bottom).toBeUndefined();
 });
+
+test('a guaranteed default effort is named next to "Default"', () => {
+  const onSelectEffort = vi.fn();
+  render(<ComposerModelMenu effort="default" effortOptions={[{ value: 'high' }, { value: 'max' }]} defaultEffort="max"
+    onSelectEffort={onSelectEffort} model="claude-opus-5.5" modelOptions={[{ value: 'claude-opus-5.5', label: 'Claude Opus 5.5' }]}
+    onSelectModel={vi.fn()} modelsLoading={false} />);
+  const trigger = screen.getByRole('button', { name: /Select model and reasoning effort/ });
+  expect(trigger.getAttribute('title')).toBe('Claude Opus 5.5 · Default (max)');
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Default (max)' }));
+  expect(onSelectEffort).toHaveBeenCalledWith('default');
+});

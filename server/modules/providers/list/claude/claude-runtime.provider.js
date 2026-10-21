@@ -20,6 +20,7 @@ import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
   buildClaudeContextLaunch,
+  claudeCodeRefusesBypassPermissions,
   codeyClaudeGateway
 } from '@/modules/providers/services/codey-claude-gateway.service.js';
 
@@ -109,13 +110,25 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 // selection is translated back into the two options the SDK actually understands here.
 const ULTRACODE_SDK_EFFORT = 'xhigh';
 
-function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_PREDEFINED_MODELS) {
+/**
+ * The effort to launch with, or undefined to leave it to Claude Code.
+ * @param {string} model - Catalog model id
+ * @param {string|undefined} effort - The run's selection; 'default' or missing means none
+ * @param {Object} [modelsDefinition] - Catalog the selection is validated against
+ * @param {{ useCatalogDefault?: boolean }} [options] - Managed nodes send the
+ *   catalog's default instead of none: Codex reads its default from the config
+ *   Codey manages, but Claude Code has no such config, so the runtime applies it
+ * @returns {string|undefined}
+ */
+function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_PREDEFINED_MODELS, { useCatalogDefault = false } = {}) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
   const allowedEfforts = selectedModel?.effort?.values
     ?.map((value) => value.value) || [];
-  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort
-    : undefined;
+  if (typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)) {
+    return effort;
+  }
+  const catalogDefault = selectedModel?.effort?.default;
+  return useCatalogDefault && allowedEfforts.includes(catalogDefault) ? catalogDefault : undefined;
 }
 
 /**
@@ -297,6 +310,9 @@ function mapCliOptionsToSDK(options = {}) {
   if (settings.skipPermissions && permissionMode !== 'plan') {
     sdkOptions.permissionMode = 'bypassPermissions';
   }
+  // Launching in bypassPermissions is enough. `allowDangerouslySkipPermissions`
+  // only lets a session switch into it later, and Claude Code then applies
+  // its root refusal to every mode, so it is deliberately never set.
 
   let allowedTools = [...(settings.allowedTools || [])];
 
@@ -324,6 +340,7 @@ function mapCliOptionsToSDK(options = {}) {
     sdkOptions.model,
     effort,
     options.effortModels || CLAUDE_PREDEFINED_MODELS,
+    { useCatalogDefault: codeyClaudeGateway.isManaged() },
   ));
 
   // Only a managed catalog knows the model's real window; Claude Code would
@@ -360,6 +377,29 @@ function mapCliOptionsToSDK(options = {}) {
   }
 
   return sdkOptions;
+}
+
+const BYPASS_REFUSED_NOTICE = 'Full access is unavailable here: Claude Code refuses it when the node '
+  + 'runs as root outside a sandbox. This turn runs in Default mode and asks before using tools. '
+  + 'Run the node as a regular user, or set IS_SANDBOX=1 if it really is sandboxed.';
+
+/**
+ * Drops bypassPermissions from SDK options Claude Code would refuse to start
+ * with. It exits with only a stderr line the SDK discards, so the turn would
+ * otherwise fail as "process exited with code 1" before doing anything.
+ * The run falls back to `default`, where Codey's approval prompts keep the
+ * turn usable; emulating bypass through canUseTool would defeat the CLI's guard.
+ * @param {Object} sdkOptions - Options from mapCliOptionsToSDK; updated in place
+ * @param {number|undefined} [uid] - Process uid, injectable for tests
+ * @returns {string|null} Notice for the user when the mode was withdrawn
+ */
+function withdrawRefusedBypassMode(sdkOptions, uid = process.getuid?.()) {
+  if (sdkOptions.permissionMode !== 'bypassPermissions'
+    || !claudeCodeRefusesBypassPermissions(sdkOptions.env || {}, uid)) {
+    return null;
+  }
+  delete sdkOptions.permissionMode;
+  return BYPASS_REFUSED_NOTICE;
 }
 
 /**
@@ -947,12 +987,10 @@ function bindProcessCallbacks(proc, sdkOptions) {
     }]
   };
 
-  // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
-  // at the permission-mode step and skips this callback, so interactive tools
-  // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
-  // auto-approves them and the model acts on a generated answer. Move these
-  // tools to a PreToolUse hook (runs before the mode check) if we need them
-  // to work in those modes.
+  // AskUserQuestion and ExitPlanMode reach this callback in 'auto' and
+  // 'bypassPermissions' modes too: Claude Code returns their "ask" before
+  // either mode can approve them (checked against Claude Code 2.1.165), so
+  // questions and plan approvals still wait for the user.
   sdkOptions.canUseTool = async (toolName, input, context) => {
     const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
@@ -1551,6 +1589,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     const mcpServers = await loadMcpConfig(options.cwd);
     if (mcpServers) {
       sdkOptions.mcpServers = mcpServers;
+    }
+
+    const bypassNotice = withdrawRefusedBypassMode(sdkOptions);
+    if (bypassNotice) {
+      ws.send(createNormalizedMessage({ kind: 'error', content: bypassNotice, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     }
 
     // The CLI echoes stdin input back when it takes it up. That echo is how a

@@ -71,6 +71,7 @@ type ChatComposerProps = {
   providerLabel: string;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
+  defaultEffort?: string | null;
   onSelectEffort: (effort: string) => void;
   model: string;
   availableModelOptions: ProviderModelOption[];
@@ -162,6 +163,7 @@ export default function ChatComposer({
   providerLabel,
   effort,
   availableEffortOptions,
+  defaultEffort = null,
   onSelectEffort,
   model,
   availableModelOptions,
@@ -673,6 +675,7 @@ export default function ChatComposer({
           modelControl={<ComposerModelMenu
               effort={effort}
               effortOptions={availableEffortOptions}
+              defaultEffort={defaultEffort}
               onSelectEffort={onSelectEffort}
               model={model}
               modelOptions={availableModelOptions}
