@@ -12,7 +12,10 @@ const gateway = (environment: NodeJS.ProcessEnv, fetch?: typeof globalThis.fetch
 );
 
 test('ordinary Claude auth environment is unchanged and copied', () => {
-  const env = { ANTHROPIC_API_KEY: 'existing', ANTHROPIC_BASE_URL: 'https://original.test' };
+  const env = {
+    ANTHROPIC_API_KEY: 'existing', ANTHROPIC_BASE_URL: 'https://original.test',
+    CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '0',
+  };
   const result = gateway(env).buildEnvironment();
   assert.deepEqual(result, env);
   assert.notEqual(result, env);
@@ -30,11 +33,27 @@ test('managed child uses Codey API without changing host credentials', () => {
   assert.equal(result.ANTHROPIC_AUTH_TOKEN, managed.CODEY_MODEL_API_KEY);
   assert.equal(result.ANTHROPIC_API_KEY, '');
   assert.equal(result.CLAUDE_CODE_OAUTH_TOKEN, '');
+  assert.equal(result.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1');
   assert.equal(result.CLAUDE_CODE_USE_VERTEX, undefined);
   assert.equal(result.CLAUDE_CODE_USE_BEDROCK, undefined);
   assert.equal(result.CLAUDE_CODE_USE_FOUNDRY, undefined);
   assert.equal(result.PATH, env.PATH);
   assert.deepEqual(env, original);
+});
+
+test('managed provider pin overrides an inherited opt-out without mutating it', () => {
+  const env = {
+    ...managed, CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '0',
+    ANTHROPIC_AUTH_TOKEN: 'stale-user-token',
+    ANTHROPIC_BASE_URL: 'https://personal-provider.test',
+  };
+  const result = gateway(env).buildEnvironment();
+  assert.equal(result.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1');
+  assert.equal(result.ANTHROPIC_AUTH_TOKEN, managed.CODEY_MODEL_API_KEY);
+  assert.equal(result.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4141');
+  assert.equal(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '0');
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'stale-user-token');
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://personal-provider.test');
 });
 
 test('managed auth fails closed instead of using personal Claude credentials', () => {

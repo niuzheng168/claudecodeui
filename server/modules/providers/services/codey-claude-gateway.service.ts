@@ -177,6 +177,10 @@ export function createCodeyClaudeGateway(dependencies: {
       env.ANTHROPIC_AUTH_TOKEN = key;
       env.ANTHROPIC_API_KEY = '';
       env.CLAUDE_CODE_OAUTH_TOKEN = '';
+      // Pin provider/auth to this host environment: Claude settings.env would
+      // otherwise replace these values with a user's stale or unrelated login.
+      // Keep loading user/project preferences without editing their files.
+      env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
       env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
       for (const name of [
         'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
