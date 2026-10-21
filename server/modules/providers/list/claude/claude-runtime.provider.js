@@ -33,6 +33,11 @@ import {
   CLAUDE_PREDEFINED_MODELS,
   CLAUDE_ULTRACODE_EFFORT
 } from '@/modules/providers/list/claude/claude-models.provider.js';
+import {
+  CODEY_CLAUDE_ENTRYPOINT,
+  findForeignSessionProcess,
+  isTranscriptContinuedElsewhere
+} from '@/modules/providers/list/claude/claude-session-owner.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -286,6 +291,9 @@ function mapCliOptionsToSDK(options = {}) {
   sdkOptions.env = {
     ...codeyClaudeGateway.buildEnvironment(),
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: String(BG_WAIT_CEILING_MS),
+    // What tells Codey's processes from Claude Desktop's or a terminal's
+    // (see findForeignSessionProcess); never inherited from the node's shell.
+    CLAUDE_CODE_ENTRYPOINT: CODEY_CLAUDE_ENTRYPOINT,
   };
 
   const claudeExecutablePath = resolveClaudeExecutableOption();
@@ -400,6 +408,20 @@ function withdrawRefusedBypassMode(sdkOptions, uid = process.getuid?.()) {
   }
   delete sdkOptions.permissionMode;
   return BYPASS_REFUSED_NOTICE;
+}
+
+/**
+ * Refusal for a turn whose session another Claude Code process has open.
+ * @param {{ pid: number, entrypoint: string }} owner - From findForeignSessionProcess
+ * @returns {AppError}
+ */
+function sessionOpenElsewhereError(owner) {
+  const where = owner.entrypoint.startsWith('claude-desktop')
+    ? `Claude Desktop (process ${owner.pid})`
+    : `another Claude Code process (${owner.entrypoint}, process ${owner.pid})`;
+  return new AppError(`This session is open in ${where}. Continue it there; Codey can send to it again once `
+    + 'that process has exited. Two processes continuing one session split the conversation, '
+    + 'so your message was not sent.', { code: 'CLAUDE_SESSION_OPEN_ELSEWHERE', statusCode: 409 });
 }
 
 /**
@@ -1615,10 +1637,25 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
     const signature = launchSignature(sdkOptions);
     const resident = sessionId ? getSession(sessionId) : undefined;
-    const reusable = Boolean(resident && resident.status === 'idle' && !resident.retired
+    if (sdkOptions.resume) {
+      const owner = await findForeignSessionProcess(sdkOptions.resume);
+      if (owner) {
+        // Whatever the other process adds, this one would not know about.
+        if (resident && resident.status !== 'active') {
+          retireProcess(resident);
+        }
+        throw sessionOpenElsewhereError(owner);
+      }
+    }
+    let reusable = Boolean(resident && resident.status === 'idle' && !resident.retired
       && !resident.retireAfterTurn && resident.signature === signature
       && sdkOptions.resume && !sdkOptions.resumeSessionAt
       && resident.providerSessionId === providerSessionId);
+    // Claude Desktop or a terminal may have continued the session, and exited,
+    // while the resident process sat idle with the conversation as it was.
+    if (reusable && await isTranscriptContinuedElsewhere(providerSessionId, options.cwd)) {
+      reusable = false;
+    }
 
     if (reusable && resident.push(promptMessage)) {
       proc = resident;
@@ -1634,8 +1671,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       awaitingPrompt = proc.cliBusy || (proc.heldForBackgroundWork && replayed) ? 'replay' : 'start';
     } else {
       if (resident && resident.status !== 'active') {
-        // The turn needs a process launched differently: another model,
-        // effort or permissions, or an edit.
+        // The turn needs a process launched differently (another model,
+        // effort or permissions, or an edit), or one that reloads a
+        // transcript another process continued.
         retireProcess(resident);
       }
       // A process of this session that is still exiting (retired just now, or

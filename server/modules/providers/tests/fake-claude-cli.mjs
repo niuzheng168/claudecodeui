@@ -17,7 +17,7 @@
 // `/compact` replay what the real CLI streams for those local commands, and
 // `initialize` reports a command list shaped like the real one. ECHO_PID
 // answers with the process id, so tests can tell a reused process from a new
-// one; BG_TASK starts background work that reports back in a turn of its own
+// one, and ECHO_ENTRYPOINT with the entrypoint it would register; BG_TASK starts background work that reports back in a turn of its own
 // shortly after the result, like a finished background shell does, and
 // BG_TASK_DUE background work whose report is ready just as the next input
 // arrives, so the CLI runs the report first.
@@ -134,6 +134,8 @@ async function runTurn(first) {
     if (!queue.length) await wait(3000);
   } else if (prompt.includes('ECHO_PID')) {
     assistant([{ type: 'text', text: `pid: ${process.pid}` }]);
+  } else if (prompt.includes('ECHO_ENTRYPOINT')) {
+    assistant([{ type: 'text', text: `entrypoint: ${process.env.CLAUDE_CODE_ENTRYPOINT}` }]);
   } else if (prompt.includes('BG_TASK')) {
     assistant([{ type: 'tool_use', id: 'toolu_bg', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } }]);
     emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bg', content: 'started in background' }] } });
