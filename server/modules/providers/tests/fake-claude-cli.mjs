@@ -11,16 +11,25 @@
 // then waits for input), ECHO_UUID (answers with the uuid the prompt carried,
 // which the real CLI keeps as the transcript row's uuid). `/context` and
 // `/compact` replay what the real CLI streams for those local commands, and
-// `initialize` reports a command list shaped like the real one.
+// `initialize` reports a command list shaped like the real one. ECHO_PID
+// answers with the process id, so tests can tell a reused process from a new
+// one; BG_TASK starts background work that reports back in a turn of its own
+// shortly after the result, like a finished background shell does, and
+// BG_TASK_DUE background work whose report is ready just as the next input
+// arrives, so the CLI runs the report first.
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
 const replay = process.argv.includes('--replay-user-messages');
-const sessionId = randomUUID();
+// Resuming keeps the session id, like the real CLI.
+const resumeAt = process.argv.indexOf('--resume');
+const sessionId = resumeAt > 0 ? process.argv[resumeAt + 1] : randomUUID();
+const BG_REPORT_DELAY_MS = 150;
 const queue = [];
 let turn = null;
 let inputEnded = false;
 let wakeTurn = null;
+let reportDue = false;
 
 const emit = (message) => process.stdout.write(`${JSON.stringify({ session_id: sessionId, uuid: randomUUID(), ...message })}\n`);
 const textOf = (message) => (typeof message.message.content === 'string'
@@ -53,6 +62,15 @@ const wait = (ms) => new Promise((resolve) => {
 
 async function runTurn(first) {
   turn = { interrupted: false, wakeOnInput: false };
+  if (first.type === 'background-report') {
+    emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed', summary: 'Background shell finished' });
+    emit({ type: 'system', subtype: 'init', model: 'fake-model', tools: [] });
+    // The follow-up takes a while, so a prompt sent meanwhile has to wait for it.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assistant([{ type: 'text', text: 'background report' }]);
+    emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } });
+    return;
+  }
   emit({ type: 'system', subtype: 'init', model: 'fake-model', tools: [] });
   const prompt = textOf(first);
   // A local command is never echoed back, even with --replay-user-messages.
@@ -105,6 +123,17 @@ async function runTurn(first) {
     assistant([{ type: 'text', text: `answer: ${prompt}` }]);
     // No tool boundary is left, so input arriving now waits for the next turn.
     if (!queue.length) await wait(3000);
+  } else if (prompt.includes('ECHO_PID')) {
+    assistant([{ type: 'text', text: `pid: ${process.pid}` }]);
+  } else if (prompt.includes('BG_TASK')) {
+    assistant([{ type: 'tool_use', id: 'toolu_bg', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } }]);
+    emit({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bg', content: 'started in background' }] } });
+    assistant([{ type: 'text', text: 'started' }]);
+    if (prompt.includes('BG_TASK_DUE')) {
+      reportDue = true;
+    } else {
+      setTimeout(() => { queue.unshift({ type: 'background-report' }); void drain(); }, BG_REPORT_DELAY_MS);
+    }
   } else if (prompt.includes('ECHO_UUID')) {
     assistant([{ type: 'text', text: `uuid: ${first.uuid ?? 'none'}` }]);
   } else {
@@ -150,6 +179,10 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   }
   if (message.type !== 'user') return;
   queue.push(message);
+  if (reportDue) {
+    reportDue = false;
+    queue.unshift({ type: 'background-report' });
+  }
   if (turn) {
     if (turn.wakeOnInput) wakeTurn?.();
   } else {

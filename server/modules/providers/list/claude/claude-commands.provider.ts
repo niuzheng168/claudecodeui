@@ -15,18 +15,18 @@ type ClaudeNativeCommand = {
 
 /**
  * Claude Code commands that do what they say when Codey sends them as a chat
- * message. Codey runs every turn in a fresh CLI process over the SDK's
- * streaming input, which rules out part of what the CLI reports. Measured
- * against the bundled CLI:
+ * message. Codey drives the CLI over the SDK's streaming input, in a process
+ * that stays up between turns only while the session is in use and is
+ * replaced whenever a turn needs it launched differently, which rules out part
+ * of what the CLI reports. Measured against the bundled CLI:
  * - `compact` and `context` run locally and answer within the turn;
  * - prompt commands and bundled skills expand into an ordinary model turn;
- * - `usage` (`cost`, `stats`) only counts the current process, which has
- *   spent nothing yet;
+ * - `usage` (`cost`, `stats`) only counts the current process;
  * - `clear` moves the CLI to a new session the Codey session never follows;
  * - `heapdump`, `reload-skills` and `debug` act on the process itself, which
- *   is gone by the next turn;
- * - `loop` schedules wake-ups that outlive the turn's process, and `insights`
- *   writes a report for a local terminal user;
+ *   may be gone by the next turn;
+ * - `loop` schedules wake-ups that need the process to outlive the session's
+ *   use, and `insights` writes a report for a local terminal user;
  * - `goal` is Codey's Codex command.
  * Anything not listed, including the user's own skills and commands, comes
  * from Codey's other command sources.

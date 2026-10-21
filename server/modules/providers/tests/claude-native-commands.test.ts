@@ -2,16 +2,19 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
   createClaudeNativeCommandsService,
   discoverClaudeSlashCommands,
 } from '@/modules/providers/list/claude/claude-commands.provider.js';
-import { claudeRuntime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { claudeRuntime, retireIdleClaudeProcesses } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import type { AnyRecord, ProviderRuntimeContext } from '@/shared/types.js';
+
+// Sessions keep their Claude Code process between turns; end them with the file.
+after(() => retireIdleClaudeProcesses());
 
 // The real Agent SDK drives a stand-in CLI that streams local commands the way
 // the bundled Claude Code CLI does; see fake-claude-cli.mjs.

@@ -3,12 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { claudeRuntime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { claudeRuntime, retireIdleClaudeProcesses } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import type { AnyRecord, ProviderRuntimeContext } from '@/shared/types.js';
+
+// Sessions keep their Claude Code process between turns; end them with the file.
+after(() => retireIdleClaudeProcesses());
 
 // The real Agent SDK drives a stand-in CLI that queues mid-turn input the way
 // the bundled Claude Code CLI does; see fake-claude-cli.mjs.
@@ -116,8 +119,9 @@ test('a send is submitted under its client receipt, which the transcript keeps a
   await run.done();
   assert.deepEqual(run.texts(), [`assistant:uuid: ${clientMessageId}`]);
 
-  // Claude Code only accepts a UUID, so any other receipt leaves the row to it.
+  // Claude Code only accepts a UUID, so any other receipt is not passed on;
+  // the turn names its prompt itself to recognise the CLI taking it up.
   const other = await startRun('ECHO_UUID', 'send-identity-other', { clientMessageId: 'codey_user_1' });
   await other.done();
-  assert.deepEqual(other.texts(), ['assistant:uuid: none']);
+  assert.match(other.texts().join('\n'), /^assistant:uuid: [0-9a-f]{8}-[0-9a-f-]{27}$/);
 });
