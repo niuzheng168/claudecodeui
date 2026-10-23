@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { describeProjectRepository } from '@/modules/projects/services/project-repository.service.js';
+import type { ProjectRepository } from '@/modules/projects/services/project-repository.service.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
@@ -29,6 +31,8 @@ export type ProjectListItem = {
   displayName: string;
   fullPath: string;
   isStarred: boolean;
+  /** Git checkout facts used to group worktrees; null when the directory is gone or not in a repository. */
+  repository: ProjectRepository | null;
   sessions: SessionSummary[];
   sessionMeta: {
     hasMore: boolean;
@@ -223,6 +227,7 @@ export async function getProjectsWithSessions(
       displayName,
       fullPath: projectPath,
       isStarred: Boolean(row.isStarred),
+      repository: await describeProjectRepository(projectPath),
       sessions: sessionsPage.sessions,
       sessionMeta: {
         hasMore: sessionsPage.hasMore,
@@ -275,6 +280,7 @@ export async function getArchivedProjectsWithSessions(
       displayName,
       fullPath: row.project_path,
       isStarred: Boolean(row.isStarred),
+      repository: await describeProjectRepository(row.project_path),
       isArchived: true,
       sessions: sessionsPage.sessions,
       sessionMeta: {
