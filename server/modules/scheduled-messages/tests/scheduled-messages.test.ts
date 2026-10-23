@@ -72,9 +72,15 @@ async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<
 
 type RunCall = { provider: string; command: string; options: Record<string, unknown> };
 
-function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok', aborts: string[] = []) {
+function createRuntime(
+  runs: RunCall[],
+  behaviour: 'ok' | 'throw' = 'ok',
+  aborts: string[] = [],
+  hasBackgroundWork: (sessionId: string) => boolean = () => false,
+) {
   return {
     hasRuntime: () => true,
+    hasBackgroundWork,
     run: async (provider: string, command: string, options: Record<string, unknown>) => {
       if (behaviour === 'throw') {
         throw new Error('provider exploded');
@@ -162,6 +168,65 @@ test('unconfirmed immediate delivery is held before claim, even after the native
     assert.equal(runs.length, 0);
     assert.equal(claim.mock.callCount(), 0);
     assert.deepEqual(sessionDraftsDb.getQueuedMessage(userId, SESSION_ID)?.queuedMessage, queuedMessage);
+  });
+});
+
+test('a queued message waits for background work its session\'s last turn left running', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '',
+      queuedMessage: { content: 'send after the background job' },
+    });
+    // Turn A ended, so its run is completed, but it backgrounded a command
+    // that is still running under A's CLI process.
+    const runA = chatRunRegistry.startRun({
+      appSessionId: SESSION_ID,
+      provider: 'claude',
+      providerSessionId: null,
+      connection: null,
+      userId,
+    });
+    runA!.writer.sendComplete({ exitCode: 0 });
+    assert.equal(chatRunRegistry.isProcessing(SESSION_ID), false);
+
+    let backgroundWork = true;
+    const runs: RunCall[] = [];
+    const runtime = createRuntime(runs, 'ok', [], (sessionId) => sessionId === SESSION_ID && backgroundWork);
+
+    // Starting B now would replace that process and stop the command.
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+    assert.equal(runs.length, 0);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, {
+      content: 'send after the background job',
+    });
+
+    // Once the work has reported back, B goes on the next pass.
+    backgroundWork = false;
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].command, 'send after the background job');
+    assert.equal(sessionDraftsDb.getDrafts(userId).length, 0);
+  });
+});
+
+test('a draft-text save after the queued message was sent does not send it again', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '', queueOperations: [{ kind: 'append', message: { id: 'once', content: 'send me once', attachments: [] } }],
+    });
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+
+    // The composer keeps saving its text while the user types the next
+    // follow-up; its copy of the queue still holds the message just sent.
+    // A save without `queuedMessage` writes the text alone.
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: 'typing the next one' });
+
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+    assert.deepEqual(runs.map((run) => run.command), ['send me once']);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId).map((draft) => [draft.text, draft.queuedMessage]), [
+      ['typing the next one', null],
+    ]);
   });
 });
 

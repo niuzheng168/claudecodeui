@@ -24,6 +24,7 @@ function props(): ComponentProps<typeof ChatMessagesPane> {
     visibleMessageCount: 100, visibleMessages: messages, loadEarlierMessages: vi.fn(), loadAllMessages: vi.fn(),
     allMessagesLoaded: false, isLoadingAllMessages: false, loadAllJustFinished: false, showLoadAllOverlay: false,
     createDiff: vi.fn(), onGrantToolPermission: () => ({ success: true }),
+    revealMessage: vi.fn(), sendMessage: vi.fn(),
     selectedProject: { projectId: 'p', path: '/repo', fullPath: '/repo', displayName: 'Repo', isStarred: false },
   };
 }

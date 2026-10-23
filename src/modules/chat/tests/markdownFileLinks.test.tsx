@@ -7,12 +7,14 @@ import StreamingMarkdown from '@/modules/chat/transcript/StreamingMarkdown';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '@/modules/command-palette';
 import { api } from '@/shared/api';
 
-function FileLinkHandler({ children, onOpen }: { children: ReactNode; onOpen: (path: string) => void }) {
+type OpenFile = (path: string, line?: number | null) => void;
+
+function FileLinkHandler({ children, onOpen }: { children: ReactNode; onOpen: OpenFile }) {
   usePaletteOpsRegister({ openFileInEditor: onOpen });
   return <>{children}</>;
 }
 
-function renderFileLinks(children: ReactNode, onOpen = vi.fn<(path: string) => void>()) {
+function renderFileLinks(children: ReactNode, onOpen = vi.fn<OpenFile>()) {
   const view = render(
     <PaletteOpsProvider>
       <FileLinkHandler onOpen={onOpen}>{children}</FileLinkHandler>
@@ -41,23 +43,24 @@ test.each([
   ['output/literal%2520.json', 'output/literal%20.json'],
   ['output/literal%252F.json', 'output/literal%2F.json'],
   ['output/记录%23one%3Ftwo.json', 'output/记录#one?two.json'],
-  ['output/记录.json:12:3', 'output/记录.json'],
+  ['output/记录.json:12:3', 'output/记录.json', 12],
+  // An encoded colon is part of the filename, not a line suffix.
   ['output/literal.json%3A12', 'output/literal.json:12'],
   ['output/%E0%A4.json', 'output/%E0%A4.json'],
-])('opens the literal filesystem path for Markdown href %s', (href, expectedPath) => {
+])('opens the literal filesystem path for Markdown href %s', (href, expectedPath, expectedLine?: number) => {
   const { onOpen } = renderFileLinks(<Markdown>{`[Open](<${href}>)`}</Markdown>);
   fireEvent.click(screen.getByRole('link', { name: 'Open' }));
-  expect(onOpen).toHaveBeenCalledExactlyOnceWith(expectedPath);
+  expect(onOpen).toHaveBeenCalledExactlyOnceWith(expectedPath, expectedLine ?? null);
 });
 
 test.each([
   ['[解压记录.json]()', '解压记录.json'],
   ['[`output/literal%20.json`]()', 'output/literal%20.json'],
-  ['[output/记录.json:12:3]()', 'output/记录.json'],
-])('keeps fallback link text literal rather than URL-decoding it: %s', (content, expectedPath) => {
+  ['[output/记录.json:12:3]()', 'output/记录.json', 12],
+])('keeps fallback link text literal rather than URL-decoding it: %s', (content, expectedPath, expectedLine?: number) => {
   const { onOpen } = renderFileLinks(<Markdown>{content}</Markdown>);
   fireEvent.click(screen.getByRole('link'));
-  expect(onOpen).toHaveBeenCalledExactlyOnceWith(expectedPath);
+  expect(onOpen).toHaveBeenCalledExactlyOnceWith(expectedPath, expectedLine ?? null);
 });
 
 test.each([false, true])('historical and streaming replies decode both settled and pending file links (streaming=%s)', (isStreaming) => {
@@ -65,7 +68,7 @@ test.each([false, true])('historical and streaming replies decode both settled a
   const { onOpen } = renderFileLinks(<StreamingMarkdown content={content} isStreaming={isStreaming} />);
   fireEvent.click(screen.getByRole('link', { name: 'First' }));
   fireEvent.click(screen.getByRole('link', { name: 'Second' }));
-  expect(onOpen.mock.calls).toEqual([['output/解压记录.json'], ['output/其他记录.json']]);
+  expect(onOpen.mock.calls).toEqual([['output/解压记录.json', null], ['output/其他记录.json', null]]);
 });
 
 test('the file API receives a decoded path while the DOM retains a URL-encoded href', async () => {

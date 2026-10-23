@@ -190,10 +190,13 @@ export function createUserService(dependencies: UserDependencies) {
         }
         queueOperations = payload.queueOperations as QueuedMessageOperation[];
       }
+      // A text-only autosave (`preserveQueuedMessage`, or no `queuedMessage` at
+      // all) leaves the stored queue alone: the page's copy of it can be stale,
+      // already claimed by the dispatcher or appended to from another tab.
+      const textOnly = payload.preserveQueuedMessage === true || payload.queuedMessage === undefined;
       dependencies.drafts.saveDraft(userId, scope, {
         text,
-        ...(queueOperations ? { queueOperations }
-          : payload.preserveQueuedMessage === true ? {} : { queuedMessage: payload.queuedMessage ?? null }),
+        ...(queueOperations ? { queueOperations } : textOnly ? {} : { queuedMessage: payload.queuedMessage ?? null }),
       });
       return { success: true };
     },

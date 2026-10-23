@@ -26,15 +26,15 @@ export {
 export {
   SESSION_TITLE_INSTRUCTIONS, SESSION_TITLE_SCHEMA, parseSessionTitle, readBoundedJsonResponse,
 } from './utils.js';
-export { appendFilesInputTag, buildCodexInputItems } from './image-attachments.js';
+export { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './image-attachments.js';
 // Commands resolves application metadata and parses local custom command frontmatter.
 export { findApplicationRoot, getModuleDirectory } from './utils.js';
 export { parseFrontMatter } from './frontmatter.js';
 // Providers use the shared session/history contracts and projections through this barrel.
 export type { IProviderSessions, IProviderSessionSynchronizer, IProviderFork } from './interfaces.js';
 export type {
-  CodexHistoryPageRequest, FetchHistoryOptions, FetchHistoryResult, MemoryCitation, NormalizedMessage,
-  SubagentActivity, SubagentInfo,
+  BackgroundTaskSummary, CodexHistoryPageRequest, FetchHistoryOptions, FetchHistoryResult, MemoryCitation,
+  NormalizedMessage, SubagentActivity, SubagentInfo, WorkflowAgentActivity,
 } from './types.js';
 export {
   buildLookupMap, extractFirstValidJsonlData, findFilesRecursivelyCreatedAfter,
@@ -45,7 +45,7 @@ export { parseFilesInputTag, toImageAttachments } from './image-attachments.js';
 export { prepareTranscriptMessages } from './message-unification.js';
 // File Tree and Worktrees share filesystem scope checks and injected capabilities.
 export {
-  FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, isPathInsideDirectory,
+  FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, isPathInsideDirectory, resolveReadOnlyRootPath,
 } from './utils.js';
 export type {
   FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeLogger, FileTreeNode,

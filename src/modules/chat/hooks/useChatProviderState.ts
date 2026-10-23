@@ -200,47 +200,52 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setProviderModelsLoading(true);
 
     try {
-      const results = await Promise.all(
+      // Each provider lands in the catalog as soon as it answers, so a slow
+      // one (OpenCode shells out to its CLI) cannot hold back the others.
+      await Promise.all(
         providers.map(async (p) => {
-          const response = await api.providers.models(p);
-          const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models) {
-            return null;
-          }
+          // A provider the server no longer offers leaves the catalog, as a
+          // full reload (the Codey settings event or window focus) used to do.
+          const dropProvider = () => setProviderModelCatalog((previous) => {
+            if (!(p in previous)) {
+              return previous;
+            }
+            const next = { ...previous };
+            delete next[p];
+            return next;
+          });
+          try {
+            const response = await api.providers.models(p);
+            const body = (await response.json()) as ProviderModelsApiResponse;
+            if (providerModelsRequestIdRef.current !== requestId) {
+              return;
+            }
+            const models = body.success ? body.data?.models : undefined;
+            if (!models) {
+              dropProvider();
+              return;
+            }
 
-          // One shared UI serves mixed backend versions. Never expose an old
-          // node's personal-login Claude defaults as Codey API capabilities.
-          if (isCodeyManagedDeployment() && p === 'claude' && !body.data.models.modelApiManaged) {
-            return null;
+            // One shared UI serves mixed backend versions. Never expose an old
+            // node's personal-login Claude defaults as Codey API capabilities.
+            if (isCodeyManagedDeployment() && p === 'claude' && !models.modelApiManaged) {
+              dropProvider();
+              return;
+            }
+            const entry = isCodeyManagedDeployment() && p === 'codex'
+              ? {
+                  ...models,
+                  OPTIONS: models.OPTIONS.filter(option => !/(^|\/)claude[-/]/i.test(option.value)),
+                }
+              : models;
+
+            setProviderModelCatalog((previous) => ({ ...previous, [p]: entry }));
+          } catch (error) {
+            // A failed request keeps whatever this provider last loaded.
+            console.error(`Error loading ${p} models:`, error);
           }
-          if (isCodeyManagedDeployment() && p === 'codex') {
-            return {
-              ...body.data.models,
-              OPTIONS: body.data.models.OPTIONS.filter(option => !/(^|\/)claude[-/]/i.test(option.value)),
-            };
-          }
-          return body.data.models;
         }),
       );
-
-      if (providerModelsRequestIdRef.current !== requestId) {
-        return;
-      }
-
-      const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
-
-      providers.forEach((p, i) => {
-        const entry = results[i];
-        if (!entry) {
-          return;
-        }
-
-        nextCatalog[p] = entry;
-      });
-
-      setProviderModelCatalog(nextCatalog);
-    } catch (error) {
-      console.error('Error loading provider models:', error);
     } finally {
       if (providerModelsRequestIdRef.current === requestId) {
         setProviderModelsLoading(false);
@@ -852,11 +857,30 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setStoredProviderModel,
   ]);
 
+  /**
+   * Applies the server's catalog for the new flag. A remembered per-provider
+   * model that the catalog no longer lists is moved to its `DEFAULT` by the
+   * reconciliation effect above; an open session keeps its recorded model.
+   */
+  const setCustomModelsOnly = useCallback(async (
+    targetProvider: LLMProvider,
+    enabled: boolean,
+  ) => {
+    const response = await api.providers.setCustomModelsOnly(targetProvider, enabled);
+    const body = (await response.json()) as ProviderModelMutationApiResponse;
+    if (!response.ok || !body.success || !body.data?.models) {
+      throw new Error(body.error?.message || 'Unable to change this setting.');
+    }
+
+    applyProviderCatalog(targetProvider, body.data.models);
+  }, [applyProviderCatalog]);
+
   const providerModelActions = useMemo<ProviderModelActions>(() => ({
     create: createCustomModel,
     update: updateCustomModel,
     remove: removeCustomModel,
-  }), [createCustomModel, removeCustomModel, updateCustomModel]);
+    setCustomModelsOnly,
+  }), [createCustomModel, removeCustomModel, setCustomModelsOnly, updateCustomModel]);
 
   return {
     provider,

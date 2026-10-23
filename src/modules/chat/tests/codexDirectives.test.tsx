@@ -9,7 +9,8 @@ import StreamingMarkdown from '@/modules/chat/transcript/StreamingMarkdown';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '@/modules/command-palette';
 
 function FileHandler({ onOpen, children }: { onOpen: (path: string) => void; children: ReactNode }) {
-  usePaletteOpsRegister({ openFileInEditor: onOpen });
+  // Citations carry no source line, so only the path reaches the editor op.
+  usePaletteOpsRegister({ openFileInEditor: (path) => onOpen(path) });
   return <>{children}</>;
 }
 

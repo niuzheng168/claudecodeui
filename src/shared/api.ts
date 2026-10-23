@@ -33,6 +33,12 @@ export const authenticatedFetch = (
 
   return fetch(withDeploymentBasePath(url), {
     ...options,
+    // Every response here can carry X-Refreshed-Token or X-Auth-Error, and a
+    // served-from-cache response replays the headers it was stored with. Those
+    // headers describe one moment in one session, so they must never be reused:
+    // a stale X-Refreshed-Token overwrote the current token with an expired one
+    // on every start, which then got discarded as expired.
+    cache: 'no-store',
     headers: {
       ...defaultHeaders,
       ...options.headers,
@@ -42,7 +48,11 @@ export const authenticatedFetch = (
     if (refreshedToken) {
       storeAuthToken(refreshedToken);
     }
-    if (response.headers.get('X-Auth-Error')) {
+    // Belt and braces for any path that still reaches a cached response: only a
+    // real rejection ends the session. Note that a revalidated response surfaces
+    // its stored status (typically 200), not the 304 from the wire, so the
+    // header alone says nothing about the current request.
+    if (response.status === 401 && response.headers.get('X-Auth-Error')) {
       expireAuthSession();
     }
     return response;
@@ -78,12 +88,68 @@ const query = (params: Record<string, QueryValue>): string => {
  * payload, abort-aware reads in the git panel); this is the shared form for
  * callers that want a failed request to throw.
  */
+export class ApiRequestError extends Error {
+  readonly code?: string;
+  readonly details?: unknown;
+  readonly status: number;
+
+  constructor(message: string, options: { code?: string; details?: unknown; status: number }) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.code = options.code;
+    this.details = options.details;
+    this.status = options.status;
+  }
+}
+
+/**
+ * Reads a `{ success, error, details }` envelope response, throwing an
+ * ApiRequestError carrying the server's machine-readable error code when one
+ * is present. Accepts both legacy string envelopes (`error: 'message'`) and
+ * the structured AppError envelope (`error: { code, message, details }`).
+ */
 export async function readApiJson<T>(response: Response): Promise<T> {
   const data = await response.json();
   if (!response.ok || data.success === false) {
-    throw new Error(data.error || data.details || `Request failed (${response.status})`);
+    const raw = data.error ?? data.details;
+    const payload = raw && typeof raw === 'object' ? raw : {};
+    const message = (typeof raw === 'string' ? raw : payload?.message) || data.details || `Request failed (${response.status})`;
+    throw new ApiRequestError(message, {
+      code: typeof payload?.code === 'string' ? payload.code : undefined,
+      details: payload?.details ?? data.details,
+      status: response.status,
+    });
   }
   return data as T;
+}
+
+/**
+ * Picks the server's human-readable message out of a failed response body, or
+ * null when it carries none. Accepts the legacy string envelope
+ * (`error: 'message'`), the structured AppError envelope
+ * (`error: { code, message, details }`) and a top-level `message`.
+ *
+ * The non-throwing counterpart of readApiJson, used by the auth and onboarding
+ * screens because they show their own localized message when the server gives
+ * none, by the plugins context for failed plugin list, install, update,
+ * uninstall and toggle calls, which all answer with the structured envelope.
+ */
+export function readApiErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+
+  const { error, message } = body as { error?: unknown; message?: unknown };
+  const candidates = [
+    error && typeof error === 'object' ? (error as { message?: unknown }).message : error,
+    message,
+  ];
+  // The body is unchecked JSON: anything but a non-blank string is skipped, as
+  // an object rendered as a React child throws and unmounts the screen.
+  const readable = candidates.find(
+    (candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '',
+  );
+  return readable ?? null;
 }
 
 const get = (url: string, options: ApiRequestOptions = {}) => authenticatedFetch(url, options);
@@ -183,11 +249,20 @@ export const api = {
     post('/api/projects/migrate-legacy-stars', { projectIds }),
   toggleProjectStar: (projectId: string) =>
     post(`/api/projects/${encodeURIComponent(projectId)}/toggle-star`),
+  // A clone is two requests: the details (GitHub token included) go in this
+  // POST body, and the returned `cloneId` is all the progress stream's URL
+  // carries — URLs land in access logs, proxy logs and browser history.
+  startProjectClone: (cloneRequest: {
+    path: string;
+    githubUrl: string;
+    githubTokenId: number | null;
+    newGithubToken: string | null;
+  }) => post('/api/projects/clone', cloneRequest),
   // EventSource cannot send an Authorization header, so the token rides along as
   // a query parameter on the streaming endpoints below.
-  cloneProjectProgressUrl: (params: Record<string, QueryValue>) =>
+  cloneProjectProgressUrl: ({ cloneId }: { cloneId: string }) =>
     withDeploymentBasePath(
-      `/api/projects/clone-progress${query({ ...params, token: getStoredAuthToken() })}`,
+      `/api/projects/clone-progress${query({ cloneId, token: getStoredAuthToken() })}`,
     ),
   searchConversationsUrl: (searchQuery: string, limit = 50) =>
     withDeploymentBasePath(
@@ -222,6 +297,10 @@ export const api = {
     post(`/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, body),
   renameSession: (sessionId: string, summary: string) =>
     put(`/api/providers/sessions/${sessionId}`, { summary }),
+  // What one agent of a workflow run did, read from its transcript on demand
+  // when its row in the workflow card is opened.
+  workflowAgentActivity: (sessionId: string, runId: string, agentId: string) =>
+    get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/workflows/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}`),
 
   // Scheduled messages: send a message to a session at a future time.
   scheduledMessages: {
@@ -278,6 +357,16 @@ export const api = {
       get(`/api/git/file-with-diff${query({ project: projectId, file: filePath })}`),
     branches: (projectId: string, options: ApiRequestOptions = {}) =>
       get(`/api/git/branches${query({ project: projectId })}`, options),
+    branchDiff: (projectId: string, base: string, options: ApiRequestOptions = {}) =>
+      get(`/api/git/branch-diff${query({ project: projectId, base })}`, options),
+    // `oldPath` is the pre-rename path of a renamed file so the server can diff the rename itself.
+    branchDiffFile: (
+      projectId: string,
+      base: string,
+      filePath: string,
+      oldPath?: string,
+      options: ApiRequestOptions = {},
+    ) => get(`/api/git/branch-diff/file${query({ project: projectId, base, file: filePath, oldPath })}`, options),
     remoteStatus: (projectId: string) =>
       get(`/api/git/remote-status${query({ project: projectId })}`),
     commits: (
@@ -339,6 +428,7 @@ export const api = {
     capabilities: () => get('/api/providers/capabilities'),
     authStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
+    claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
 
     models: (provider: string) => get(`/api/providers/${provider}/models`),
     createModel: (provider: string, input: unknown) =>
@@ -347,6 +437,8 @@ export const api = {
       patch(`/api/providers/${provider}/models/${recordId}`, input),
     deleteModel: (provider: string, recordId: string | number) =>
       del(`/api/providers/${provider}/models/${recordId}`),
+    setCustomModelsOnly: (provider: string, enabled: boolean) =>
+      put(`/api/providers/${provider}/models/custom-only`, { enabled }),
 
     createSession: (payload: {
       provider: string;
@@ -448,6 +540,8 @@ export const api = {
     savePreferences: (updates: Record<string, unknown>) =>
       patch('/api/user/preferences', updates),
     drafts: () => get('/api/user/drafts'),
+    // `preserveQueuedMessage` makes a text-only save leave the stored FIFO as
+    // it is; explicit queue edits travel as `queueOperations` instead.
     saveDraft: (scope: string, draft: { text: string; queuedMessage?: unknown; preserveQueuedMessage?: boolean; queueOperations?: QueuedMessageOperation[] }) =>
       // An older node must reject list mutations, not mistake their fallback
       // snapshot for its single slot and silently discard other queued input.

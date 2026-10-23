@@ -48,7 +48,8 @@ function markdown(content: string, projectId: string | null = 'project-audio') {
 }
 
 function AudioFileLinkHandler({ children, onOpen }: { children: ReactNode; onOpen: (path: string) => void }) {
-  usePaletteOpsRegister({ openFileInEditor: onOpen });
+  // An audio title carries no source line, so only the path reaches the editor op.
+  usePaletteOpsRegister({ openFileInEditor: (path) => onOpen(path) });
   return <>{children}</>;
 }
 

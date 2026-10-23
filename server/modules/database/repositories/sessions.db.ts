@@ -120,7 +120,7 @@ export const sessionsDb = {
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
            jsonl_path = ?,
-           isArchived = 0,
+           isArchived = CASE WHEN ? IS NULL OR julianday(?) > julianday(updated_at) THEN 0 ELSE isArchived END,
            custom_name = CASE
              WHEN custom_name_source = 'user' THEN custom_name
              WHEN provider NOT IN ('codex', 'claude') AND session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
@@ -132,6 +132,8 @@ export const sessionsDb = {
         updatedAtValue,
         normalizedProjectPath,
         jsonlPath ?? null,
+        updatedAtValue,
+        updatedAtValue,
         customName ?? null,
         existing.session_id
       );
@@ -151,7 +153,7 @@ export const sessionsDb = {
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
-         isArchived = 0,
+         isArchived = CASE WHEN ? IS NULL OR julianday(excluded.updated_at) > julianday(sessions.updated_at) THEN 0 ELSE sessions.isArchived END,
          custom_name = CASE
            WHEN sessions.custom_name_source = 'user' THEN sessions.custom_name
            WHEN sessions.provider NOT IN ('codex', 'claude') AND sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
@@ -166,6 +168,7 @@ export const sessionsDb = {
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,
+      updatedAtValue,
       updatedAtValue
     );
 
@@ -733,6 +736,14 @@ export const sessionsDb = {
   deleteSessionById(sessionId: string): boolean {
     const db = getConnection();
     return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;
+  },
+
+  /** Used by the OpenCode synchronizer to remove indexed child sessions by their native id. */
+  deleteSessionByProviderSessionId(providerSessionId: string, provider: string): boolean {
+    const db = getConnection();
+    return db
+      .prepare('DELETE FROM sessions WHERE provider_session_id = ? AND provider = ?')
+      .run(providerSessionId, provider).changes > 0;
   },
 
   /**

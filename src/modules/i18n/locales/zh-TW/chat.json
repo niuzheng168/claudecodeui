@@ -96,6 +96,22 @@
     "viewFullOutput": "查看完整輸出（{{count}} 個字元）",
     "contentDisplayed": "檔案內容顯示在上方的差異檢視中"
   },
+  "bashEditDiff": {
+    "created": "已建立",
+    "updated": "已更新",
+    "deleted": "已刪除",
+    "emptyFile": "空白檔案",
+    "moreLines_other": "… 還有 {{count}} 行",
+    "moreFiles_other": "… 另有 {{count}} 個檔案已變更",
+    "filesNotShown_other": "{{count}} 個檔案已變更（二進位、僅模式變更或過大無法顯示）",
+    "filesUnavailable_other": "{{count}} 個檔案已變更（無法取得差異）",
+    "filesChanged_other": "{{count}} 個檔案已變更",
+    "morePaths_other": "另有 {{count}} 個",
+    "diffUnavailable": "（無法取得此指令的檔案差異）",
+    "partUnavailable": "（部分差異無法取得）",
+    "skipped": "（已略過此 git 指令的檔案差異）",
+    "shared": "（同一時間有另一個指令在此儲存庫中執行；任一指令所做的變更都可能顯示在任一結果下）"
+  },
   "thinking": {
     "title": "思考中...",
     "emoji": "💭 思考中..."
@@ -243,7 +259,8 @@
       "codex": "準備好使用 {{model}} 的 Codex。請在下方開始輸入您的訊息。",
       "default": "請在上方選擇一個提供者以開始"
     },
-    "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜尋工作階段、檔案和提交"
+    "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜尋工作階段、檔案和提交",
+    "chooseModelDescriptionCustomOnly": "{{providers, list}} 僅列出您的模型"
   },
   "session": {
     "continue": {
@@ -273,7 +290,8 @@
     "status": {
       "newSession": "新工作階段",
       "initializing": "初始化中...",
-      "restarting": "重新啟動中..."
+      "restarting": "重新啟動中...",
+      "themeRestartHint": "重新啟動以將新的佈景主題套用到 Claude Code"
     },
     "actions": {
       "disconnect": "中斷連線",
@@ -329,11 +347,15 @@
   },
   "message": {
     "editAndResend": "編輯並重新傳送",
-    "forkFromHere": "從此處分支"
+    "forkFromHere": "從此處分支",
+    "answeredBy": "由 {{model}} 回答"
   },
   "composer": {
     "collapseInput": "收起輸入框",
     "expandInput": "展開輸入框",
+    "permissionHeading": "如何核准 {{provider}} 的操作？",
+    "permissionCycleHint": "在輸入框中按 Ctrl+Alt+M 切換模式",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}",
     "editing": {
       "title": "正在取代先前的訊息",
       "filesNotReverted": "已修改的檔案不會還原",
@@ -372,5 +394,72 @@
     "failed": "未傳送 — {{reason}}",
     "cancel": "取消排程訊息",
     "dismiss": "關閉失敗提示"
+  },
+  "misc": {
+    "copyToClipboard": "複製到剪貼簿",
+    "copyCommand": "複製指令",
+    "runningTask": "正在執行任務",
+    "userAskedRevise": "使用者要求修改計畫",
+    "typeAnswer": "輸入您的回答...",
+    "skipOne": "略過",
+    "skipAll": "全部略過",
+    "exportChat": "匯出對話",
+    "closeImagePreview": "關閉圖片預覽",
+    "availableCommands": "可用指令",
+    "filterCommands": "篩選指令...",
+    "closeModal": "關閉指令結果視窗",
+    "noDescription": "沒有說明。",
+    "modelChangeFailed": "目前無法變更模型。",
+    "choiceSavedHint": "您的選擇已儲存至此工作階段，並將成為新對話的預設設定。",
+    "docsSearchSubtitle": "不必離開對話，即可搜尋內建指令、語法模式和指令用法。",
+    "enterModelInfo": "請同時輸入模型名稱和模型 ID。",
+    "modelSaveFailed": "無法儲存此模型。",
+    "modelDeleteFailed": "無法刪除此模型。",
+    "cancelEditing": "取消編輯",
+    "userDeniedTool": "使用者拒絕了工具呼叫",
+    "showTokenUsage": "顯示 Token 用量",
+    "fallbackCommands": {
+      "models": "瀏覽目前提供者可用的模型。",
+      "cost": "查看目前工作階段的 Token 用量。",
+      "status": "查看執行環境、版本、提供者和環境狀態。",
+      "memory": "開啟專案的 CLAUDE.md 記憶檔案。",
+      "config": "開啟設定與組態。",
+      "help": "顯示指令文件和語法。"
+    },
+    "modalMeta": {
+      "helpEyebrow": "指令中心",
+      "helpTitle": "說明與快捷鍵",
+      "helpSubtitle": "不必離開對話，即可搜尋內建指令、語法模式和指令用法。",
+      "modelsEyebrow": "模型選擇",
+      "modelsTitle": "選擇模型",
+      "modelsSubtitle": "選擇此提供者要使用的模型。",
+      "costEyebrow": "工作階段統計",
+      "costTitle": "Token 用量",
+      "costSubtitle": "此工作階段的輸入、輸出和總 Token 數。",
+      "statusEyebrow": "執行狀況",
+      "statusTitle": "系統狀態",
+      "statusSubtitle": "版本、提供者、執行環境和環境詳細資訊一覽。",
+      "commandResult": "指令結果"
+    },
+    "choiceSavedSession": "您的選擇已儲存至此工作階段，並將成為新對話的預設設定。",
+    "choiceSavedDefault": "您的選擇將成為新對話的預設模型。",
+    "tokensUsed_one": "已使用 {{count}} 個 Token",
+    "tokensUsed_other": "已使用 {{count}} 個 Token",
+    "compacted": "已壓縮",
+    "compactionSummary": "完整摘要",
+    "expandImage": "放大 {{name}}",
+    "tokensLabel_one": "Token",
+    "tokensLabel_other": "Token",
+    "escClosesModal": "按 Esc 關閉視窗。",
+    "close": "關閉"
+  },
+  "modelLibrary": {
+    "effortLevels": "推理等級",
+    "effortLevelsHint": "選擇此模型支援的推理強度等級。若未選擇任何等級，將無法在輸入框中為此模型選擇等級。",
+    "effortSummary": "推理：{{levels}}",
+    "customModelsOnly": "僅使用我的模型",
+    "customModelsOnlyHint": "在所有模型選擇器中隱藏 {{provider}} 的內建模型，並將您的第一個模型設為預設模型。在您新增模型之前，內建模型仍會顯示。",
+    "builtInModelsHidden": "開啟「僅使用我的模型」時，這些模型不會出現在模型選擇器中。",
+    "customModelsOnlyFailed": "無法變更此設定。"
   }
 }

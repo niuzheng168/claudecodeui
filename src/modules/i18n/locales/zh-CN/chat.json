@@ -103,6 +103,22 @@
     "viewFullOutput": "查看完整输出（{{count}} 个字符）",
     "contentDisplayed": "文件内容显示在上面的差异视图中"
   },
+  "bashEditDiff": {
+    "created": "已创建",
+    "updated": "已更新",
+    "deleted": "已删除",
+    "emptyFile": "空文件",
+    "moreLines_other": "… 还有 {{count}} 行",
+    "moreFiles_other": "… 另有 {{count}} 个文件已更改",
+    "filesNotShown_other": "{{count}} 个文件已更改（二进制、仅模式变更或过大无法显示）",
+    "filesUnavailable_other": "{{count}} 个文件已更改（无法获取差异）",
+    "filesChanged_other": "{{count}} 个文件已更改",
+    "morePaths_other": "另有 {{count}} 个",
+    "diffUnavailable": "（无法获取此命令的文件差异）",
+    "partUnavailable": "（部分差异无法获取）",
+    "skipped": "（已跳过此 git 命令的文件差异）",
+    "shared": "（同一时间有另一个命令在此仓库中运行；任一命令所做的更改都可能显示在任一结果下）"
+  },
   "thinking": {
     "title": "思考中...",
     "emoji": "💭 思考中..."
@@ -133,14 +149,14 @@
     "permissionMode": "权限模式",
     "modes": {
       "default": "默认模式",
-      "auto": "Auto Mode",
+      "auto": "自动模式",
       "acceptEdits": "编辑模式",
       "bypassPermissions": "无限制模式",
       "plan": "计划模式"
     },
     "descriptions": {
       "default": "只有受信任的命令（ls、cat、grep、git status 等）自动运行。其他命令将被跳过。可以写入工作区。",
-      "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
+      "auto": "由模型分类器针对每次工具调用决定批准或拒绝。无需手动操作，但比无限制模式更安全——仍可能被拒绝。",
       "acceptEdits": "工作区内的所有命令自动运行。完全自动模式，具有沙盒执行功能。",
       "bypassPermissions": "完全的系统访问，无限制。所有命令自动运行，具有完整的磁盘和网络访问权限。请谨慎使用。",
       "plan": "计划模式 - 不执行任何命令"
@@ -230,8 +246,7 @@
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
-      "queue": "Enter 排队发送下一条消息",
-      "updateQueued": "Enter 更新排队消息"
+      "queue": "Enter 排队发送下一条消息"
     },
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Ctrl+Alt+M）",
     "showAllCommands": "显示所有命令",
@@ -262,7 +277,6 @@
     },
     "queue": {
       "sendNext": "排队发送下一条消息",
-      "update": "更新排队消息",
       "label": "已排队",
       "willSend": "将在当前完成后发送",
       "review": "待确认",
@@ -289,7 +303,8 @@
       "opencode": "准备好使用带有 {{model}} 的 OpenCode。请在下方开始输入您的消息。",
       "default": "请在上方选择一个提供者以开始"
     },
-    "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜索会话、文件和提交"
+    "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜索会话、文件和提交",
+    "chooseModelDescriptionCustomOnly": "{{providers, list}} 仅列出您的模型"
   },
   "session": {
     "continue": {
@@ -320,7 +335,8 @@
     "status": {
       "newSession": "新会话",
       "initializing": "初始化中...",
-      "restarting": "重启中..."
+      "restarting": "重启中...",
+      "themeRestartHint": "重启以将新主题应用到 Claude Code"
     },
     "actions": {
       "disconnect": "断开连接",
@@ -377,7 +393,8 @@
   },
   "message": {
     "editAndResend": "编辑并重新发送",
-    "forkFromHere": "从此处派生"
+    "forkFromHere": "从此处派生",
+    "answeredBy": "由 {{model}} 回答"
   },
   "composer": {
     "collapseInput": "收起输入框",
@@ -396,6 +413,8 @@
     "loadingModels": "加载模型…",
     "modelMenu": "模型与推理强度",
     "permissionHeading": "如何批准 {{provider}} 的操作？",
+    "permissionCycleHint": "在输入框中按 Ctrl+Alt+M 切换模式",
+    "permissionTriggerLabel": "{{mode}}：{{heading}}",
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",
@@ -435,5 +454,72 @@
     "failed": "未发送 — {{reason}}",
     "cancel": "取消定时消息",
     "dismiss": "关闭失败提示"
+  },
+  "misc": {
+    "copyToClipboard": "复制到剪贴板",
+    "copyCommand": "复制命令",
+    "runningTask": "正在运行任务",
+    "userAskedRevise": "用户要求修改计划",
+    "typeAnswer": "输入您的回答...",
+    "skipOne": "跳过",
+    "skipAll": "全部跳过",
+    "exportChat": "导出对话",
+    "closeImagePreview": "关闭图片预览",
+    "availableCommands": "可用命令",
+    "filterCommands": "筛选命令...",
+    "closeModal": "关闭命令结果窗口",
+    "noDescription": "暂无描述。",
+    "modelChangeFailed": "暂时无法更换模型。",
+    "choiceSavedHint": "您的选择已保存到此会话，并将成为新对话的默认设置。",
+    "docsSearchSubtitle": "无需离开对话，即可搜索内置命令、语法模式和命令用法。",
+    "enterModelInfo": "请同时输入模型名称和模型 ID。",
+    "modelSaveFailed": "无法保存此模型。",
+    "modelDeleteFailed": "无法删除此模型。",
+    "cancelEditing": "取消编辑",
+    "userDeniedTool": "用户拒绝了工具调用",
+    "showTokenUsage": "显示 Token 用量",
+    "fallbackCommands": {
+      "models": "浏览当前提供者可用的模型。",
+      "cost": "查看当前会话的 Token 用量。",
+      "status": "查看运行时、版本、提供者和环境状态。",
+      "memory": "打开项目的 CLAUDE.md 记忆文件。",
+      "config": "打开设置与配置。",
+      "help": "显示命令文档和语法。"
+    },
+    "modalMeta": {
+      "helpEyebrow": "命令中心",
+      "helpTitle": "帮助与快捷键",
+      "helpSubtitle": "无需离开对话，即可搜索内置命令、语法模式和命令用法。",
+      "modelsEyebrow": "模型选择",
+      "modelsTitle": "选择模型",
+      "modelsSubtitle": "选择此提供者要使用的模型。",
+      "costEyebrow": "会话统计",
+      "costTitle": "Token 用量",
+      "costSubtitle": "此会话的输入、输出和总 Token 数。",
+      "statusEyebrow": "运行状况",
+      "statusTitle": "系统状态",
+      "statusSubtitle": "版本、提供者、运行时和环境详情一览。",
+      "commandResult": "命令结果"
+    },
+    "choiceSavedSession": "您的选择已保存到此会话，并将成为新对话的默认设置。",
+    "choiceSavedDefault": "您的选择将成为新对话的默认模型。",
+    "tokensUsed_one": "已使用 {{count}} 个 Token",
+    "tokensUsed_other": "已使用 {{count}} 个 Token",
+    "compacted": "已压缩",
+    "compactionSummary": "完整摘要",
+    "expandImage": "放大 {{name}}",
+    "tokensLabel_one": "Token",
+    "tokensLabel_other": "Token",
+    "escClosesModal": "按 Esc 关闭窗口。",
+    "close": "关闭"
+  },
+  "modelLibrary": {
+    "effortLevels": "推理级别",
+    "effortLevelsHint": "选择此模型支持的推理强度级别。若未选择任何级别，将无法在输入框中为此模型选择级别。",
+    "effortSummary": "推理：{{levels}}",
+    "customModelsOnly": "仅使用我的模型",
+    "customModelsOnlyHint": "在所有模型选择器中隐藏 {{provider}} 的内置模型，并将您的第一个模型设为默认模型。在您添加模型之前，内置模型仍会显示。",
+    "builtInModelsHidden": "开启“仅使用我的模型”时，这些模型不会出现在模型选择器中。",
+    "customModelsOnlyFailed": "无法更改此设置。"
   }
 }

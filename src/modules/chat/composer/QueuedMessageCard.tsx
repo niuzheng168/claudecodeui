@@ -51,6 +51,8 @@ export default function QueuedMessageCard({
               · {isSteering ? t('input.steer.sending') : held ? t('input.queue.paused') : t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
             </span>
           </div>
+          {/* Each follow-up is its own FIFO card in a scrolling list, so a card
+              stays compact; Edit brings the full text back into the composer. */}
           <p className="mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
           {attachmentCount > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">

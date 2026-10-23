@@ -1,8 +1,10 @@
-import { useContext } from 'react';
+import { useContext, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ImageOff } from 'lucide-react';
 
 import { TranscriptProjectContext } from '@/modules/chat/context/TranscriptProjectContext';
 import { useProjectImageSrc } from '@/modules/chat/hooks/useProjectImageSrc';
+import { ImageLightbox } from '@/modules/chat/transcript/ChatMessageImages';
 
 type MarkdownImageProps = {
   src?: string;
@@ -51,21 +53,27 @@ function resolveImageSource(src?: string): { kind: 'remote' | 'file'; value: str
   return { kind: 'file', value: filePath };
 }
 
-/** Used by Markdown for both historical/streaming replies and nested tool Markdown. */
+/**
+ * Used by Markdown for both historical/streaming replies and nested tool Markdown.
+ * Shows images the model references (screenshots it took, files it generated)
+ * inline, with the same click-to-expand lightbox as user attachments.
+ */
 export function MarkdownImage({ src, alt = '', title }: MarkdownImageProps) {
   const { t } = useTranslation('chat');
   const projectId = useContext(TranscriptProjectContext);
   const source = resolveImageSource(src);
   const image = useProjectImageSrc(projectId, source?.kind === 'file' ? source.value : null);
+  // Keyed by the displayed URL so a project/path change or retry closes the
+  // lightbox instead of reopening it on the next image.
+  const [expandedSrc, setExpandedSrc] = useState<string | null>(null);
 
   // Public web images never receive the node's Authorization header.
-  if (source?.kind === 'remote') {
-    return <img src={source.value} alt={alt} title={title} loading="lazy" />;
-  }
+  const displaySrc = source?.kind === 'remote' ? source.value : image.src;
 
   if (!source || image.failed) {
     return (
       <span className="my-2 inline-flex max-w-full flex-wrap items-center gap-2 rounded-lg border border-border bg-muted p-3 text-sm" role="status">
+        <ImageOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         {alt && <span>{alt}</span>}
         <span>{t('images.unavailable', { defaultValue: 'Image unavailable. Check the node connection and file path.' })}</span>
         {source && projectId && (
@@ -77,7 +85,7 @@ export function MarkdownImage({ src, alt = '', title }: MarkdownImageProps) {
     );
   }
 
-  if (!image.src) {
+  if (!displaySrc) {
     return (
       <span className="my-2 inline-block rounded-lg bg-muted p-3 text-sm text-muted-foreground" role="status">
         {t('images.loading', { defaultValue: 'Loading image…' })}{alt && ` ${alt}`}
@@ -85,14 +93,28 @@ export function MarkdownImage({ src, alt = '', title }: MarkdownImageProps) {
     );
   }
 
+  const label = alt || title || source.value;
+
   return (
-    <img
-      src={image.src}
-      alt={alt}
-      title={title}
-      loading="lazy"
-      className="max-w-full rounded-lg"
-      onError={image.markFailed}
-    />
+    <>
+      <button
+        type="button"
+        onClick={() => setExpandedSrc(displaySrc)}
+        aria-label={t('misc.expandImage', { name: label, defaultValue: 'Expand {{name}}' })}
+        className="my-2 block max-w-full overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/60"
+      >
+        <img
+          src={displaySrc}
+          alt={alt}
+          title={title}
+          loading="lazy"
+          className="block max-h-96 max-w-full cursor-zoom-in rounded-lg object-contain"
+          onError={source.kind === 'file' ? image.markFailed : undefined}
+        />
+      </button>
+      {expandedSrc === displaySrc && (
+        <ImageLightbox src={displaySrc} alt={label} onClose={() => setExpandedSrc(null)} />
+      )}
+    </>
   );
 }

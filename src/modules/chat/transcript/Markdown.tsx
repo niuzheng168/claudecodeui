@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import { MermaidDiagram } from '@/modules/code-editor';
 import { normalizeInlineCodeFences } from '@/modules/chat/utils/chatFormatting';
+import { normalizeLatexDelimiters } from '@/modules/chat/utils/latexDelimiters';
 import { copyTextToClipboard, resolveAudioSource } from '@/shared/utils';
 import { SyntaxHighlighter } from '@/shared/syntaxHighlighter';
 import { usePaletteOps } from '@/modules/command-palette';
@@ -31,6 +32,14 @@ type MarkdownProps = {
 // everything else is treated as a workspace file reference.
 const isExternalHref = (href?: string): boolean =>
   !!href && (/^(https?:|mailto:|tel:|data:)/i.test(href) || href.startsWith('#'));
+
+// Read the trailing `:line` / `:line:col` suffix so the editor can reveal it.
+// Both this and stripLineSuffix are anchored at the end, so callers pass an
+// already-trimmed reference.
+const lineFromRef = (value: string): number | null => {
+  const match = value.match(/:(\d+)(?::\d+)?$/);
+  return match ? Number(match[1]) : null;
+};
 
 // Strip a trailing `:line` / `:line:col` suffix (e.g. `src/foo.ts:130`).
 const stripLineSuffix = (value: string): string => value.replace(/:\d+(?::\d+)?$/, '');
@@ -78,8 +87,10 @@ const childrenToText = (children: React.ReactNode): string => {
   return '';
 };
 
-// The delimiters `remark-math` recognizes with `singleDollarTextMath` off.
-const MATH_DELIMITER = /\$\$|\\\(|\\\[/;
+// The only delimiter `remark-math` recognizes with `singleDollarTextMath` off.
+// `\(…\)` and `\[…\]` are already rewritten to `$$` by normalizeLatexDelimiters,
+// so this one probe covers both notations.
+const MATH_DELIMITER = /\$\$/;
 
 const EMPTY_PLUGINS: never[] = [];
 
@@ -221,6 +232,8 @@ if (!document.getElementById(SYNTAX_THEME_STYLE_ELEMENT_ID)) {
 }
 
 const markdownComponents = {
+  // Workspace image paths are fetched through the authenticated files route;
+  // a bare <img src> would resolve against the web origin and 404.
   img: MarkdownImage,
   span: CodexDirective,
   code: CodeBlock,
@@ -274,7 +287,9 @@ const markdownComponents = {
  */
 function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 'className'>) {
   const content = useMemo(
-    () => normalizeInlineCodeFences(String(children ?? '')),
+    // The LaTeX pass runs second because it reads the code spans the fence pass
+    // normalizes, and must leave the LaTeX inside them literal.
+    () => normalizeLatexDelimiters(normalizeInlineCodeFences(String(children ?? ''))),
     [children],
   );
   // Math support costs a remark tree pass plus a full KaTeX walk on every
@@ -301,7 +316,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
     [breaks, hasMath, hasCodexDirectives],
   );
   const rehypePlugins = useMemo(() => (hasMath ? [rehypeKatex] : EMPTY_PLUGINS), [hasMath]);
-  const { openFileInEditor } = usePaletteOps();
+  const { openFileInEditor, openDirectory } = usePaletteOps();
 
   const components = useMemo(
     () => ({
@@ -330,19 +345,29 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
             </ChatAudioPreview>
           );
         }
+        // The href arrives trimmed from the parser, but the link-text fallback
+        // keeps surrounding whitespace (``[`src/foo.ts:12` ]()``), and that
+        // space defeats the `$`-anchored suffix helpers. The line is read from
+        // the same raw value whose suffix is stripped, before any decoding, so
+        // an encoded colon (`%3A12`) stays part of the filename.
+        const linkRef = linkText.trim();
         const hrefPath = filePathFromHref(href);
         const fileRef = looksLikeFilePath(hrefPath)
-          ? hrefPath
-          : looksLikeFilePath(linkText) ? stripLineSuffix(linkText) : undefined;
+          ? { path: hrefPath, line: lineFromRef(href ?? '') }
+          : looksLikeFilePath(linkRef) ? { path: stripLineSuffix(linkRef), line: lineFromRef(linkRef) } : undefined;
 
         if (fileRef && !isExternalHref(href)) {
           return (
             <a
-              href={href || fileRef}
+              href={href || fileRef.path}
               className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
               onClick={(event) => {
                 event.preventDefault();
-                openFileInEditor(fileRef);
+                if (fileRef.path.endsWith('/')) {
+                  openDirectory(fileRef.path);
+                  return;
+                }
+                openFileInEditor(fileRef.path, fileRef.line);
               }}
             >
               {linkChildren}
@@ -362,7 +387,7 @@ function MarkdownBodyRenderer({ children, breaks = false }: Omit<MarkdownProps, 
         );
       },
     }),
-    [openFileInEditor],
+    [openFileInEditor, openDirectory],
   );
 
   return (

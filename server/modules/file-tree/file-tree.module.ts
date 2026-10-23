@@ -17,7 +17,9 @@ import type {
   FileTreeWorkspaceGateway,
   FileTreeWorktreeGateway,
 } from '@/shared/index.js';
-import { WORKSPACES_ROOT, resolveCodexHomeDirectory, validateWorkspacePath } from '@/shared/index.js';
+import {
+  WORKSPACES_ROOT, resolveCodexHomeDirectory, resolveReadOnlyRootPath, validateWorkspacePath,
+} from '@/shared/index.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -81,6 +83,7 @@ const fileTreeWorktrees: FileTreeWorktreeGateway = {
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
   rootPath: WORKSPACES_ROOT,
   validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
+  resolveReadOnlyRootPath: (candidatePath) => resolveReadOnlyRootPath(candidatePath),
 };
 
 const fileTreeLogger: FileTreeLogger = {

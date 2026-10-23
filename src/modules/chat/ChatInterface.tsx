@@ -4,9 +4,11 @@ import { ArrowDownIcon } from 'lucide-react';
 
 import { useTasksSettings } from '@/modules/task-master';
 import { useAuth } from '@/modules/auth';
+import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { TranscriptFollowupContext } from '@/modules/chat/context/TranscriptFollowupContext';
+import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
@@ -80,6 +82,8 @@ function ChatInterface({
   const {
     markSessionProcessing: onSessionProcessing,
     markSessionIdle: onSessionIdle,
+    markSessionBackground: onSessionBackground,
+    getSessionActivity,
   } = useSessionProtectionActions();
 
   const { user } = useAuth();
@@ -151,6 +155,7 @@ function ChatInterface({
     visibleMessageCount,
     visibleMessages,
     loadEarlierMessages,
+    revealMessage,
     loadAllMessages,
     loadFullTranscript,
     allMessagesLoaded,
@@ -231,6 +236,8 @@ function ChatInterface({
     isSteering,
     steerError,
     steeringMessageId,
+    backgroundSendPrompt,
+    resolveBackgroundSendPrompt,
     queuedDraft,
     queuedDrafts,
     editQueuedDraft,
@@ -300,9 +307,32 @@ function ChatInterface({
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
+    onSessionBackground,
+    getSessionActivity,
     requestLatestMessages,
     sessionStore,
   });
+
+  // Lets other modules (the quick settings Commands tab) hand text to the
+  // composer: append it after a separating space, then focus the textarea with
+  // the caret at the end once React has rendered the new value.
+  const insertComposerText = useCallback((text: string) => {
+    setInput((previous) => {
+      const separator = previous && !/\s$/.test(previous) ? ' ' : '';
+      return `${previous}${separator}${text}`;
+    });
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+      textarea.focus();
+      const caretPosition = textarea.value.length;
+      textarea.setSelectionRange(caretPosition, caretPosition);
+    });
+  }, [setInput, textareaRef]);
+
+  usePaletteOpsRegister({ insertComposerText });
 
   useEffect(() => {
     if (!canAbortSession) {
@@ -379,6 +409,10 @@ function ChatInterface({
     handlePermissionDecision,
   }), [pendingPermissionRequests, handlePermissionDecision]);
 
+  // Lets a workflow card fetch its agents' timelines for this session.
+  const transcriptSessionId = currentSessionId || selectedSession?.id || null;
+  const transcriptSessionValue = useMemo(() => ({ sessionId: transcriptSessionId }), [transcriptSessionId]);
+
   // A composer pick becomes the default for new chats and, when a session is
   // open, is recorded against that session so reopening it restores this model.
   const handleSelectComposerModel = useCallback(async (model: string) => {
@@ -438,61 +472,66 @@ function ChatInterface({
           error={sessionGoal.error}
           onRefresh={sessionGoal.refresh}
         />
-        <ChatMessagesPane
-          scrollContainerRef={scrollContainerRef}
-          // Not redundant with the `scroll` listener. A first page is 20 rows,
-          // tool results fold into their calls, and the "load earlier" link is
-          // hidden while more pages exist — so a short transcript is often not
-          // scrollable at all and never emits `scroll`. Wheel and touch are
-          // then the only way to reach the top pager or the "load all" overlay.
-          onWheel={handleHistoryScrollIntent}
-          onTouchMove={handleHistoryScrollIntent}
-          isLoadingSessionMessages={isLoadingSessionMessages}
-          isProcessing={isProcessing}
-          hasActivityIndicator={hasActivityIndicator}
-          chatMessages={chatMessages}
-          selectedSession={selectedSession}
-          currentSessionId={currentSessionId}
-          provider={provider}
-          setProvider={setProvider}
-          textareaRef={textareaRef}
-          providerModels={providerModels}
-          setProviderModel={setStoredProviderModel}
-          providerModelCatalog={providerModelCatalog}
-          providerModelActions={providerModelActions}
-          providerModelsLoading={providerModelsLoading}
-          tasksEnabled={tasksEnabled}
-          isTaskMasterInstalled={isTaskMasterInstalled}
-          onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
-          isLoadingMoreMessages={isLoadingMoreMessages}
-          historyError={historyError}
-          hasMoreMessages={hasMoreMessages}
-          totalMessages={totalMessages}
-          totalIsExact={sessionStore.getSessionSlot(selectedSession?.id || currentSessionId || '')?.totalIsExact}
-          sessionMessagesCount={chatMessages.length}
-          visibleMessageCount={visibleMessageCount}
-          visibleMessages={visibleMessages}
-          loadEarlierMessages={loadEarlierMessages}
-          loadAllMessages={loadAllMessages}
-          allMessagesLoaded={allMessagesLoaded}
-          isLoadingAllMessages={isLoadingAllMessages}
-          loadAllJustFinished={loadAllJustFinished}
-          showLoadAllOverlay={showLoadAllOverlay}
-          createDiff={createDiff}
-          onFileOpen={onFileOpen}
-          onShowSettings={onShowSettings}
-          onGrantToolPermission={handleGrantToolPermission}
-          showRawParameters={showRawParameters}
-          showThinking={showThinking}
-          selectedProject={selectedProject}
-          // Editing replaces the turn and everything after it, so it is only
-          // offered when the session is idle — a half-truncated transcript with
-          // a live stream writing into it is not recoverable.
-          onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
-          onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
-          onLoadFullTranscript={loadFullTranscript}
-        />
+        <TranscriptSessionContext.Provider value={transcriptSessionValue}>
+          <ChatMessagesPane
+            scrollContainerRef={scrollContainerRef}
+            // Not redundant with the `scroll` listener. A first page is 20 rows,
+            // tool results fold into their calls, and the "load earlier" link is
+            // hidden while more pages exist — so a short transcript is often not
+            // scrollable at all and never emits `scroll`. Wheel and touch are
+            // then the only way to reach the top pager or the "load all" overlay.
+            onWheel={handleHistoryScrollIntent}
+            onTouchMove={handleHistoryScrollIntent}
+            isLoadingSessionMessages={isLoadingSessionMessages}
+            isProcessing={isProcessing}
+            hasActivityIndicator={hasActivityIndicator}
+            chatMessages={chatMessages}
+            selectedSession={selectedSession}
+            currentSessionId={currentSessionId}
+            provider={provider}
+            setProvider={setProvider}
+            textareaRef={textareaRef}
+            providerModels={providerModels}
+            setProviderModel={setStoredProviderModel}
+            providerModelCatalog={providerModelCatalog}
+            providerModelActions={providerModelActions}
+            providerModelsLoading={providerModelsLoading}
+            tasksEnabled={tasksEnabled}
+            isTaskMasterInstalled={isTaskMasterInstalled}
+            onShowAllTasks={onShowAllTasks}
+            setInput={setInput}
+            isLoadingMoreMessages={isLoadingMoreMessages}
+            historyError={historyError}
+            hasMoreMessages={hasMoreMessages}
+            totalMessages={totalMessages}
+            totalIsExact={sessionStore.getSessionSlot(selectedSession?.id || currentSessionId || '')?.totalIsExact}
+            sessionMessagesCount={chatMessages.length}
+            visibleMessageCount={visibleMessageCount}
+            visibleMessages={visibleMessages}
+            loadEarlierMessages={loadEarlierMessages}
+            revealMessage={revealMessage}
+            backgroundTasks={sessionActivity?.tasks}
+            sendMessage={sendMessage}
+            loadAllMessages={loadAllMessages}
+            allMessagesLoaded={allMessagesLoaded}
+            isLoadingAllMessages={isLoadingAllMessages}
+            loadAllJustFinished={loadAllJustFinished}
+            showLoadAllOverlay={showLoadAllOverlay}
+            createDiff={createDiff}
+            onFileOpen={onFileOpen}
+            onShowSettings={onShowSettings}
+            onGrantToolPermission={handleGrantToolPermission}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+            selectedProject={selectedProject}
+            // Editing replaces the turn and everything after it, so it is only
+            // offered when the session is idle — a half-truncated transcript with
+            // a live stream writing into it is not recoverable.
+            onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
+            onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+            onLoadFullTranscript={loadFullTranscript}
+          />
+        </TranscriptSessionContext.Provider>
 
         <div className="relative flex-shrink-0">
           {isUserScrolledUp && chatMessages.length > 0 && (
@@ -549,6 +588,8 @@ function ChatInterface({
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
           queuedDrafts={queuedDrafts}
+          backgroundSendPrompt={backgroundSendPrompt}
+          onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
           attachedFiles={attachedFiles}

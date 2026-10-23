@@ -46,6 +46,11 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
+import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import {
+  getReportedClaudeContextWindow,
+  rememberClaudeContextWindow
+} from '@/modules/providers/services/provider-token-usage.service.js';
 import { AppError, createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
 // Session key -> the Claude Code process serving it, whether a turn is
@@ -53,6 +58,11 @@ import { AppError, createCompleteMessage, createNormalizedMessage } from '@/shar
 const activeSessions = new Map();
 // Session key -> exit of a retired process that may still be writing its transcript.
 const exitingProcesses = new Map();
+// Outstanding background tasks per live session, keyed like activeSessions. An
+// entry lives exactly as long as the process registered under the key: cleared
+// when that process is retired or ends, and reset when another one takes the
+// key over.
+const backgroundWork = createBackgroundWorkTracker();
 const pendingToolApprovals = new Map();
 // Sessions cancelled via abort-session. The abort handler already sent the
 // terminal `complete` (aborted: true) to the client, so the run loop must not
@@ -453,6 +463,10 @@ function addSession(sessionId, proc) {
   }
   proc.key = sessionId;
   activeSessions.set(sessionId, proc);
+  // The history reader reports a background agent as running or stopped by
+  // whether a live process serves the session, and the cached history does
+  // not see this map.
+  sessionHistoryCache.invalidate(sessionId);
 }
 
 /**
@@ -482,8 +496,44 @@ function armProcessTimer(proc, delayMs) {
 }
 
 /**
+ * True while the process is the one registered for its session key, which is
+ * what the background-work tracker and the history reader key on.
+ * @param {Object} proc - Process record
+ * @returns {boolean}
+ */
+function isRegisteredProcess(proc) {
+  return Boolean(proc.key) && activeSessions.get(proc.key) === proc;
+}
+
+/**
+ * Forgets a process as the one serving its session: its outstanding
+ * background work goes with it, and a history page cached while it was up
+ * (which still says `running` for any agent that never reported back) is
+ * dropped.
+ * @param {Object} proc - Process record
+ */
+function unregisterProcess(proc) {
+  if (!isRegisteredProcess(proc)) {
+    return;
+  }
+  activeSessions.delete(proc.key);
+  backgroundWork.clear(proc.key);
+  sessionHistoryCache.invalidate(proc.key);
+}
+
+/**
  * Closes a process's stdin so the CLI winds down, and forgets it. Background
  * work it was still running ends with it.
+ *
+ * Closing stdin is not enough on its own: the CLI's wind-down waits for the
+ * background agents the process still has going — for up to the ceiling it
+ * was started with (BG_WAIT_CEILING_MS) — so a retired process with an agent
+ * outstanding would run next to the process that replaces it for as long as
+ * the agent does, both appending to the same session file. Its tasks are
+ * stopped first, while stdin is still open: the SDK drops control requests
+ * written after stdin has ended. The stops are not awaited — each request is
+ * written to the CLI before this returns, and a reply is only missing when
+ * the process has already gone.
  * @param {Object} proc - Process record
  * @returns {Promise<void>} Settles once the process has exited
  */
@@ -491,9 +541,19 @@ function retireProcess(proc) {
   if (!proc.retired) {
     proc.retired = true;
     clearProcessTimer(proc);
-    if (activeSessions.get(proc.key) === proc) {
-      activeSessions.delete(proc.key);
+    if (isRegisteredProcess(proc)) {
+      for (const task of backgroundWork.outstanding(proc.key)) {
+        // A stop that cannot be delivered changes nothing about what happens
+        // next: the process is on its way out either way. Guard the
+        // synchronous call too, so a failing stop can never skip the release.
+        try {
+          Promise.resolve(proc.instance?.stopTask?.(task.taskId)).catch(() => {});
+        } catch {
+          // Same as a rejected stop.
+        }
+      }
     }
+    unregisterProcess(proc);
     if (proc.key) {
       exitingProcesses.set(proc.key, proc.ended);
     }
@@ -533,13 +593,52 @@ function scheduleIdleProcess(proc) {
 }
 
 /**
+ * Whether the background-work tracker still has tasks outstanding for the
+ * process's session.
+ * @param {Object} proc - Process record
+ * @returns {boolean}
+ */
+function hasOutstandingBackgroundWork(proc) {
+  return isRegisteredProcess(proc) && backgroundWork.hasOutstanding(proc.key);
+}
+
+/**
+ * Folds one SDK message into the process's background-work bookkeeping: the
+ * tracker of outstanding tasks (only for the process registered for its
+ * session — a retired one's late events must not touch its successor's), and
+ * whether the CLI turn under way reported any task starting.
+ * @param {Object} proc - Process record
+ * @param {Object} message - SDK stream message
+ */
+function trackBackgroundWork(proc, message) {
+  if (message.type === 'system' && message.subtype === 'task_started') {
+    proc.sawTaskEventThisTurn = true;
+  }
+  if (isRegisteredProcess(proc)) {
+    backgroundWork.apply(proc.key, message);
+  }
+}
+
+/**
  * Bookkeeping for every turn the CLI finishes. Background work started in a
  * turn holds the process until a later turn reports it back.
+ *
+ * Work from an earlier turn that has not settled yet (a follow-up turn reports
+ * one task in while another is still going) keeps holding it too. When the
+ * turn reported its tasks, the tracker is the whole truth: an Agent call
+ * without `run_in_background` is scored as background by
+ * `startsBackgroundWork`, but the CLI runs it in the foreground and it has
+ * settled before this `result` — holding for it kept a process alive for the
+ * full ceiling with nothing outstanding. `startsBackgroundWork` stays the rule
+ * for tools that emit no task events (Monitor, ScheduleWakeup, CronCreate,
+ * TaskCreate) and for an SDK that does not report tasks at all.
  * @param {Object} proc - Process record
  * @param {boolean} reportsBack - The turn was the CLI's own follow-up, not a Codey turn
  */
 function noteCliTurnEnded(proc, reportsBack) {
-  if (reportsBack && proc.heldForBackgroundWork) {
+  const stillOutstanding = hasOutstandingBackgroundWork(proc);
+  if (reportsBack && proc.heldForBackgroundWork && !stillOutstanding) {
+    // The last of the work the process was held for has reported back.
     notifyBackgroundWorkCompleted({
       userId: proc.writer?.userId || null,
       provider: 'claude',
@@ -547,8 +646,11 @@ function noteCliTurnEnded(proc, reportsBack) {
       sessionName: proc.sessionSummary
     });
   }
-  proc.heldForBackgroundWork = proc.backgroundWorkPending;
+  proc.heldForBackgroundWork = proc.sawTaskEventThisTurn
+    ? stillOutstanding
+    : proc.backgroundWorkPending || stillOutstanding;
   proc.backgroundWorkPending = false;
+  proc.sawTaskEventThisTurn = false;
 }
 
 /**
@@ -599,16 +701,6 @@ function isEmptyTokenBudget(budget) {
 }
 
 /**
- * The window a budget reports: the managed catalog's when the run has one,
- * otherwise the CONTEXT_WINDOW setting.
- * @param {number} [contextWindow] - Catalog window of the run's model
- * @returns {number}
- */
-function resolveContextWindow(contextWindow) {
-  return contextWindow || parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
-}
-
-/**
  * @typedef {Object} TokenBudget
  * @property {number} used
  * @property {number} total
@@ -621,12 +713,101 @@ function resolveContextWindow(contextWindow) {
  */
 
 /**
+ * The window a budget is measured against: the one the run knows for its
+ * model (the managed catalog's, else the one the SDK reported for the
+ * session), else the server-wide CONTEXT_WINDOW setting.
+ * @param {number|null|undefined} contextWindow - Known window of the run's model
+ * @returns {number} Context window in tokens
+ */
+function resolveContextWindow(contextWindow) {
+  if (Number.isFinite(contextWindow) && contextWindow > 0) {
+    return contextWindow;
+  }
+  return parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+}
+
+/**
+ * Reads the context window the SDK measured for the model that served a turn.
+ *
+ * `result.modelUsage` has one entry per model the turn billed, subagents'
+ * included, so the entry has to be the main thread's model. Its key is the id
+ * the CLI requested, which for a 1M variant carries a `[1m]` suffix that the
+ * assistant rows' `message.model` lacks (`claude-sonnet-5-5[1m]` vs
+ * `claude-sonnet-5-5`); newer CLIs also state the bare id as `canonicalModel`.
+ * @param {Object} sdkMessage - SDK stream message
+ * @param {string|null} mainModel - `message.model` of the turn's main-thread assistant rows
+ * @returns {number|null} The reported window, or null when there is none
+ */
+function readReportedContextWindow(sdkMessage, mainModel) {
+  const modelUsage = sdkMessage?.type === 'result' ? sdkMessage.modelUsage : null;
+  if (!modelUsage || typeof modelUsage !== 'object') {
+    return null;
+  }
+
+  const reported = Object.entries(modelUsage).filter(
+    ([, modelData]) => modelData && typeof modelData === 'object' && readNumber(modelData.contextWindow) > 0
+  );
+  const exactMatch = reported.find(([modelKey]) => modelKey === mainModel);
+  const variantMatch = reported.find(([modelKey, modelData]) => (
+    Boolean(mainModel)
+    && (modelData.canonicalModel === mainModel || modelKey.replace(/\[[^\]]*\]$/, '') === mainModel)
+  ));
+  // A turn that billed a single model was served by it, whatever it is called.
+  const entry = exactMatch ?? variantMatch ?? (reported.length === 1 ? reported[0] : null);
+  return entry ? readNumber(entry[1].contextWindow) : null;
+}
+
+/**
+ * The window a process's budgets are measured against when it knows one: the
+ * managed catalog's (Claude Code is launched against it, so it outranks what
+ * the CLI reports), else the one the SDK last reported for the session.
+ * @param {Object} proc - Process record
+ * @returns {number|undefined}
+ */
+function knownContextWindow(proc) {
+  return proc.contextWindow || proc.reportedContextWindow || undefined;
+}
+
+/**
+ * Records the model the main thread's assistant rows name, and the window the
+ * SDK reports for it on a turn's `result`, which is remembered for the
+ * session so history and a resumed run measure against it too.
+ * @param {Object} proc - Process record
+ * @param {Object} message - SDK stream message
+ * @returns {number|null} The window this message reported, or null
+ */
+function trackReportedContextWindow(proc, message) {
+  if (
+    message.type === 'assistant'
+    && !message.parent_tool_use_id
+    && typeof message.message?.model === 'string'
+    && message.message.model !== '<synthetic>'
+  ) {
+    proc.mainThreadModel = message.message.model;
+  }
+
+  // Only a turn's `result` states the window of the model that served it.
+  const reported = readReportedContextWindow(message, proc.mainThreadModel);
+  if (!reported) {
+    return null;
+  }
+  const changed = reported !== proc.reportedContextWindow;
+  proc.reportedContextWindow = reported;
+  rememberClaudeContextWindow(message.session_id || proc.providerSessionId, reported);
+  if (changed && isRegisteredProcess(proc)) {
+    // A history page cached before this turn ended carries the old total.
+    sessionHistoryCache.invalidate(proc.key);
+  }
+  return reported;
+}
+
+/**
  * Builds a context-window budget from an Anthropic-shaped usage payload.
  *
  * `input_tokens + cache_read + cache_creation` is one request's whole prompt,
  * which is exactly what the context window holds at that moment.
  * @param {Object} messageUsage - Anthropic usage payload
- * @param {number} [contextWindow] - Catalog window of the run's model
+ * @param {number|null} [contextWindow] - Known window of the run's model (see resolveContextWindow)
  * @returns {TokenBudget} Token budget object
  */
 function buildTokenBudget(messageUsage, contextWindow) {
@@ -659,7 +840,7 @@ function buildTokenBudget(messageUsage, contextWindow) {
  * prompt its own request carried. The turn-ending `result` is deliberately not
  * a source here — see `extractCumulativeTokenBudget`.
  * @param {Object} sdkMessage - SDK stream message
- * @param {number} [contextWindow] - Catalog window of the run's model
+ * @param {number|null} [contextWindow] - Known window of the run's model (see resolveContextWindow)
  * @returns {TokenBudget|null} Token budget object or null
  */
 function extractTokenBudget(sdkMessage, contextWindow) {
@@ -705,7 +886,7 @@ function extractTokenBudget(sdkMessage, contextWindow) {
  * message ever emits, so it stays available for the caller to use when a turn
  * produced no assistant budget at all.
  * @param {Object} sdkMessage - SDK stream message
- * @param {number} [contextWindow] - Catalog window of the run's model
+ * @param {number|null} [contextWindow] - Known window of the run's model (see resolveContextWindow)
  * @returns {TokenBudget|null} Token budget object or null
  */
 function extractCumulativeTokenBudget(sdkMessage, contextWindow) {
@@ -746,9 +927,12 @@ function extractCumulativeTokenBudget(sdkMessage, contextWindow) {
   };
 }
 
-// Tool calls that leave work running past the end of a turn. Bash only counts
-// when it is explicitly backgrounded; the rest defer or watch work by nature.
-const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate']);
+// Tool calls that leave work running past the end of a turn. Bash and Agent only
+// count when they are backgrounded; the rest defer or watch work by nature.
+// Workflow belongs here rather than in a branch of its own: its input schema has
+// no foreground option at all, so every call returns a task id immediately and
+// reports back in a later turn.
+const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate', 'Workflow']);
 
 /**
  * Detects tool calls that keep working after the turn's `result` arrives.
@@ -756,10 +940,14 @@ const DEFERRED_WORK_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 
  * Only turns that start background work need their CLI process held open; every
  * other turn can let it exit immediately, as it did before the hold existed.
  *
+ * Used by the providers module's tests, which pin the tool matching directly:
+ * the alternative is driving a whole SDK run to observe whether stdin was held,
+ * and the cost of getting this wrong is silently killed background work.
+ *
  * @param {Object} sdkMessage - SDK stream message
  * @returns {boolean} True when the message launches work that outlives the turn
  */
-function startsBackgroundWork(sdkMessage) {
+export function startsBackgroundWork(sdkMessage) {
   const content = sdkMessage?.message?.content;
   if (!Array.isArray(content)) {
     return false;
@@ -772,8 +960,160 @@ function startsBackgroundWork(sdkMessage) {
     if (block.name === 'Bash') {
       return block.input?.run_in_background === true;
     }
+    // A backgrounded subagent outlives the turn exactly like a backgrounded
+    // Bash does, so the process has to be held open for it to report back.
+    // Agents background by default — `run_in_background` is optional and only
+    // an explicit `false` opts out — hence `!== false` rather than `=== true`.
+    // A foreground agent must stay out of DEFERRED_WORK_TOOLS: it never pushes
+    // a follow-up turn, so it would pin the process for the full ceiling.
+    if (block.name === 'Agent') {
+      return block.input?.run_in_background !== false;
+    }
     return DEFERRED_WORK_TOOLS.has(block.name);
   });
+}
+
+// `task_updated` patch statuses after which a task is gone for good. `pending`,
+// `running` and `paused` are still outstanding; `killed` is what the CLI
+// writes when it stops a task itself (the task notification spells it
+// `stopped`).
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed']);
+
+/**
+ * Tracks the background tasks each live session still has outstanding, folded
+ * from the `system` task events the SDK stream already carries.
+ *
+ * `startsBackgroundWork` above only knows that a turn *launched* something
+ * lasting; this knows what is still running and which task ids it answers to,
+ * which is what the running-sessions list and a stop request need once the
+ * turn's `result` has gone out and nothing else remembers the session is busy.
+ *
+ * Verified against a real query (SDK 0.3.165): `task_started` carries
+ * `task_id`, `tool_use_id`, `task_type` and `description` for every agent,
+ * workflow and backgrounded command (a foreground Bash emits nothing);
+ * `task_notification` settles a task with any status; `task_updated` carries
+ * only `task_id` and a patch, and is terminal when the patch's `status` is.
+ * Housekeeping tasks the CLI starts on its own have no `tool_use_id` and are
+ * not tracked — nothing in the transcript could show them.
+ *
+ * Exported so the folding can be driven with the four event shapes directly;
+ * the runtime keeps one instance keyed like `activeSessions`.
+ *
+ * @returns {{
+ *   apply: (sessionKey: string, message: Object) => void,
+ *   hasOutstanding: (sessionKey: string) => boolean,
+ *   has: (sessionKey: string, taskId: string) => boolean,
+ *   outstanding: (sessionKey: string) => Array<import('@/shared/types.js').BackgroundTaskSummary>,
+ *   clear: (sessionKey: string) => void,
+ *   list: () => Array<{ sessionId: string, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary> }>
+ * }}
+ */
+export function createBackgroundWorkTracker() {
+  /** @type {Map<string, Map<string, import('@/shared/types.js').BackgroundTaskSummary>>} */
+  const sessions = new Map();
+  /**
+   * Tool-use ids the session's own turns issued. A task started for a call an
+   * agent made inside its own transcript — a workflow agent's backgrounded
+   * command, say — reaches this stream too, and nothing in the parent
+   * transcript could show it; it is kept for stopping but flagged `nested`.
+   * @type {Map<string, Set<string>>}
+   */
+  const ownToolUseIds = new Map();
+
+  const remove = (sessionKey, taskId) => {
+    const tasks = sessions.get(sessionKey);
+    if (!tasks) {
+      return;
+    }
+    tasks.delete(taskId);
+    if (tasks.size === 0) {
+      sessions.delete(sessionKey);
+    }
+  };
+
+  return {
+    apply(sessionKey, message) {
+      if (message?.type === 'assistant' && !message.parent_tool_use_id) {
+        const content = message.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block?.type === 'tool_use' && typeof block.id === 'string') {
+              let ids = ownToolUseIds.get(sessionKey);
+              if (!ids) {
+                ids = new Set();
+                ownToolUseIds.set(sessionKey, ids);
+              }
+              ids.add(block.id);
+            }
+          }
+        }
+        return;
+      }
+      if (message?.type !== 'system' || typeof message.task_id !== 'string') {
+        return;
+      }
+      switch (message.subtype) {
+        case 'task_started': {
+          if (typeof message.tool_use_id !== 'string') {
+            return;
+          }
+          const task = {
+            taskId: message.task_id,
+            toolUseId: message.tool_use_id,
+            taskType: message.task_type,
+            description: message.description,
+            startedAt: Date.now()
+          };
+          if (typeof message.workflow_name === 'string') {
+            task.workflowName = message.workflow_name;
+          }
+          if (!ownToolUseIds.get(sessionKey)?.has(message.tool_use_id)) {
+            task.nested = true;
+          }
+          let tasks = sessions.get(sessionKey);
+          if (!tasks) {
+            tasks = new Map();
+            sessions.set(sessionKey, tasks);
+          }
+          tasks.set(task.taskId, task);
+          return;
+        }
+        case 'task_notification':
+          remove(sessionKey, message.task_id);
+          return;
+        case 'task_updated':
+          if (TERMINAL_TASK_STATUSES.has(message.patch?.status)) {
+            remove(sessionKey, message.task_id);
+          }
+          return;
+        default:
+      }
+    },
+
+    hasOutstanding(sessionKey) {
+      return sessions.has(sessionKey);
+    },
+
+    has(sessionKey, taskId) {
+      return Boolean(sessions.get(sessionKey)?.has(taskId));
+    },
+
+    outstanding(sessionKey) {
+      return Array.from(sessions.get(sessionKey)?.values() ?? []);
+    },
+
+    clear(sessionKey) {
+      sessions.delete(sessionKey);
+      ownToolUseIds.delete(sessionKey);
+    },
+
+    list() {
+      return Array.from(sessions, ([sessionId, tasks]) => ({
+        sessionId,
+        tasks: Array.from(tasks.values())
+      }));
+    }
+  };
 }
 
 /**
@@ -1124,11 +1464,13 @@ function forwardMessage(proc, message) {
  * @param {Object} message - SDK stream message
  */
 function handleIdleMessage(proc, message) {
+  trackBackgroundWork(proc, message);
+  trackReportedContextWindow(proc, message);
   if (message.isReplay === true && !isLocalCommandOutput(message)) {
     return;
   }
   forwardMessage(proc, message);
-  const tokenBudget = extractTokenBudget(message, proc.contextWindow);
+  const tokenBudget = extractTokenBudget(message, knownContextWindow(proc));
   if (tokenBudget) {
     proc.writer.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: proc.providerSessionId, provider: 'claude' }));
   }
@@ -1137,6 +1479,20 @@ function handleIdleMessage(proc, message) {
   }
   if (message.type === 'result') {
     noteCliTurnEnded(proc, true);
+    scheduleIdleProcess(proc);
+  } else if (
+    proc.heldForBackgroundWork
+    && message.type === 'system'
+    && message.subtype === 'task_notification'
+    && message.status === 'stopped'
+    && !hasOutstandingBackgroundWork(proc)
+  ) {
+    // A task the user stopped gets no follow-up turn from the CLI — only its
+    // `stopped` notification — so when that was the last outstanding task
+    // nothing will ever push the `result` that ends the hold, and the process
+    // would sit until the ceiling. End it here. A completed task is
+    // different: the CLI relays its result in a turn of its own.
+    proc.heldForBackgroundWork = false;
     scheduleIdleProcess(proc);
   } else if (!proc.retired) {
     // Activity pushes the countdown back out.
@@ -1172,9 +1528,10 @@ async function pumpProcess(proc) {
   const wasRetired = proc.retired;
   proc.retired = true;
   clearProcessTimer(proc);
-  if (activeSessions.get(proc.key) === proc) {
-    activeSessions.delete(proc.key);
-  }
+  // No process, no background work: anything still tracked died with it.
+  unregisterProcess(proc);
+  // Nothing reads the prompt stream any more; let it end too.
+  proc.releaseInput();
   if (exitingProcesses.get(proc.key) === proc.ended) {
     exitingProcesses.delete(proc.key);
   }
@@ -1193,25 +1550,37 @@ async function pumpProcess(proc) {
  * @param {Object} init - Launch options, the first prompt and the turn's sinks
  * @returns {Object} Process record
  */
-function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, turn, writer, sessionSummary, appSessionId, providerSessionId, contextWindow, normalizeMessage }) {
+function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, turn, writer, sessionSummary, appSessionId, providerSessionId, contextWindow, normalizeMessage, createQuery = query }) {
   const proc = {
     key: null,
     instance: null,
     signature,
     resident,
     status: 'active',
+    // When the process started: background agents launched before it belong
+    // to a process that has exited (see getClaudeSDKSessionStartTime).
+    startedAt: Date.now(),
     turn,
     writer,
     sessionSummary,
     appSessionId,
     providerSessionId,
+    // The managed catalog's window for the model, when there is one.
     contextWindow,
+    // The window the SDK reported for the session (a resumed session starts
+    // from the one its last run reported) and the main thread's model it was
+    // reported for; see trackReportedContextWindow.
+    reportedContextWindow: getReportedClaudeContextWindow(providerSessionId) ?? null,
+    mainThreadModel: null,
     normalizeMessage,
     // True from the CLI's `system init` until its `result`: it is running a turn.
     cliBusy: true,
     // Set when a turn starts background work, moved to `heldForBackgroundWork`
     // by the next `result`: only work still outstanding holds a process open.
     backgroundWorkPending: false,
+    // Set when the stream reports a task starting during the CLI's turn; the
+    // task events then decide the hold (see noteCliTurnEnded).
+    sawTaskEventThisTurn: false,
     heldForBackgroundWork: false,
     // The CLI moved to another session (a typed /clear), so the process no
     // longer continues the one Codey maps; it exits after the turn.
@@ -1225,9 +1594,11 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
   };
   bindProcessCallbacks(proc, sdkOptions);
 
+  // `createQuery` is the SDK's own `query` unless the caller supplies one
+  // (tests script the stream to drive the process logic without a CLI).
   let heldPrompt = createHeldPromptStream([promptMessage]);
   try {
-    proc.instance = query({
+    proc.instance = createQuery({
       prompt: heldPrompt.stream,
       options: sdkOptions
     });
@@ -1239,7 +1610,7 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
     // Discard the abandoned stream and build a fresh one for the retry.
     heldPrompt.release();
     heldPrompt = createHeldPromptStream([promptMessage]);
-    proc.instance = query({
+    proc.instance = createQuery({
       prompt: heldPrompt.stream,
       options: sdkOptions
     });
@@ -1299,8 +1670,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
+  // The budget last published, re-sent with the right total when the turn's
+  // `result` is the first to state the window it is measured against.
+  let lastSentTokenBudget = null;
   // Rows a compaction kept, which the CLI streams a second time after it.
   const preservedByCompaction = new Set();
+  // The managed catalog's window for the run's model, when there is one.
   let contextWindow;
   // Until the CLI takes up this turn's prompt, the turn it may already be
   // running (background work reporting back) is not this one: 'start' waits
@@ -1461,6 +1836,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         proc.retireAfterTurn = true;
       }
 
+      trackBackgroundWork(proc, message);
+      const turnContextWindow = trackReportedContextWindow(proc, message);
+
       if (awaitingPrompt && ((message.isReplay === true && message.uuid === promptUuid)
         || (awaitingPrompt === 'start' && message.type === 'system' && message.subtype === 'init'))) {
         awaitingPrompt = null;
@@ -1507,12 +1885,19 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message, contextWindow)
-        || (assistantBudgetSent || awaitingPrompt ? null : extractCumulativeTokenBudget(message, contextWindow));
+      const budgetContextWindow = knownContextWindow(proc);
+      let tokenBudgetData = extractTokenBudget(message, budgetContextWindow)
+        || (assistantBudgetSent || awaitingPrompt ? null : extractCumulativeTokenBudget(message, budgetContextWindow));
+      const budgetTotal = resolveContextWindow(budgetContextWindow);
+      if (!tokenBudgetData && turnContextWindow && lastSentTokenBudget && lastSentTokenBudget.total !== budgetTotal) {
+        // The reading stands; only the window it is measured against was wrong.
+        tokenBudgetData = { ...lastSentTokenBudget, total: budgetTotal };
+      }
       if (tokenBudgetData) {
         if (message.type === 'assistant') {
           assistantBudgetSent = true;
         }
+        lastSentTokenBudget = tokenBudgetData;
         ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
@@ -1698,6 +2083,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         providerSessionId,
         contextWindow,
         normalizeMessage: context.normalizeMessage,
+        createQuery: context.createQuery,
       });
       if (sessionKey()) {
         addSession(sessionKey(), proc);
@@ -1795,6 +2181,36 @@ async function steerClaudeSDKSession(sessionId, command, options = {}) {
 }
 
 /**
+ * Sessions whose background tasks are still outstanding, with the tasks.
+ *
+ * A session stays here after its turn's `result` for as long as its process
+ * is held for the work — which is exactly the window in which nothing else
+ * (the chat run registry marks the run completed at `result`) knows the
+ * session is still busy.
+ * @returns {Array<{ sessionId: string, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary> }>}
+ */
+function listClaudeSDKBackgroundWork() {
+  return backgroundWork.list();
+}
+
+/**
+ * Stops one outstanding background task through the SDK, which then emits a
+ * `task_notification` with status `stopped` — the same event that drops the
+ * task from the tracker and settles its card.
+ * @param {string} sessionId - Session identifier
+ * @param {string} taskId - The task's `task_id` as reported on `task_started`
+ * @returns {Promise<boolean>} False when no live process is tracking the task
+ */
+async function stopClaudeSDKTask(sessionId, taskId) {
+  const session = getSession(sessionId);
+  if (!session || !backgroundWork.has(sessionId, taskId)) {
+    return false;
+  }
+  await session.instance.stopTask(taskId);
+  return true;
+}
+
+/**
  * Checks if a turn is running in a session's SDK process
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session is active
@@ -1802,6 +2218,23 @@ async function steerClaudeSDKSession(sessionId, command, options = {}) {
 function isClaudeSDKSessionActive(sessionId) {
   const session = getSession(sessionId);
   return Boolean(session && session.status === 'active');
+}
+
+/**
+ * When the Claude Code process serving a session started, or null when none
+ * is up.
+ *
+ * The history reader uses this to tell a background agent launched by the
+ * live process (still able to report back) from one launched by an earlier
+ * process that has since exited (never will): a launch row older than the
+ * live process cannot belong to it. A process resident between turns, or held
+ * for background work, is still live, so this does not require a running turn.
+ * @param {string} sessionId - Session identifier
+ * @returns {number|null} Epoch milliseconds the live process started, or null
+ */
+function getClaudeSDKSessionStartTime(sessionId) {
+  const session = getSession(sessionId);
+  return session && !session.retired ? session.startedAt : null;
 }
 
 /**
@@ -1860,13 +2293,18 @@ export const claudeRuntime = {
     resolve: resolveToolApproval,
     listPending: getPendingApprovalsForSession,
   },
+  listBackgroundWork: listClaudeSDKBackgroundWork,
+  stopBackgroundTask: stopClaudeSDKTask,
 };
 
 // Export public API
 export {
   queryClaudeSDK,
   abortClaudeSDKSession,
+  listClaudeSDKBackgroundWork,
+  stopClaudeSDKTask,
   isClaudeSDKSessionActive,
+  getClaudeSDKSessionStartTime,
   getActiveClaudeSDKSessions,
   resolveToolApproval,
   getPendingApprovalsForSession,

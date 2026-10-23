@@ -83,6 +83,10 @@ export type ProviderRuntimeGateway = {
   prepareObservation?(provider: LLMProvider, sessionId: string): Promise<ProviderRuntimeObservation | null>;
   canSteer?(provider: LLMProvider, sessionId: string): boolean;
   steer?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt>;
+  /** Optional like the steering controls above, so gateways without held background work need not stub it. */
+  stopBackgroundTask?(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
+  /** Whether a provider runtime still holds background work for the session after its turn ended. */
+  hasBackgroundWork?(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
 };
@@ -698,6 +702,52 @@ async function attachExternalRun(
 }
 
 /**
+ * Handles `chat.stop-task`: stops one background task of a session — an
+ * agent, a workflow or a backgrounded command that is still going after its
+ * turn ended. Unlike `chat.abort` there is no run to consult: the task lives
+ * in the provider's held process, which is the only thing that can stop it.
+ * The provider then reports the task as stopped on the session's stream, so
+ * nothing is echoed back here on success.
+ */
+async function handleChatStopTask(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.stop-task requires a sessionId.');
+    return;
+  }
+
+  const taskId = typeof data.taskId === 'string' ? data.taskId.trim() : '';
+  if (!taskId) {
+    sendProtocolError(ws, 'TASK_ID_REQUIRED', 'chat.stop-task requires a taskId.', sessionId);
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    sendProtocolError(ws, 'SESSION_NOT_FOUND', `Session "${sessionId}" was not found.`, sessionId);
+    return;
+  }
+
+  const stopped = await dependencies.runtime.stopBackgroundTask?.(
+    session.provider as LLMProvider,
+    sessionId,
+    taskId,
+  ) ?? false;
+  if (!stopped) {
+    sendProtocolError(
+      ws,
+      'NO_SUCH_TASK',
+      `Session "${sessionId}" has no running background task "${taskId}".`,
+      sessionId,
+    );
+  }
+}
+
+/**
  * Handles `chat.subscribe`: joins a verified external turn when needed,
  * reports capabilities, replays missed events and restores pending approvals.
  * No prompt is required to expose queue/steer/Stop after changing devices.
@@ -737,7 +787,11 @@ async function handleChatSubscribe(
 
     // Future live events for this run should land on the socket that asked —
     // this is what makes mid-stream page refreshes work for all providers.
-    if (isProcessing) {
+    // A session whose turn ended but whose background work is still going
+    // keeps producing events through the same writer (task progress, the
+    // turn the CLI pushes when a task reports), so a tab opened during that
+    // work attaches too; the registry keeps the run while the work lasts.
+    if (isProcessing || dependencies.runtime.hasBackgroundWork?.(sessionId) === true) {
       chatRunRegistry.attachConnection(sessionId, ws);
     }
 
@@ -796,6 +850,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.send`                { sessionId, content, options? }
  * - `chat.steer`               { sessionId, requestId, expectedRunId, content, options?: { attachments } }
  * - `chat.abort`               { sessionId }
+ * - `chat.stop-task`           { sessionId, taskId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
@@ -901,6 +956,9 @@ export function handleChatConnection(
           return;
         case 'chat.abort':
           await handleChatAbort(ws, userId, data, dependencies);
+          return;
+        case 'chat.stop-task':
+          await handleChatStopTask(ws, data, dependencies);
           return;
         case 'chat.subscribe':
           await handleChatSubscribe(ws, userId, data, dependencies);

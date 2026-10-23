@@ -384,6 +384,55 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     });
   }
 
+  /**
+   * Resolves a directory the browser may list.
+   *
+   * The read-only roots (the system temp directory and the Claude projects
+   * directory, see `READ_ONLY_ROOTS` in shared/utils) are browsable but never
+   * writable, so they are checked before the workspace policy rejects them.
+   * `createWorkspaceFolder` deliberately does not do this, which is what keeps
+   * them read-only.
+   */
+  async function resolveBrowsablePath(targetPath: string): Promise<string> {
+    const readOnlyPath = await dependencies.workspace.resolveReadOnlyRootPath(targetPath);
+    if (readOnlyPath) {
+      return readOnlyPath;
+    }
+
+    const validation = await dependencies.workspace.validatePath(targetPath);
+    if (!validation.valid) {
+      throw createFileTreeError(validation.error ?? 'Path is outside the workspace root', 403, 'INVALID_WORKSPACE_PATH');
+    }
+
+    return validation.resolvedPath || targetPath;
+  }
+
+  /**
+   * Resolves a file the viewer may read but never write.
+   *
+   * A file reference in a transcript is normally inside the project or a
+   * related worktree, but a background command's log lives in the system temp
+   * directory and a background agent's output file is a link from there into
+   * the Claude projects directory, and the transcript quotes those paths
+   * verbatim. An absolute path outside the project therefore resolves through
+   * the read-only root policy first (symlinks resolved before the comparison);
+   * everything else goes through `resolveSingleFilePath`. The writing endpoints
+   * never call this, so nothing outside the project can be changed.
+   */
+  async function resolveReadableFilePath(
+    projectRoot: string,
+    filePath: string,
+  ): Promise<{ requestedPath: string; canonicalPath: string }> {
+    const requestedPath = path.resolve(projectRoot, filePath);
+    if (path.isAbsolute(filePath) && !isPathInsideDirectory(projectRoot, requestedPath)) {
+      const readOnlyPath = await dependencies.workspace.resolveReadOnlyRootPath(requestedPath);
+      if (readOnlyPath) {
+        return { requestedPath, canonicalPath: readOnlyPath };
+      }
+    }
+    return resolveSingleFilePath(projectRoot, filePath);
+  }
+
   async function cleanupTemporaryFiles(files: FileTreeUploadedFile[]): Promise<void> {
     await Promise.all(files.map(async (file) => {
       try {
@@ -400,12 +449,8 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         ? expandWorkspacePath(dependencies.workspace.rootPath, inputPath)
         : dependencies.workspace.rootPath;
       const targetPath = path.resolve(requestedPath);
-      const validation = await dependencies.workspace.validatePath(targetPath);
-      if (!validation.valid) {
-        throw createFileTreeError(validation.error ?? 'Path is outside the workspace root', 403, 'INVALID_WORKSPACE_PATH');
-      }
+      const resolvedPath = await resolveBrowsablePath(targetPath);
 
-      const resolvedPath = validation.resolvedPath || targetPath;
       try {
         await fileSystem.access(resolvedPath);
         const stats = await fileSystem.stat(resolvedPath);
@@ -482,7 +527,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     async readTextFile(projectId, filePath) {
       const projectRoot = await resolveProjectRoot(projectId);
       try {
-        const resolved = await resolveSingleFilePath(projectRoot, filePath);
+        const resolved = await resolveReadableFilePath(projectRoot, filePath);
         const content = await fileSystem.readTextFile(resolved.canonicalPath);
         return { content, path: resolved.requestedPath };
       } catch (error) {
@@ -490,6 +535,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           ENOENT: { message: 'File not found', statusCode: 404 },
           EACCES: { message: 'Permission denied', statusCode: 403 },
           EPERM: { message: 'Permission denied', statusCode: 403 },
+          EISDIR: { message: 'Path is a directory, not a file', statusCode: 400 },
         });
       }
     },
@@ -505,7 +551,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
           const image = await dependencies.transcriptImages.openImage(projectRoot, filePath);
           if (image) return image;
         }
-        const resolved = await resolveSingleFilePath(projectRoot, filePath);
+        const resolved = await resolveReadableFilePath(projectRoot, filePath);
         await fileSystem.access(resolved.canonicalPath);
         return {
           contentType: dependencies.resolveMimeType(resolved.requestedPath),

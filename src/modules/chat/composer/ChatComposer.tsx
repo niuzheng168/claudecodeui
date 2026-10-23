@@ -20,7 +20,7 @@ import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { isCodeyPortalSso, isComposerModeShortcut } from '@/shared/utils';
-import type { ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -36,6 +36,7 @@ import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceContr
 import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
+import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -87,6 +88,9 @@ type ChatComposerProps = {
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   queuedDrafts?: QueuedDraft[];
+  /** Open while a send waits for the user to decide about the session's background work. */
+  backgroundSendPrompt?: BackgroundSendPrompt | null;
+  onResolveBackgroundSendPrompt?: (choice: BackgroundSendChoice) => void;
   /** Set while the composer is replacing an already-sent message. */
   isEditingSentMessage: boolean;
   onCancelEditMessage: () => void;
@@ -179,6 +183,8 @@ export default function ChatComposer({
   isDragActive,
   queuedDraft,
   queuedDrafts,
+  backgroundSendPrompt = null,
+  onResolveBackgroundSendPrompt,
   isEditingSentMessage,
   onCancelEditMessage,
   scheduledMessages,
@@ -434,6 +440,13 @@ export default function ChatComposer({
             {t('composer.editing.cancel')}
           </button>
         </div>
+      )}
+
+      {onResolveBackgroundSendPrompt && (
+        <BackgroundSendDialog
+          prompt={backgroundSendPrompt}
+          onResolve={onResolveBackgroundSendPrompt}
+        />
       )}
 
       {queue.length > 0 && <div className="max-h-60 overflow-y-auto" data-slot="queued-messages">

@@ -9,6 +9,12 @@ import { createUserRouter } from '../user.routes.js';
 
 type UserDependencies = Parameters<typeof createUserService>[0];
 
+const noDrafts: UserDependencies['drafts'] = {
+  getDrafts: () => [],
+  saveDraft: () => undefined,
+  deleteDraft: () => undefined,
+};
+
 function createDependencies(overrides: Partial<UserDependencies> = {}): UserDependencies {
   return {
     users: {
@@ -21,11 +27,7 @@ function createDependencies(overrides: Partial<UserDependencies> = {}): UserDepe
       getPreferences: () => ({}),
       savePreferences: () => undefined,
     },
-    drafts: {
-      getDrafts: () => [],
-      saveDraft: () => undefined,
-      deleteDraft: () => undefined,
-    },
+    drafts: noDrafts,
     readSystemGitConfig: async () => ({ git_name: null, git_email: null }),
     applyGlobalGitConfig: async () => undefined,
     logInfo: () => undefined,
@@ -104,11 +106,7 @@ test('savePreferences rejects an over-long preference key', () => {
 test('saveDraft stores the text and queued message under the given scope', () => {
   const saved: unknown[][] = [];
   const service = createUserService(createDependencies({
-    drafts: {
-      getDrafts: () => [],
-      saveDraft: (...args) => saved.push(args),
-      deleteDraft: () => undefined,
-    },
+    drafts: { ...noDrafts, saveDraft: (...args) => saved.push(args) },
   }));
 
   service.saveDraft(5, 'session-1', {
@@ -123,17 +121,27 @@ test('saveDraft stores the text and queued message under the given scope', () =>
   }]]);
 });
 
-test('saveDraft defaults a missing queued message to null rather than dropping the row', () => {
+test('saveDraft without a queued message writes only the text and leaves the queued one alone', () => {
+  // The composer's debounced text save carries no queued message: its copy may
+  // already have been sent by the dispatcher, or added to from another tab.
+  // The repository treats a draft without `queuedMessage` as a text-only save.
   const saved: unknown[][] = [];
   const service = createUserService(createDependencies({
-    drafts: {
-      getDrafts: () => [],
-      saveDraft: (...args) => saved.push(args),
-      deleteDraft: () => undefined,
-    },
+    drafts: { ...noDrafts, saveDraft: (...args) => saved.push(args) },
   }));
 
   service.saveDraft(5, 'session-1', { scope: 'session-1', text: 'typing' });
+
+  assert.deepEqual(saved, [[5, 'session-1', { text: 'typing' }]], 'the stored queued message is not overwritten');
+});
+
+test('saveDraft with an explicit null queued message still clears it', () => {
+  const saved: unknown[][] = [];
+  const service = createUserService(createDependencies({
+    drafts: { ...noDrafts, saveDraft: (...args) => saved.push(args) },
+  }));
+
+  service.saveDraft(5, 'session-1', { scope: 'session-1', text: 'typing', queuedMessage: null });
 
   assert.deepEqual(saved, [[5, 'session-1', { text: 'typing', queuedMessage: null }]]);
 });

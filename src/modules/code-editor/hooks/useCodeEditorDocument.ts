@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { CodeEditorFile } from '@/shared/types';
@@ -42,10 +42,19 @@ async function readFileError(response: Response, action: string): Promise<string
   return fallback;
 }
 
+// CodeMirror reports its document with LF line endings whatever the file used,
+// so a CRLF file would look edited from the first keystroke (and stay "edited"
+// after an undo) unless both sides of the comparison are normalised.
+const normalizeLineEndings = (text: string) => text.replace(/\r\n?/g, '\n');
+
 /** CodeEditor uses this hook to load, edit, and save one project-scoped document. */
 export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocumentParams) => {
   // Holds the loaded text and subsequent edits shown by CodeMirror.
   const [content, setContent] = useState('');
+  // The text as last loaded from disk or written back by a save. The buffer is
+  // compared against it to tell whether closing or switching files would
+  // discard edits; nothing else in the app knows that baseline.
+  const [savedContent, setSavedContent] = useState('');
   // Prevents editing or saving a stale buffer while another file is loading.
   const [loading, setLoading] = useState(true);
   // Separates load diagnostics from file contents so they can never be saved.
@@ -69,30 +78,46 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   const fileName = file.name;
   const fileDiffNewString = file.diffInfo?.new_string;
   const fileDiffOldString = file.diffInfo?.old_string;
+  // Counts the loads this editor has performed. A read or save still in flight
+  // when another file is opened belongs to the previous file and must not land
+  // on the new one's buffer, baseline or save state.
+  const loadGenerationRef = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    const loadGeneration = ++loadGenerationRef.current;
+    const isStaleLoad = () => loadGenerationRef.current !== loadGeneration;
+
+    // Every load path resets the saved baseline together with the buffer, so a
+    // freshly opened file (or an error placeholder) never counts as dirty.
+    const applyLoadedContent = (text: string) => {
+      setContent(text);
+      setSavedContent(text);
+    };
+
     const loadFileContent = async () => {
       try {
         setLoading(true);
         setLoadError(null);
+        setIsBinary(false);
+        // Any save still in flight, failed or just acknowledged belongs to the
+        // previous file.
+        setSaving(false);
         setSaveError(null);
         setSaveSuccess(false);
-        setIsBinary(false);
 
         // Natively previewable media (image/pdf/audio/video) is rendered by
         // CodeEditorMediaPreview, so there is nothing to read as text here.
         // Clear any buffer left over from a previously opened text file so a
         // stray save can't write stale content over the binary file.
         if (getPreviewKind(file.name)) {
-          setContent('');
+          applyLoadedContent('');
           setLoading(false);
           return;
         }
 
         // Check if file is binary by extension
         if (isBinaryFile(file.name)) {
-          setContent('');
+          applyLoadedContent('');
           setIsBinary(true);
           setLoading(false);
           return;
@@ -100,7 +125,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
 
         // Diff payload may already include full old/new snapshots, so avoid disk read.
         if (file.diffInfo && fileDiffNewString !== undefined && fileDiffOldString !== undefined) {
-          setContent(fileDiffNewString);
+          applyLoadedContent(fileDiffNewString);
           setLoading(false);
           return;
         }
@@ -118,21 +143,27 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         if (typeof data?.content !== 'string') {
           throw new Error('Invalid file response: missing text content');
         }
-        if (active) setContent(data.content);
+        // A slow response for the previous file must not replace the current buffer.
+        if (isStaleLoad()) {
+          return;
+        }
+        applyLoadedContent(data.content);
       } catch (error) {
-        if (!active) return;
+        if (isStaleLoad()) {
+          return;
+        }
         const message = getErrorMessage(error);
         console.error('Error loading file:', error);
         setLoadError(message);
-        setContent(`// Error loading file: ${message}\n// File: ${fileName}\n// Path: ${filePath}`);
+        applyLoadedContent(`// Error loading file: ${message}\n// File: ${fileName}\n// Path: ${filePath}`);
       } finally {
-        if (active) setLoading(false);
+        if (!isStaleLoad()) {
+          setLoading(false);
+        }
       }
     };
 
     void loadFileContent();
-    // A slow response for the previous file must not replace the current buffer.
-    return () => { active = false; };
   }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId]);
 
   const handleSave = useCallback(async () => {
@@ -145,6 +176,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       setSaveError(loadError ?? 'Wait for the file to finish loading before saving');
       return;
     }
+
+    const saveGeneration = loadGenerationRef.current;
+    const isStaleSave = () => loadGenerationRef.current !== saveGeneration;
 
     setSaving(true);
     setSaveError(null);
@@ -162,14 +196,27 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
 
       await response.json();
 
+      // Another file loaded while this write was in flight: it owns the buffer,
+      // the baseline and the save state now.
+      if (isStaleSave()) {
+        return;
+      }
+
+      // Baseline is the text that was actually sent: anything typed while the
+      // request was in flight is still unsaved.
+      setSavedContent(content);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
     } catch (error) {
       const message = getErrorMessage(error);
       console.error('Error saving file:', error);
-      setSaveError(message);
+      if (!isStaleSave()) {
+        setSaveError(message);
+      }
     } finally {
-      setSaving(false);
+      if (!isStaleSave()) {
+        setSaving(false);
+      }
     }
   }, [content, filePath, fileProjectId, previewKind, fileName, loading, loadError]);
 
@@ -189,6 +236,27 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     URL.revokeObjectURL(url);
   }, [content, file.name, loading, loadError]);
 
+  // The baseline only changes on load and save, so it is not re-normalised on
+  // every keystroke.
+  const normalizedSavedContent = useMemo(() => normalizeLineEndings(savedContent), [savedContent]);
+
+  // Preview and binary files have no editable buffer, and while a file loads
+  // the buffer still belongs to the previous one. A load error's placeholder
+  // can never be saved, so it is never a change to keep either. Memoised so
+  // renders that do not change the buffer (a save's spinner and tick) skip the
+  // comparison.
+  const hasUnsavedChanges = useMemo(
+    () => (
+      !loading
+      && !loadError
+      && !previewKind
+      && !isBinary
+      && content !== savedContent
+      && normalizeLineEndings(content) !== normalizedSavedContent
+    ),
+    [content, isBinary, loadError, loading, normalizedSavedContent, previewKind, savedContent],
+  );
+
   return {
     content,
     setContent,
@@ -199,6 +267,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     isBinary,
     previewKind,
     fileProjectId,
+    hasUnsavedChanges,
     handleSave,
     handleDownload,
   };

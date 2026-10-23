@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); });
 
-test('history includes at most three user turns and excludes reasoning, tools, streaming and credentials', () => {
+test('history includes at most three user turns and excludes reasoning, tools, streaming, compactions and credentials', () => {
   const result = selectVoiceRewriteHistory([
     message('user', 'too old'), message('assistant', 'old reply'),
     message('user', 'one'), message('assistant', 'one reply'),
@@ -42,13 +42,14 @@ test('history includes at most three user turns and excludes reasoning, tools, s
     message('user', 'two'), message('assistant', 'terminal secret', { isToolUse: true }),
     message('assistant', 'subagent secret', { isSubagentContainer: true }),
     message('assistant', 'still streaming', { isStreaming: true }),
+    message('assistant', 'compaction summary', { compact: { phase: 'done' }, compactSummary: 'compaction summary' }),
     message('assistant', 'two reply'),
     message('user', 'three api_key=fake-secret-value ```sh\nprivate code\n```'),
     message('assistant', 'three reply'),
   ]);
   expect(result).toHaveLength(6);
   expect(result[0].content).toBe('one');
-  expect(JSON.stringify(result)).not.toMatch(/too old|private reasoning|terminal secret|subagent secret|still streaming|fake-secret-value|private code/);
+  expect(JSON.stringify(result)).not.toMatch(/too old|private reasoning|terminal secret|subagent secret|still streaming|compaction summary|fake-secret-value|private code/);
   expect(JSON.stringify(result)).toContain('[credential omitted]');
   const large = selectVoiceRewriteHistory(Array.from({ length: 12 }, (_, index) => message(index % 2 ? 'assistant' : 'user', '中文😀'.repeat(3000))));
   expect(large.reduce((bytes, item) => bytes + new TextEncoder().encode(item.content).length, 0)).toBeLessThanOrEqual(3000);

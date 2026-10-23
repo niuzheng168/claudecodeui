@@ -33,7 +33,7 @@ Benefits:
 |---|---|
 | `services/websocket-server.service.ts` | Creates `WebSocketServer`, binds `verifyClient`, routes connection by pathname |
 | `services/websocket-auth.service.ts` | Authenticates upgrade requests and attaches `request.user` |
-| `services/chat-websocket.service.ts` | Handles the `/ws` chat protocol (`chat.send` / `chat.steer` / `chat.abort` / `chat.subscribe` / `chat.permission-response`) |
+| `services/chat-websocket.service.ts` | Handles the `/ws` chat protocol (`chat.send` / `chat.edit-send` / `chat.steer` / `chat.abort` / `chat.stop-task` / `chat.subscribe` / `chat.permission-response`) |
 | `services/chat-run-registry.service.ts` | Tracks live provider runs per app session id: seq numbering, event replay buffer, provider-id mapping, completion state |
 | `services/chat-session-writer.service.ts` | Gateway writer handed to provider runtimes: remaps provider session ids to app ids, swallows `session_created`, assigns `seq` |
 | `services/shell-websocket.service.ts` | Handles `/shell` PTY lifecycle, reconnect buffering, auth URL detection |
@@ -140,7 +140,7 @@ When a chat socket connects:
 
 1. Add socket to `connectedClients`.
 2. Parse each incoming message with `parseIncomingJsonObject`.
-3. Dispatch by `data.type` (four message types, none provider-specific).
+3. Dispatch by `data.type` (seven message types, none provider-specific).
 4. On close, remove socket from `connectedClients`.
 
 ### Session identity model
@@ -162,7 +162,10 @@ flowchart TD
   B -->|ok| D{data.type}
 
   D -->|chat.send| E[resolve session row -> startRun -> providerRuntimeService.run]
+  D -->|chat.steer| S[validate run owner + runId -> providerRuntimeService.steer -> chat_steer_result]
+  D -->|chat.edit-send| E2[history_truncated -> rewind or resume at the anchor -> same as chat.send]
   D -->|chat.abort| F[providerRuntimeService.abort + synthetic complete]
+  D -->|chat.stop-task| F2[providerRuntimeService.stopBackgroundTask]
   D -->|chat.subscribe| G[chat_subscribed ack + attach socket + replay events seq > lastSeq]
   D -->|chat.permission-response| H[providerRuntimeService.resolveToolApproval]
   D -->|other| I[send kind:protocol_error]

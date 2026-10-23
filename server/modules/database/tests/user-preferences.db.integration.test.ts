@@ -229,3 +229,137 @@ test('restoring a failed claim preserves new text, recreates cleaned rows and ne
     assert.deepEqual(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')?.queuedMessage, { id: 'new', content: 'new' });
   });
 });
+
+// Upstream's single-slot merge tests (#1634), restated for the FIFO queue: each
+// follow-up stays its own receipt and its own turn instead of being merged.
+const queuedIn = (scope: string) => (
+  sessionDraftsDb.getDrafts(USER_ID).find((draft) => draft.scope === scope)?.queuedMessage ?? null
+);
+
+const appendQueued = (scope: string, text: string, message: Record<string, unknown>) => (
+  sessionDraftsDb.saveDraft(USER_ID, scope, { text, queueOperations: [{ kind: 'append', message }] })
+);
+
+test('follow-ups queued while one waits are appended in order, not overwritten', async () => {
+  await withDatabase(() => {
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'still typing' });
+    const a = { id: 'a', content: 'A', options: { model: 'sonnet' }, attachments: [{ name: 'a.png' }] };
+    const b = { id: 'b', content: 'B', attachments: [] };
+    const c = { id: 'c', content: 'C', options: { model: 'opus' }, attachments: [{ name: 'c.txt' }] };
+
+    for (const message of [a, b, c]) appendQueued('session-a', 'still typing', message);
+
+    assert.deepEqual(queuedIn('session-a'), [a, b, c], 'each keeps its own text, options and attachments');
+    assert.equal(sessionDraftsDb.getDrafts(USER_ID)[0]?.text, 'still typing', 'the draft text is untouched');
+  });
+});
+
+test('a follow-up queued after the dispatcher claimed the waiting message is queued on its own', async () => {
+  await withDatabase(() => {
+    appendQueued('session-a', '', { id: 'a', content: 'A', attachments: [] });
+    assert.equal(sessionDraftsDb.claimQueuedMessage(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!), true);
+
+    appendQueued('session-a', '', { id: 'b', content: 'B', attachments: [] });
+
+    assert.deepEqual(queuedIn('session-a'), [{ id: 'b', content: 'B', attachments: [] }], 'A is not sent a second time');
+  });
+});
+
+test('a claim listed before a follow-up was appended takes only its own message', async () => {
+  await withDatabase(() => {
+    appendQueued('session-a', '', { id: 'a', content: 'A', attachments: [] });
+    const listedBeforeB = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    appendQueued('session-a', '', { id: 'b', content: 'B', attachments: [] });
+
+    assert.equal(sessionDraftsDb.claimQueuedMessage(listedBeforeB), true);
+    assert.deepEqual(queuedIn('session-a'), [{ id: 'b', content: 'B', attachments: [] }]);
+  });
+});
+
+test('saving draft text leaves the queued message alone and keeps the row while it waits', async () => {
+  await withDatabase(() => {
+    const a = { id: 'a', content: 'A', attachments: [] };
+    appendQueued('session-a', '', a);
+
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'typing the next one' });
+    assert.deepEqual(queuedIn('session-a'), [a]);
+
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '' });
+    assert.deepEqual(queuedIn('session-a'), [a]);
+
+    // After a claim, a text save must not bring the sent message back.
+    assert.equal(sessionDraftsDb.claimQueuedMessage(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!), true);
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'x' });
+    assert.equal(queuedIn('session-a'), null);
+
+    // And once nothing is left, the row goes.
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: '' });
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID), []);
+  });
+});
+
+test('removing the queued message keeps the draft text, and drops an emptied row', async () => {
+  await withDatabase(() => {
+    const a = { id: 'a', content: 'A', attachments: [] };
+    const b = { id: 'b', content: 'B', attachments: [] };
+    appendQueued('session-a', 'keep me', a);
+    appendQueued('session-b', '', b);
+
+    sessionDraftsDb.saveDraft(USER_ID, 'session-a', { text: 'keep me', queueOperations: [{ kind: 'remove', message: a }] });
+    sessionDraftsDb.saveDraft(USER_ID, 'session-b', { text: '', queueOperations: [{ kind: 'remove', message: b }] });
+
+    assert.deepEqual(
+      sessionDraftsDb.getDrafts(USER_ID).map((draft) => [draft.scope, draft.text, draft.queuedMessage]),
+      [['session-a', 'keep me', null]],
+    );
+  });
+});
+
+test('a slash command queued next to a message stays a turn of its own, in either order', async () => {
+  await withDatabase(() => {
+    const text = { id: 'text', content: 'fix the test', attachments: [] };
+    const command = { id: 'command', content: '/compact', attachments: [] };
+    appendQueued('session-a', '', text);
+    appendQueued('session-a', '', command);
+    assert.deepEqual(queuedIn('session-a'), [text, command]);
+
+    assert.equal(sessionDraftsDb.claimQueuedMessage(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!), true);
+    assert.deepEqual(sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')?.queuedMessage, command);
+
+    const review = { id: 'review', content: '  /review src', attachments: [] };
+    const then = { id: 'then', content: 'then fix it', attachments: [] };
+    appendQueued('session-b', '', review);
+    appendQueued('session-b', '', then);
+    assert.deepEqual(queuedIn('session-b'), [review, then], 'the waiting command is kept as it was');
+  });
+});
+
+test('a claim restored after losing a race goes back in front of a follow-up queued meanwhile', async () => {
+  await withDatabase(() => {
+    const a = { id: 'a', content: 'A', attachments: [{ name: 'a.png' }] };
+    const b = { id: 'b', content: 'B', options: { model: 'opus' }, attachments: [] };
+    appendQueued('session-a', '', a);
+    const claimed = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    assert.equal(sessionDraftsDb.claimQueuedMessage(claimed), true);
+    appendQueued('session-a', '', b);
+
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(claimed), true);
+
+    assert.deepEqual(queuedIn('session-a'), [a, b]);
+  });
+});
+
+test('a claim restored after its emptied row was removed is written back', async () => {
+  await withDatabase(() => {
+    const a = { id: 'a', content: 'A', attachments: [] };
+    appendQueued('session-a', '', a);
+    const claimed = sessionDraftsDb.getQueuedMessage(USER_ID, 'session-a')!;
+    assert.equal(sessionDraftsDb.claimQueuedMessage(claimed), true);
+    sessionDraftsDb.deleteEmptyDraft(USER_ID, 'session-a');
+    assert.deepEqual(sessionDraftsDb.getDrafts(USER_ID), []);
+
+    assert.equal(sessionDraftsDb.restoreQueuedMessage(claimed), true);
+
+    assert.deepEqual(queuedIn('session-a'), [a]);
+  });
+});

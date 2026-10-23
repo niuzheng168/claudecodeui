@@ -191,7 +191,10 @@ export const sessionDraftsDb = {
     return result.changes > 0;
   },
 
-  /** Removes the placeholder row left after its last queued turn is claimed. */
+  /**
+   * Removes a row left with neither text nor a queued message: after its last
+   * queued turn is claimed, its queue is emptied, or its text cleared.
+   */
   deleteEmptyDraft(userId: number, scope: string): void {
     getConnection()
       .prepare(

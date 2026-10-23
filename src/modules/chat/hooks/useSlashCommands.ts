@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
-import { api } from '@/shared/api';
 import { safeLocalStorage } from '@/modules/chat/utils/chatStorage';
+import { useProjectSlashCommands } from '@/shared/hooks/useProjectSlashCommands';
 import type { LLMProvider, Project, SlashCommand } from '@/shared/types';
-import { isNativeClaudeCommand, isNativeCodexCommand } from '@/shared/utils';
+import { isNativeClaudeCommand, isNativeCodexCommand, isSkillCommand } from '@/shared/utils';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -16,23 +16,6 @@ type UseSlashCommandsOptions = {
   setInput: Dispatch<SetStateAction<string>>;
   textareaRef: RefObject<HTMLTextAreaElement>;
   onExecuteCommand: (command: SlashCommand, rawInput?: string) => void | Promise<void>;
-};
-
-type ProviderSkill = {
-  name: string;
-  description?: string;
-  command: string;
-  scope: string;
-  sourcePath?: string;
-  pluginName?: string;
-  pluginId?: string;
-};
-
-type ProviderSkillsResponse = {
-  success?: boolean;
-  data?: {
-    skills?: ProviderSkill[];
-  };
 };
 
 const getCommandHistoryKey = (projectName: string) => `command_history_${projectName}`;
@@ -58,45 +41,10 @@ const saveCommandHistory = (projectName: string, history: Record<string, number>
 const isPromiseLike = (value: unknown): value is Promise<unknown> =>
   Boolean(value) && typeof (value as Promise<unknown>).then === 'function';
 
-const isSkillCommand = (command: SlashCommand) =>
-  command.type === 'skill' || command.metadata?.type === 'skill';
-
 // Provider-native commands are completed into the input on selection and only
 // run from an exact Enter, like a typed message.
 const isNativeCommand = (command: SlashCommand) =>
   isNativeCodexCommand(command) || isNativeClaudeCommand(command);
-
-const dedupeProviderSkills = (skills: ProviderSkill[]): ProviderSkill[] => {
-  const seenCommands = new Set<string>();
-
-  return skills.filter((skill) => {
-    // Multiple physical Claude plugin folders can expose the same invocation.
-    // The slash menu should show each executable command only once.
-    const key = skill.command;
-    if (seenCommands.has(key)) {
-      return false;
-    }
-
-    seenCommands.add(key);
-    return true;
-  });
-};
-
-const mapSkillToSlashCommand = (skill: ProviderSkill): SlashCommand => ({
-  name: skill.command,
-  description: skill.description,
-  namespace: 'skill',
-  path: skill.sourcePath,
-  type: 'skill',
-  metadata: {
-    type: skill.scope,
-    scope: skill.scope,
-    sourcePath: skill.sourcePath,
-    pluginName: skill.pluginName,
-    pluginId: skill.pluginId,
-    skillName: skill.name,
-  },
-});
 
 const filterSlashCommands = (
   commands: SlashCommand[],
@@ -140,7 +88,7 @@ export function useSlashCommands({
   textareaRef,
   onExecuteCommand,
 }: UseSlashCommandsOptions) {
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const { commands: projectCommands } = useProjectSlashCommands(selectedProject, provider);
   const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
@@ -164,72 +112,29 @@ export function useSlashCommands({
     clearCommandQueryTimer();
   }, [clearCommandQueryTimer]);
 
-  useEffect(() => {
-    let cancelled = false;
+  // The shared list ordered by this project's usage history, most-used first,
+  // so the menu surfaces what the user actually reaches for.
+  const slashCommands = useMemo<SlashCommand[]>(() => {
+    if (!selectedProject) {
+      return [];
+    }
 
-    const fetchCommands = async () => {
-      if (!selectedProject) {
-        setSlashCommands([]);
-        setFilteredCommands([]);
-        return;
-      }
-
-      try {
-        const workspacePath = selectedProject.fullPath || selectedProject.path || '';
-        const response = await api.commands.list(workspacePath || selectedProject.path, provider);
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch commands');
-        }
-
-        const data = await response.json();
-        const skillsResponse = await api.providers.skills(provider, { workspacePath });
-        const skillsData = skillsResponse.ok
-          ? ((await skillsResponse.json()) as ProviderSkillsResponse)
-          : null;
-        const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
-          .map(mapSkillToSlashCommand);
-        const customCommands = ((data.custom || []) as SlashCommand[]).map((command) => ({
-          ...command,
-          type: 'custom',
-        }));
-        // The user's own skill or command of the same name takes the slot of a
-        // Claude Code command rather than being listed twice.
-        const userCommandNames = new Set([...skillCommands, ...customCommands].map((command) => command.name));
-        const allCommands: SlashCommand[] = [
-          ...((data.builtIn || []) as SlashCommand[])
-            .filter((command) => !(isNativeClaudeCommand(command) && userCommandNames.has(command.name)))
-            .map((command) => ({
-              ...command,
-              type: 'built-in',
-            })),
-          ...skillCommands,
-          ...customCommands,
-        ];
-
-        const parsedHistory = readCommandHistory(selectedProject.projectId);
-        const sortedCommands = [...allCommands].sort((commandA, commandB) => {
-          const commandAUsage = parsedHistory[commandA.name] || 0;
-          const commandBUsage = parsedHistory[commandB.name] || 0;
-          return commandBUsage - commandAUsage;
-        });
-
-        if (!cancelled) {
-          setSlashCommands(sortedCommands);
-        }
-      } catch (error) {
-        console.error('Error fetching slash commands:', error);
-        if (!cancelled) {
-          setSlashCommands([]);
-        }
-      }
-    };
-
-    fetchCommands();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProject, provider]);
+    // The user's own skill or command of the same name takes the slot of a
+    // Claude Code command rather than being listed twice.
+    const userCommandNames = new Set(
+      projectCommands
+        .filter((command) => command.type === 'skill' || command.type === 'custom')
+        .map((command) => command.name),
+    );
+    const parsedHistory = readCommandHistory(selectedProject.projectId);
+    return projectCommands
+      .filter((command) => !(isNativeClaudeCommand(command) && userCommandNames.has(command.name)))
+      .sort((commandA, commandB) => {
+        const commandAUsage = parsedHistory[commandA.name] || 0;
+        const commandBUsage = parsedHistory[commandB.name] || 0;
+        return commandBUsage - commandAUsage;
+      });
+  }, [projectCommands, selectedProject]);
 
   useEffect(() => {
     if (!showCommandMenu) {
@@ -456,10 +361,21 @@ export function useSlashCommands({
 
       if (event.key === 'Tab' || event.key === 'Enter') {
         event.preventDefault();
-        if (selectedCommandIndex >= 0) {
-          selectCommandFromKeyboard(filteredCommands[selectedCommandIndex], event.key === 'Enter');
-        } else if (filteredCommands.length > 0) {
-          selectCommandFromKeyboard(filteredCommands[0], event.key === 'Enter');
+        // Until the user arrows through the menu nothing is highlighted, so both
+        // keys act on the first match — the entry the menu renders at the top.
+        const targetCommand = filteredCommands[selectedCommandIndex >= 0 ? selectedCommandIndex : 0];
+        if (!targetCommand) {
+          return true;
+        }
+
+        // Tab is completion, not submission: it only writes "<name> " into the
+        // input and closes the menu, so an argument can still be typed before
+        // Enter runs the command. Enter keeps executing the highlighted entry
+        // (an exact native command runs; a partial one is completed).
+        if (event.key === 'Tab') {
+          insertCommandIntoInput(targetCommand);
+        } else {
+          selectCommandFromKeyboard(targetCommand, true);
         }
         return true;
       }
@@ -472,7 +388,16 @@ export function useSlashCommands({
 
       return false;
     },
-    [showCommandMenu, filteredCommands, input, slashCommands, resetCommandMenuState, selectCommandFromKeyboard, selectedCommandIndex],
+    [
+      showCommandMenu,
+      filteredCommands,
+      input,
+      slashCommands,
+      insertCommandIntoInput,
+      resetCommandMenuState,
+      selectCommandFromKeyboard,
+      selectedCommandIndex,
+    ],
   );
 
   useEffect(
