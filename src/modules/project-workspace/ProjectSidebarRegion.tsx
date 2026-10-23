@@ -115,9 +115,12 @@ function ProjectSidebarRegion({
     document.body.style.userSelect = '';
   }, []);
 
+  // `data-codey-workspace-sidebar` lets the Codey Workbench, which lists sessions
+  // itself, hide this sidebar in the frames it embeds.
   if (!isMobile) {
     return (
       <div
+        data-codey-workspace-sidebar=""
         className="relative h-full flex-shrink-0 border-r border-border/50"
         style={isSidebarResizable ? { width: sidebarWidth } : undefined}
       >
@@ -146,6 +149,7 @@ function ProjectSidebarRegion({
 
   return (
     <div
+      data-codey-workspace-sidebar=""
       className={`fixed inset-0 z-50 flex transition-all duration-150 ease-out ${
         sidebarOpen ? 'visible opacity-100' : 'invisible opacity-0'
       }`}
