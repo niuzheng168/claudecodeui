@@ -24,6 +24,8 @@ import {
 } from "@/shared/ui";
 import ModelGroupList, { type ModelGroup } from "@/modules/chat/composer/ModelGroupList";
 import ModelLibraryPanel from "@/modules/chat/modals/ModelLibraryPanel";
+import WorkbenchDirectoryPicker from "@/modules/chat/transcript/WorkbenchDirectoryPicker";
+import { tokenSearchFilter } from "@/modules/chat/utils/commandSearch";
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { getEnabledProviders, isCodeyManagedDeployment } from '@/shared/utils';
 
@@ -39,17 +41,6 @@ const enabledProviderMeta = PROVIDER_META.filter(({ id }) => enabledProviderIds.
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
-
-// cmdk's default filter is fuzzy (loose character-subsequence scoring), which
-// surfaces unrelated models — e.g. searching "chatgpt" also matched "Fable".
-// Require every whitespace-separated search token to appear as a literal
-// substring instead, so "claude 4.5" still matches "Anthropic Claude Haiku 4.5"
-// but "chatgpt" only matches models that actually contain it.
-function modelSearchFilter(value: string, search: string): number {
-  const haystack = value.toLowerCase();
-  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
-  return tokens.every((token) => haystack.includes(token)) ? 1 : 0;
-}
 
 type ProviderSelectionEmptyStateProps = {
   selectedSession: ProjectSession | null;
@@ -272,7 +263,7 @@ export default function ProviderSelectionEmptyState({
                   </Button>
                 )}
               </div>
-              <Command filter={modelSearchFilter}>
+              <Command filter={tokenSearchFilter}>
                 <CommandInput
                   value={modelSearch}
                   onValueChange={setModelSearch}
@@ -301,6 +292,8 @@ export default function ProviderSelectionEmptyState({
               </Command>
             </DialogContent>
           </Dialog>
+
+          <WorkbenchDirectoryPicker />
 
           {!codeyManaged && (
             <Dialog

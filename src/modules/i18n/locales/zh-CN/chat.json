@@ -306,6 +306,13 @@
     "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜索会话、文件和提交",
     "chooseModelDescriptionCustomOnly": "{{providers, list}} 仅列出您的模型"
   },
+  "workbenchDirectory": {
+    "choose": "选择新会话的目录",
+    "description": "新会话在哪台机器、哪个目录里开始",
+    "search": "搜索机器或目录…",
+    "noneFound": "没有匹配的目录",
+    "unavailable": "不可用"
+  },
   "session": {
     "continue": {
       "title": "继续您的对话",

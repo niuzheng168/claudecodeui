@@ -355,6 +355,13 @@
     "loadingModels": "Loading models…",
     "clickToChange": "Click to change model"
   },
+  "workbenchDirectory": {
+    "choose": "Choose a directory",
+    "description": "The machine and folder the new session starts in",
+    "search": "Search machines and folders...",
+    "noneFound": "No folders found.",
+    "unavailable": "Unavailable"
+  },
   "session": {
     "continue": {
       "title": "Continue your conversation",
