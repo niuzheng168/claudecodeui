@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, Edit2, GitBranch, Link, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
-import { cn } from '@/shared/utils';
+import { cn, copyTextToClipboard, getCodeySessionAddress } from '@/shared/utils';
 import type { LLMProvider } from '@/shared/types';
 import { useSessionForkingProviders } from '@/shared/hooks/useProviderCapabilities';
 import { useProviderSessionIdCopy } from '@/modules/sidebar/hooks/useProviderSessionIdCopy';
@@ -66,6 +66,14 @@ export default function SessionOptions({
   const providerLabel = PROVIDER_LABELS[provider];
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
     useProviderSessionIdCopy(sessionId, providerLabel);
+  // What an agent in another session passes to Codey's send_message tool.
+  const codeyAddress = getCodeySessionAddress(sessionId);
+  const [codeyCopy, setCodeyCopy] = useState<'idle' | 'copied' | 'error'>('idle');
+  // Stable like setOptionsOpen: ActionMenu's document listeners depend on it.
+  const onOptionsOpenChange = useCallback((open: boolean) => {
+    setCodeyCopy('idle');
+    setOptionsOpen(open);
+  }, [setOptionsOpen]);
 
   // Read from the backend capability matrix rather than branching on the
   // provider id here; the request is cached module-side, so every row shares one.
@@ -149,7 +157,7 @@ export default function SessionOptions({
           portal
           variant="ghost"
           size="icon"
-          onOpenChange={setOptionsOpen}
+          onOpenChange={onOptionsOpenChange}
           triggerClassName="h-7 w-7 text-muted-foreground opacity-70 hover:bg-muted hover:opacity-100"
           menuClassName="w-[260px] rounded-xl p-1.5 shadow-xl"
           header={(
@@ -176,6 +184,16 @@ export default function SessionOptions({
               closeOnSelect: false,
               onSelect: handleCopyAction,
             },
+            ...(codeyAddress ? [{
+              key: 'copy-codey',
+              label: codeyCopy === 'copied' ? 'Copied Codey session ID' : 'Copy Codey session ID',
+              description: codeyCopy === 'error' ? 'Could not copy. Click to try again.' : codeyAddress,
+              icon: codeyCopy === 'copied' ? Check : Link,
+              closeOnSelect: false,
+              onSelect: () => {
+                void copyTextToClipboard(codeyAddress).then((copied) => setCodeyCopy(copied ? 'copied' : 'error'));
+              },
+            }] : []),
             ...(canFork && onFork ? [{
               key: 'fork',
               label: 'Fork session',

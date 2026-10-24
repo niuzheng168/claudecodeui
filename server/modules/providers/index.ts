@@ -17,3 +17,11 @@ export { sessionsService } from './services/sessions.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+// Session messages: the default permission mode of a turn they start, and the
+// Claude Desktop or terminal process that holds a Claude session open.
+export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
+export {
+  findForeignSessionProcess,
+  readLastPermissionMode,
+} from './list/claude/claude-session-owner.service.js';

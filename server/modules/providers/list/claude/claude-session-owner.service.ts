@@ -18,6 +18,9 @@ const MAX_PROJECT_FOLDER_LENGTH = 200;
 type ForeignSessionProcess = {
   pid: number;
   entrypoint: string;
+  /** Where the process takes messages from other sessions; absent before Claude Code 2.1.2xx. */
+  messagingSocketPath: string | null;
+  cwd: string | null;
 };
 
 const claudeHome = (): string => path.join(os.homedir(), '.claude');
@@ -94,32 +97,29 @@ export async function findForeignSessionProcess(providerSessionId: string): Prom
       continue;
     }
     if (isRunning(pid) && !(await isReusedPid(pid, record.procStart))) {
-      return { pid, entrypoint };
+      return {
+        pid,
+        entrypoint,
+        messagingSocketPath: typeof record.messagingSocketPath === 'string' && record.messagingSocketPath
+          ? record.messagingSocketPath : null,
+        cwd: typeof record.cwd === 'string' && record.cwd ? record.cwd : null,
+      };
     }
   }
   return null;
 }
 
 /**
- * Whether the session's latest turn was written by a process outside Codey,
- * judged from the `entrypoint` of the transcript's last row that has one.
- * A resident Codey process that sat idle meanwhile holds a stale copy of the
- * conversation, and continuing in it would fork the transcript.
- *
- * Used by the Claude runtime (claude-runtime.provider.js) before it hands a
- * turn to a resident process.
- * @param providerSessionId - Claude Code's session id
- * @param cwd - Working directory the session runs in; locates its transcript
- * @returns False when the transcript cannot be found or read, which keeps the
- *   resident process
+ * The last rows of a session's transcript, newest last, or null when it
+ * cannot be found or read. A first line cut by the tail window is dropped.
  */
-export async function isTranscriptContinuedElsewhere(providerSessionId: string, cwd: string | undefined): Promise<boolean> {
+async function readTranscriptTail(providerSessionId: string, cwd: string | undefined | null): Promise<Record<string, unknown>[] | null> {
   if (!cwd) {
-    return false;
+    return null;
   }
   const folder = cwd.replace(/[^a-zA-Z0-9]/g, '-');
   if (folder.length > MAX_PROJECT_FOLDER_LENGTH) {
-    return false;
+    return null;
   }
 
   let tail: string;
@@ -137,21 +137,62 @@ export async function isTranscriptContinuedElsewhere(providerSessionId: string, 
       await file.close();
     }
   } catch {
-    return false;
+    return null;
   }
 
+  const rows: Record<string, unknown>[] = [];
   const lines = tail.split('\n');
-  for (let index = lines.length - 1; index >= (partialFirstLine ? 1 : 0); index -= 1) {
-    let row: Record<string, unknown>;
+  for (let index = partialFirstLine ? 1 : 0; index < lines.length; index += 1) {
     try {
-      row = JSON.parse(lines[index]);
+      const row = JSON.parse(lines[index]);
+      if (row && typeof row === 'object' && !Array.isArray(row)) rows.push(row);
     } catch {
-      continue;
+      // A line still being written, or not JSON.
     }
+  }
+  return rows;
+}
+
+/**
+ * Whether the session's latest turn was written by a process outside Codey,
+ * judged from the `entrypoint` of the transcript's last row that has one.
+ * A resident Codey process that sat idle meanwhile holds a stale copy of the
+ * conversation, and continuing in it would fork the transcript.
+ *
+ * Used by the Claude runtime (claude-runtime.provider.js) before it hands a
+ * turn to a resident process.
+ * @param providerSessionId - Claude Code's session id
+ * @param cwd - Working directory the session runs in; locates its transcript
+ * @returns False when the transcript cannot be found or read, which keeps the
+ *   resident process
+ */
+export async function isTranscriptContinuedElsewhere(providerSessionId: string, cwd: string | undefined): Promise<boolean> {
+  const rows = await readTranscriptTail(providerSessionId, cwd);
+  for (let index = (rows?.length ?? 0) - 1; index >= 0; index -= 1) {
     // Metadata rows (titles, last prompt, mode) carry no entrypoint.
-    if (typeof row?.entrypoint === 'string') {
-      return row.entrypoint !== CODEY_CLAUDE_ENTRYPOINT;
+    const entrypoint = rows![index].entrypoint;
+    if (typeof entrypoint === 'string') {
+      return entrypoint !== CODEY_CLAUDE_ENTRYPOINT;
     }
   }
   return false;
+}
+
+/**
+ * The permission mode the session's latest prompt ran in, as Claude Code
+ * records it on each prompt row; null when the transcript does not say.
+ *
+ * Used by session messages (session-message-delivery.service.ts): a process
+ * holds a message from another session for its user's approval when the
+ * mode the sender declares does not match its own.
+ */
+export async function readLastPermissionMode(providerSessionId: string, cwd: string | null): Promise<string | null> {
+  const rows = await readTranscriptTail(providerSessionId, cwd);
+  for (let index = (rows?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const mode = rows![index].permissionMode;
+    if (typeof mode === 'string' && mode) {
+      return mode;
+    }
+  }
+  return null;
 }

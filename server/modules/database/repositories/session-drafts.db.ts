@@ -155,6 +155,29 @@ export const sessionDraftsDb = {
     })();
   },
 
+  /**
+   * Adds a turn to the end of a session's queue without touching the text the
+   * user is typing. Used by session messages (session-message-delivery.service.ts),
+   * which arrive from another session while this one is busy; a message whose
+   * id is already queued is not added twice.
+   */
+  appendQueuedMessage(userId: number, scope: string, message: { id: string } & Record<string, unknown>): void {
+    const db = getConnection();
+    db.transaction(() => {
+      const row = db.prepare('SELECT queued_message FROM session_drafts WHERE user_id = ? AND draft_scope = ?')
+        .get(userId, scope) as { queued_message: string | null } | undefined;
+      const entries = queueEntries(row?.queued_message ?? null);
+      if (entries.some(value => (value as { id?: unknown })?.id === message.id)) return;
+      entries.push(message);
+      db.prepare(
+        `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
+         VALUES (?, ?, '', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, draft_scope) DO UPDATE SET
+           queued_message = excluded.queued_message, updated_at = CURRENT_TIMESTAMP`,
+      ).run(userId, scope, JSON.stringify(entries));
+    })();
+  },
+
   /** Restores a refused claim without replacing a newer queue, even if an empty draft row was cleaned up. */
   restoreQueuedMessage(candidate: QueuedSessionMessageRecord): boolean {
     if (candidate.queueIndex !== undefined) {

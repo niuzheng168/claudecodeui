@@ -514,6 +514,16 @@ export const getWorkspacePageTitle = (): string | null => {
 };
 
 /**
+ * The Codey ID of a session on this machine, `codey://<node>/<session>`: what
+ * an agent in any of the owner's sessions passes to the Codey `send_message`
+ * tool to reach this one. Null outside a Codey-enrolled machine.
+ */
+export const getCodeySessionAddress = (sessionId: string): string | null => {
+  const nodeId = getDeploymentBasePath().match(/^\/cloudcli\/(n-[a-f0-9]{24})\/$/)?.[1];
+  return nodeId && sessionId ? `codey://${nodeId}/${sessionId}` : null;
+};
+
+/**
  * Main, sidebar and completion notifications keep the authorized machine name
  * first in the tab title. Older portals fall back to the routed node ID;
  * standalone CloudCLI retains its session/project titles.
