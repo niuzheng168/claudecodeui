@@ -15,6 +15,8 @@ type SessionSummary = {
   summary: string;
   messageCount: number;
   lastActivity: string;
+  /** When the session started; the Codey Workbench files new sessions into projects by it. */
+  createdAt?: string;
 };
 
 type SessionRepositoryRow = {
@@ -128,6 +130,7 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     summary: row.custom_name || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    ...(row.created_at ? { createdAt: row.created_at } : {}),
   };
 }
 
