@@ -1073,6 +1073,28 @@ export function useProjectsState({
     [isMobile, navigate],
   );
 
+  // `/?project=<projectId>` opens a new session in that project, as the
+  // sidebar's "New Session" does. The Codey Workbench links here: it lists the
+  // sessions itself and hides this sidebar. Read once, when the page opens.
+  const requestedProjectIdRef = useRef(new URLSearchParams(window.location.search).get('project'));
+  useEffect(() => {
+    const requestedProjectId = requestedProjectIdRef.current;
+    if (!requestedProjectId || isLoadingProjects) {
+      return;
+    }
+    requestedProjectIdRef.current = null;
+    if (sessionId) {
+      return;
+    }
+
+    const project = projects.find((candidate) => candidate.projectId === requestedProjectId);
+    if (project) {
+      handleNewSession(project);
+    } else {
+      navigate('/', { replace: true });
+    }
+  }, [handleNewSession, isLoadingProjects, navigate, projects, sessionId]);
+
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {
       clearSessionAttention(sessionIdToDelete);
