@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 
 /**
  * The Codey Workbench embeds this app in same-origin frames and lists the
@@ -11,6 +11,13 @@ import { useSyncExternalStore } from 'react';
  * `data-codey-workbench-directories` on <html> tells the Workbench this build
  * shows the directories itself. Builds without it get the Workbench's own bar
  * above the frame instead.
+ *
+ * The Workbench also switches an open frame to another session of its machine
+ * by asking it to, so the app is not loaded again and only the conversation
+ * changes. `data-codey-workbench-navigation` says this build does that; the
+ * Workbench opens a new frame for builds without it. `data-codey-workbench-ready`
+ * is there while the workspace is drawn, past its loading screen: a frame that
+ * is still loading stays out of sight until then.
  */
 
 export type WorkbenchDirectory = {
@@ -32,10 +39,15 @@ export type WorkbenchDirectories = {
 
 export const WORKBENCH_DIRECTORIES_MESSAGE = 'codey-workbench:new-session-directories';
 export const WORKBENCH_CHOOSE_DIRECTORY_MESSAGE = 'codey-workbench:choose-new-session-directory';
+export const WORKBENCH_OPEN_SESSION_MESSAGE = 'codey-workbench:open-session';
 const PAGE_MARK = 'codeyWorkbenchDirectories';
+const NAVIGATION_MARK = 'codeyWorkbenchNavigation';
+const READY_MARK = 'codeyWorkbenchReady';
 
 let current: WorkbenchDirectories | null = null;
 const listeners = new Set<() => void>();
+const openSessionListeners = new Set<(sessionId: string) => void>();
+let readyHolders = 0;
 
 function readDirectory(value: unknown): WorkbenchDirectory | null {
   if (!value || typeof value !== 'object') return null;
@@ -64,7 +76,13 @@ function handleMessage(event: MessageEvent): void {
   // Only the page that embeds this one, on this origin, says where sessions may start.
   if (event.source !== window.parent || event.origin !== window.location.origin) return;
   const data = event.data as Record<string, unknown> | null;
-  if (!data || typeof data !== 'object' || data.type !== WORKBENCH_DIRECTORIES_MESSAGE) return;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === WORKBENCH_OPEN_SESSION_MESSAGE) {
+    const { sessionId } = data;
+    if (typeof sessionId === 'string' && sessionId) openSessionListeners.forEach((listener) => listener(sessionId));
+    return;
+  }
+  if (data.type !== WORKBENCH_DIRECTORIES_MESSAGE) return;
   current = readDirectories(data);
   listeners.forEach((listener) => listener());
 }
@@ -72,7 +90,32 @@ function handleMessage(event: MessageEvent): void {
 if (typeof window !== 'undefined') {
   window.addEventListener('message', handleMessage);
   // Set while the bundle loads, so the Workbench can tell by the frame's `load` event.
-  if (window.parent !== window) document.documentElement.dataset[PAGE_MARK] = '';
+  if (window.parent !== window) {
+    document.documentElement.dataset[PAGE_MARK] = '';
+    document.documentElement.dataset[NAVIGATION_MARK] = '';
+  }
+}
+
+/**
+ * Calls `listener` with each session the Workbench asks this frame to open.
+ * The workspace shell navigates to it, as its own sidebar does.
+ */
+export function onWorkbenchOpenSession(listener: (sessionId: string) => void): () => void {
+  openSessionListeners.add(listener);
+  return () => openSessionListeners.delete(listener);
+}
+
+/** Marks the page ready for the Workbench while the calling component, the drawn workspace, is mounted. */
+export function useWorkbenchPageReady(): void {
+  useEffect(() => {
+    if (window.parent === window) return undefined;
+    readyHolders += 1;
+    document.documentElement.dataset[READY_MARK] = '';
+    return () => {
+      readyHolders -= 1;
+      if (!readyHolders) delete document.documentElement.dataset[READY_MARK];
+    };
+  }, []);
 }
 
 function subscribe(listener: () => void): () => void {

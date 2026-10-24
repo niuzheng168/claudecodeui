@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 
 import { usePaletteOpsRegister } from '@/modules/command-palette';
+import { onWorkbenchOpenSession } from '@/shared/codeyWorkbench';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { useProjectEffectsState } from '@/modules/project-workspace/context/ProjectsStateContext';
 import type { LLMProvider, ProjectWorkspaceShellProps } from '@/shared/types';
 
-/** Headless controller rendered by ProjectWorkspaceShell to register palette operations and handle service-worker navigation messages. */
+/** Headless controller rendered by ProjectWorkspaceShell to register palette operations and handle service-worker and Workbench navigation messages. */
 export default function ProjectEffects({
   navigate,
 }: Pick<ProjectWorkspaceShellProps, 'navigate'>) {
@@ -54,6 +55,12 @@ export default function ProjectEffects({
       navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
     };
   }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen]);
+
+  // The Codey Workbench lists the sessions itself and switches this frame between them.
+  useEffect(() => onWorkbenchOpenSession((sessionId) => {
+    setActiveTab('chat');
+    navigate(`/session/${encodeURIComponent(sessionId)}`);
+  }), [navigate, setActiveTab]);
 
   return null;
 }

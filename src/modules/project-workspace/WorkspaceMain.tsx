@@ -15,6 +15,7 @@ import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
+import { useWorkbenchPageReady } from '@/shared/codeyWorkbench';
 
 type WorkspaceMainProps = {
   selectedProject: Project | null;
@@ -38,6 +39,12 @@ type WorkspaceMainProps = {
   /** Persists a new title for a session; resolves false when the backend refuses it. Used by the header's inline rename. */
   onRenameSession: (sessionId: string, summary: string) => Promise<boolean>;
 };
+
+/** Tells the Codey Workbench the workspace is drawn, past its loading screen, so a frame it kept out of sight can be shown. */
+function WorkbenchReadyMark() {
+  useWorkbenchPageReady();
+  return null;
+}
 
 /** Rendered by ProjectMainRegion to show the selected project's active tab: chat, files, shell, git, tasks, browser or a plugin. */
 function WorkspaceMain({
@@ -138,11 +145,17 @@ function WorkspaceMain({
   }
 
   if (!selectedProject) {
-    return <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return (
+      <>
+        <WorkbenchReadyMark />
+        <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />
+      </>
+    );
   }
 
   return (
     <div className="flex h-full flex-col">
+      <WorkbenchReadyMark />
       <WorkspaceHeader
         activeTab={activeTab}
         setActiveTab={setActiveTab}
