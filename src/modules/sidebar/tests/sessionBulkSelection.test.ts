@@ -128,6 +128,13 @@ const renderSessions = (overrides: ListOverrides = {}) =>
 const buttonWithText = (container: HTMLElement, text: string): HTMLButtonElement | null =>
   [...container.querySelectorAll('button')].find((button) => button.textContent?.trim() === text) ?? null;
 
+// The Select toggle is an icon at the end of the "New Session" row, named by its label.
+const selectToggle = (container: HTMLElement): HTMLButtonElement | null =>
+  container.querySelector<HTMLButtonElement>('button[aria-label="sessions.select"]');
+
+const newSessionRow = (container: HTMLElement): HTMLElement | null =>
+  buttonWithText(container, 'sessions.newSession')?.parentElement ?? null;
+
 const checkboxes = (container: HTMLElement): HTMLElement[] =>
   [...container.querySelectorAll<HTMLElement>('[role="checkbox"]')];
 
@@ -157,8 +164,10 @@ test('the idle list offers Select and opens an empty selection with it', () => {
   assert.equal(checkboxes(container).length, 0, 'no row acts as a checkbox before selecting');
   assert.equal(recordedOptionsProps.length, SESSIONS.length, 'every row still has its options menu');
 
-  const selectButton = buttonWithText(container, 'sessions.select');
+  const selectButton = selectToggle(container);
   assert.ok(selectButton, 'the idle list offers to start selecting');
+  assert.equal(selectButton.parentElement, newSessionRow(container), 'Select shares the "New Session" row');
+  assert.equal(selectButton.getAttribute('aria-pressed'), 'false');
 
   fireEvent.click(selectButton);
   const selection = onSetSessionSelection.mock.calls[0][0] as SidebarSessionSelection;
@@ -169,11 +178,12 @@ test('the idle list offers Select and opens an empty selection with it', () => {
 test('a list whose every session is running has nothing to offer Select for', () => {
   const { container } = renderSessions({ activeSessions: new Set(['s1', 's2', 's3']) });
 
-  assert.equal(buttonWithText(container, 'sessions.select'), null);
+  assert.equal(selectToggle(container), null);
 });
 
 test('selection mode replaces the row options with a checkbox on every row', () => {
-  const { container } = renderSessions({ selectedSessionIds: NO_IDS });
+  const onCancelSessionSelection = vi.fn();
+  const { container } = renderSessions({ selectedSessionIds: NO_IDS, onCancelSessionSelection });
 
   assert.equal(checkboxes(container).length, SESSIONS.length);
   assert.deepEqual(
@@ -181,7 +191,10 @@ test('selection mode replaces the row options with a checkbox on every row', () 
     ['false', 'false', 'false'],
   );
   assert.equal(recordedOptionsProps.length, 0, 'the per-row options menu is hidden while selecting');
-  assert.equal(buttonWithText(container, 'sessions.select'), null);
+  const toggle = selectToggle(container);
+  assert.equal(toggle?.getAttribute('aria-pressed'), 'true', 'the toggle stays on its row, pressed');
+  fireEvent.click(toggle as HTMLButtonElement);
+  assert.equal(onCancelSessionSelection.mock.calls.length, 1, 'pressing it again leaves selection mode');
   assert.ok(buttonWithText(container, 'sessions.selectAll'));
   assert.ok(buttonWithText(container, 'actions.cancel'));
 
@@ -311,6 +324,8 @@ test('the compact layout selects with the same rules and hides its options butto
     activeSessions: new Set(['s3']),
     onToggleSessionSelected,
   });
+
+  assert.equal(selectToggle(container)?.parentElement, newSessionRow(container), 'Select shares the "New Session" row');
 
   const rows = checkboxes(container);
   assert.equal(rows.length, SESSIONS.length);
