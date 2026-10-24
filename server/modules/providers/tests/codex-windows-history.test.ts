@@ -18,6 +18,13 @@ const fakeServer = `
 const fs = require('node:fs');
 const readline = require('node:readline');
 fs.writeFileSync(process.env.CODEY_TEST_READER_PID, String(process.pid));
+fs.appendFileSync(process.env.CODEY_TEST_READER_LOG + '.starts', 'start\\n');
+// Exits before answering anything, as a native process that fails to start does.
+const exits = process.env.CODEY_TEST_READER_BEHAVIOR;
+if (exits === 'exit-always' || (exits === 'exit-once' && !fs.existsSync(process.env.CODEY_TEST_READER_LOG + '.exited'))) {
+  fs.writeFileSync(process.env.CODEY_TEST_READER_LOG + '.exited', '');
+  process.exit(1);
+}
 const reply = (id, result) => console.log(JSON.stringify({id, result}));
 readline.createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line);
@@ -236,6 +243,33 @@ test('every platform displays native history without trusting its partial export
     process.env.CODEY_TEST_READER_BEHAVIOR = 'rpc-error';
     await assert.rejects(provider.fetchHistory(THREAD_ID), historyUnavailable);
   });
+});
+
+test('a native history read whose process exits before answering is read once more, and only once', { concurrency: false }, async () => {
+  await withReaderFixture(async ({ home, log }) => {
+    closeConnection();
+    await initializeDatabase();
+    const state = new Database(path.join(home, 'state_5.sqlite'));
+    state.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, history_mode TEXT);');
+    state.prepare('INSERT INTO threads VALUES (?, ?)').run(THREAD_ID, 'paginated');
+    state.close();
+    sessionsDb.createSession(THREAD_ID, 'codex', home, 'Native session');
+    const starts = async () => (await readFile(`${log}.starts`, 'utf8')).trim().split('\n').length;
+    const provider = new CodexSessionsProvider();
+
+    const history = await provider.fetchHistory(THREAD_ID);
+    assert.ok(history.messages.some(message => message.content === 'Original native reply'));
+    assert.equal(await starts(), 2, 'the first process exited; a second one read the history');
+
+    process.env.CODEY_TEST_READER_BEHAVIOR = 'exit-always';
+    await assert.rejects(provider.fetchHistory(THREAD_ID), { code: 'CODEX_STDIO_DISCONNECTED' });
+    assert.equal(await starts(), 4, 'a runtime that keeps exiting is reported after one more attempt');
+
+    // A failure of the history itself is not the runtime going away: no second attempt.
+    process.env.CODEY_TEST_READER_BEHAVIOR = 'rpc-error';
+    await assert.rejects(provider.fetchHistory(THREAD_ID), historyUnavailable);
+    assert.equal(await starts(), 5);
+  }, 'exit-once');
 });
 
 test('native history without either backend fails closed on every platform', { concurrency: false }, async () => {

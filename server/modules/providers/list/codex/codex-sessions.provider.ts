@@ -49,6 +49,22 @@ const SUBAGENT_LOOKUP_PARENT_LEVELS = 2;
  */
 const MAX_TRANSMITTED_SUBAGENT_ACTIVITIES = 200;
 
+/**
+ * Reading history submits nothing, so a read that failed only because its
+ * runtime went away — the native Codex process exited (seen on Windows when
+ * several start at once), or Codex's state database or a transcript was
+ * briefly locked — is attempted once more on a fresh connection. Anything
+ * else, including a timeout, is reported at once.
+ */
+const HISTORY_READ_ATTEMPTS = 2;
+const HISTORY_RETRY_DELAY_MS = 250;
+
+function isTransientHistoryFailure(error: unknown, runtimeClosed: boolean): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return runtimeClosed || code === 'CODEX_STDIO_DISCONNECTED' || code === 'EBUSY'
+    || (typeof code === 'string' && /^SQLITE_(BUSY|LOCKED)/.test(code));
+}
+
 type CodexHistoryResult = {
   messages: AnyRecord[];
   total?: number;
@@ -2406,90 +2422,100 @@ export class CodexSessionsProvider implements IProviderSessions {
   ): Promise<FetchHistoryResult> {
     const { limit = null, offset = 0 } = options;
 
-    let result: CodexHistoryResult;
+    let result!: CodexHistoryResult;
     let hasNewer: boolean | undefined;
     let pageHasMore: boolean | undefined;
-    try {
-      const session = sessionsDb.getSessionById(sessionId);
-      const providerSessionId = options.providerSessionId ?? session?.provider_session_id ?? sessionId;
-      const mode = await readCodexHistoryMode(providerSessionId);
-      const requiresDaemon = Boolean(mode && mode !== 'legacy');
-      if (!requiresDaemon && session?.jsonl_path) {
-        result = await getCodexSessionMessages(sessionId);
-      } else {
-        const client = await connectCodexNativeClient();
-        if (!client) {
-          if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
-          throw new AppError('This session is stored by Codex app. Connect its local daemon or configure CODEY_CODEX_EXECUTABLE to read the native history.', {
-            code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
-          });
-        }
-        try {
-          if (options.nativePage) {
-            const thread = await codexAppServer.readThreadPage(providerSessionId, client, options.nativePage,
-              item => projectCodexDaemonItem(item, '', '1970-01-01T00:00:00.000Z')
-                .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')));
-            const messages: AnyRecord[] = [];
-            for (const entry of thread.records) {
-              messages.push(...projectCodexDaemonItem(entry.item, '', entry.turnStartedAt, {
-                turnId: entry.turnId, turnStartedAt: entry.turnStartedAt, itemIndex: entry.index,
-                itemId: entry.item.id, cursor: entry.ascCursor, orderScope: entry.orderScope,
-              }).map(raw => ({ ...raw, forkAnchorId: entry.turnId, historyBeforeCursor: entry.descCursor })));
-            }
-            result = { messages };
-            pageHasMore = options.nativePage.direction === 'desc' && thread.more;
-            hasNewer = options.nativePage.direction === 'asc' && thread.more;
-          } else {
-            const thread = await codexAppServer.readThreadSnapshot(providerSessionId, {
-              client, afterPosition: options.afterPosition, maxItems: options.afterPosition ? Math.max(2, limit ?? 20) : undefined,
-              ...(options.afterPosition ? {
-                isVisibleItem: (item: AnyRecord) => projectCodexDaemonItem(item, '', options.afterPosition!.turnStartedAt)
-                  .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')),
-              } : {}),
+    for (let attempt = 1; ; attempt += 1) {
+      let runtimeClosed = false;
+      try {
+        const session = sessionsDb.getSessionById(sessionId);
+        const providerSessionId = options.providerSessionId ?? session?.provider_session_id ?? sessionId;
+        const mode = await readCodexHistoryMode(providerSessionId);
+        const requiresDaemon = Boolean(mode && mode !== 'legacy');
+        if (!requiresDaemon && session?.jsonl_path) {
+          result = await getCodexSessionMessages(sessionId);
+        } else {
+          const client = await connectCodexNativeClient();
+          if (!client) {
+            if (!session && !requiresDaemon) return { messages: [], total: 0, hasMore: false, offset: 0, limit };
+            throw new AppError('This session is stored by Codex app. Connect its local daemon or configure CODEY_CODEX_EXECUTABLE to read the native history.', {
+              code: 'CODEX_DAEMON_REQUIRED', statusCode: 503,
             });
-            hasNewer = thread.hasNewer;
-            if (!thread || !Array.isArray(thread.turns)) {
-              throw new AppError('Codex daemon did not return complete thread history.', {
-                code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
-              });
-            }
-            const messages: AnyRecord[] = [];
-            for (const turn of thread.turns) {
-              const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
-              for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
-                // The existing edit/fork adapter relies on a legacy rollout.
-                // Do not advertise edit anchors for native-only histories.
-                messages.push(...projectCodexDaemonItem(
-                  item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
-                  {
-                    turnId: turn.id, turnStartedAt: timestamp, itemIndex: (turn.itemOffset ?? 0) + itemIndex,
-                    ...(Array.isArray(turn.itemCursors)
-                      ? { itemId: item.id, cursor: turn.itemCursors[itemIndex] } : {}),
-                  },
-                ).map(raw => ({ ...raw, forkAnchorId: turn.id })));
-              }
-            }
-            result = { messages };
           }
-        } catch (error) {
-          if (error instanceof AppError) throw error;
-          throw new AppError(
-            `Cannot read the native Codex history: ${error instanceof Error ? error.message : String(error)}`,
-            { code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502 },
-          );
-        } finally {
-          await client.close();
+          const stopWatching = client.onDisconnect(() => { runtimeClosed = true; });
+          try {
+            if (options.nativePage) {
+              const thread = await codexAppServer.readThreadPage(providerSessionId, client, options.nativePage,
+                item => projectCodexDaemonItem(item, '', '1970-01-01T00:00:00.000Z')
+                  .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')));
+              const messages: AnyRecord[] = [];
+              for (const entry of thread.records) {
+                messages.push(...projectCodexDaemonItem(entry.item, '', entry.turnStartedAt, {
+                  turnId: entry.turnId, turnStartedAt: entry.turnStartedAt, itemIndex: entry.index,
+                  itemId: entry.item.id, cursor: entry.ascCursor, orderScope: entry.orderScope,
+                }).map(raw => ({ ...raw, forkAnchorId: entry.turnId, historyBeforeCursor: entry.descCursor })));
+              }
+              result = { messages };
+              pageHasMore = options.nativePage.direction === 'desc' && thread.more;
+              hasNewer = options.nativePage.direction === 'asc' && thread.more;
+            } else {
+              const thread = await codexAppServer.readThreadSnapshot(providerSessionId, {
+                client, afterPosition: options.afterPosition, maxItems: options.afterPosition ? Math.max(2, limit ?? 20) : undefined,
+                ...(options.afterPosition ? {
+                  isVisibleItem: (item: AnyRecord) => projectCodexDaemonItem(item, '', options.afterPosition!.turnStartedAt)
+                    .some(raw => this.normalizeMessage(raw, sessionId).some(message => message.kind !== 'tool_result')),
+                } : {}),
+              });
+              hasNewer = thread.hasNewer;
+              if (!thread || !Array.isArray(thread.turns)) {
+                throw new AppError('Codex daemon did not return complete thread history.', {
+                  code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502,
+                });
+              }
+              const messages: AnyRecord[] = [];
+              for (const turn of thread.turns) {
+                const timestamp = new Date(Number(turn.startedAt ?? thread.createdAt ?? 0) * 1000).toISOString();
+                for (const [itemIndex, item] of (Array.isArray(turn.items) ? turn.items : []).entries()) {
+                  // The existing edit/fork adapter relies on a legacy rollout.
+                  // Do not advertise edit anchors for native-only histories.
+                  messages.push(...projectCodexDaemonItem(
+                    item, requiresDaemon || !session?.jsonl_path ? '' : turn.id, timestamp,
+                    {
+                      turnId: turn.id, turnStartedAt: timestamp, itemIndex: (turn.itemOffset ?? 0) + itemIndex,
+                      ...(Array.isArray(turn.itemCursors)
+                        ? { itemId: item.id, cursor: turn.itemCursors[itemIndex] } : {}),
+                    },
+                  ).map(raw => ({ ...raw, forkAnchorId: turn.id })));
+                }
+              }
+              result = { messages };
+            }
+          } catch (error) {
+            if (error instanceof AppError) throw error;
+            throw new AppError(
+              `Cannot read the native Codex history: ${error instanceof Error ? error.message : String(error)}`,
+              { code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 502 },
+            );
+          } finally {
+            stopWatching();
+            await client.close();
+          }
         }
+        break;
+      } catch (error) {
+        if (attempt < HISTORY_READ_ATTEMPTS && isTransientHistoryFailure(error, runtimeClosed)) {
+          await new Promise((resolve) => setTimeout(resolve, HISTORY_RETRY_DELAY_MS));
+          continue;
+        }
+        // Includes a broken inherited snapshot (CODEX_HISTORY_SOURCE_*), which
+        // must not masquerade as an empty thread either.
+        if (error instanceof AppError) throw error;
+        // A missing/unreadable transcript or failed connection is not an empty
+        // conversation. Returning [] would cache the failure as successful history.
+        throw new AppError('Cannot read this Codex conversation. Check the node and retry loading its history.', {
+          code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 503,
+        });
       }
-    } catch (error) {
-      // Includes a broken inherited snapshot (CODEX_HISTORY_SOURCE_*), which
-      // must not masquerade as an empty thread either.
-      if (error instanceof AppError) throw error;
-      // A missing/unreadable transcript or failed connection is not an empty
-      // conversation. Returning [] would cache the failure as successful history.
-      throw new AppError('Cannot read this Codex conversation. Check the node and retry loading its history.', {
-        code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 503,
-      });
     }
 
     const normalized: NormalizedMessage[] = [];
