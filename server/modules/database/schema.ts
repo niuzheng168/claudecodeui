@@ -262,6 +262,21 @@ CREATE TABLE IF NOT EXISTS superseded_provider_sessions (
 );
 `;
 
+/**
+ * Session messages the Portal delivered here through `/api/codey/v1/messages`,
+ * by the Portal's message ID. The Portal retries a delivery it could not
+ * confirm; this row is what makes the retry return the first result instead
+ * of starting a second turn. `result` is null while a delivery is under way.
+ */
+export const CODEY_INBOUND_MESSAGES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS codey_inbound_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    result TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -315,4 +330,6 @@ ${USER_PREFERENCES_TABLE_SCHEMA_SQL}
 ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
+
+${CODEY_INBOUND_MESSAGES_TABLE_SCHEMA_SQL}
 `;

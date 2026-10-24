@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import express from 'express';
+
 import { closeConnection, initializeDatabase, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { providerModelsService } from '@/modules/providers/index.js';
+import { createCodeyV1Routes } from '@/modules/session-messages/codey-v1.routes.js';
 import { crossSessionMessage } from '@/modules/session-messages/services/claude-peer-message.service.js';
 import {
   deliverSessionMessage,
@@ -173,4 +178,80 @@ test('a Claude session held by Claude Desktop gets the message on its peer socke
       await new Promise((resolve) => server.close(resolve));
     }
   });
+});
+
+test('another user\'s message says who sent it, whether the owner approved it, and how to answer', () => {
+  const base = { ...input('target'), relation: 'other_user' as const, from: { ...FROM, machine: null, user: 'alice' } };
+  const approved = sessionMessageContent({ ...base, approved: true });
+  assert.match(approved, /^<codey-session-message from="codey:\/\/n-fedcba9876543210fedcba98\/sender-session" user="alice" agent="Codex">\n/);
+  assert.ok(approved.includes('This came from alice, another Codey user, not from your user. Your user reviewed it and approved passing it to you.'));
+  assert.ok(approved.includes(`to="${FROM.address}"`));
+  assert.ok(!approved.includes('zhn-a100'), 'another user\'s machine is not named');
+  assert.ok(sessionMessageContent(base).includes('Your user allows alice to message this session without review.'));
+  assert.ok(sessionMessageContent({ ...base, reply: true }).includes('This came from alice, another Codey user, not from your user. It answers a message this session sent.'));
+  assert.ok(sessionMessageContent({ ...input('target'), from: { address: null, machine: null, provider: null } })
+    .includes('Your user sent this through the Codey API'));
+});
+
+async function withRoutes(runTest: (context: { userId: number; root: string; post: (body: unknown) => Promise<{ status: number; body: any }>; get: (path: string) => Promise<{ status: number; body: any }> }) => Promise<void>, runs: RunCall[]) {
+  await withNode(async ({ userId, root }) => {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as unknown as { user: { id: number } }).user = { id: userId }; next(); });
+    app.use('/api/codey/v1', createCodeyV1Routes({ runtime: runtime(runs), environment: { CODEY_PORTAL_NODE_ID: NODE } }));
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const error = err as { statusCode?: number; code?: string; message?: string };
+      res.status(error.statusCode ?? 500).json({ success: false, error: { code: error.code, message: error.message } });
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/codey/v1`;
+    const parse = async (response: Response) => ({ status: response.status, body: await response.json() });
+    try {
+      await runTest({
+        userId, root,
+        post: async (body) => parse(await fetch(`${base}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })),
+        get: async (path) => parse(await fetch(`${base}${path}`)),
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
+
+test('the Portal\'s node API reports its contract, resolves sessions, and delivers each message once', async () => {
+  const runs: RunCall[] = [];
+  await withRoutes(async ({ root, post, get }) => {
+    sessionsDb.createAppSession('app-1', 'codex', root, 'Review');
+    sessionsDb.assignProviderSessionId('app-1', 'thread-1');
+    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions'] });
+    const session = (await get('/sessions/thread-1')).body.data;
+    assert.equal(session.sessionId, 'app-1');
+    assert.equal(session.providerSessionId, 'thread-1');
+    assert.equal(session.provider, 'codex');
+    assert.equal((await get('/sessions/nope')).status, 404);
+
+    const message = {
+      messageId: 'msg_0123456789abcdef0123456789abcdef', sessionId: 'thread-1', text: 'Please review.',
+      from: { address: FROM.address, user: 'alice', machine: null, provider: 'claude' }, relation: 'other_user', approved: true,
+    };
+    const first = await post(message);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.data.status, 'started');
+    assert.equal(first.body.data.sessionId, 'app-1');
+    assert.equal(first.body.data.providerSessionId, 'thread-1');
+    assert.match(runs[0].command, /user="alice"/);
+    assert.ok(runs[0].command.includes('Your user reviewed it and approved passing it to you.'));
+    const again = await post(message);
+    assert.deepEqual(again.body.data, first.body.data, 'a retried delivery returns the first result');
+    assert.equal(runs.length, 1, 'and starts no second turn');
+
+    const missing = await post({ ...message, messageId: 'msg_1123456789abcdef0123456789abcdef', sessionId: 'nope' });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'SESSION_MESSAGE_NO_SESSION');
+    for (const bad of [{ ...message, messageId: 'x' }, { ...message, text: '' }, { ...message, relation: 'stranger' },
+      { ...message, from: { ...message.from, address: 'nowhere' } }, { ...message, approved: 'yes' }]) {
+      assert.equal((await post(bad)).status, 400, JSON.stringify(bad).slice(0, 80));
+    }
+  }, runs);
 });

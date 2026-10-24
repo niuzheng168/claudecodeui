@@ -50,7 +50,7 @@ import {
     initializeScheduledMessageDispatcher,
     scheduledMessagesRoutes,
 } from './modules/scheduled-messages/index.js';
-import { createSessionMessagesRoutes } from './modules/session-messages/index.js';
+import { createCodeyV1Routes, createSessionMessagesRoutes } from './modules/session-messages/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
@@ -212,6 +212,7 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/codey/session-messages', authenticateToken, createSessionMessagesRoutes({ runtime: providerRuntimeService }));
+app.use('/api/codey/v1', authenticateToken, createCodeyV1Routes({ runtime: providerRuntimeService }));
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
