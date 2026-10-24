@@ -241,7 +241,8 @@ export const api = {
     put(`/api/projects/${projectId}/rename`, { displayName }),
   restoreProject: (projectId: string) =>
     post(`/api/projects/${encodeURIComponent(projectId)}/restore`),
-  // `hardDelete` => server `?force=true` (remove DB row + Claude *.jsonl + sessions rows for path).
+  // `hardDelete` => server `?force=true` (remove DB row + session transcripts + sessions rows for path;
+  // refused with 409 while the project holds native Codex history).
   deleteProject: (projectId: string, hardDelete = false) =>
     del(`/api/projects/${projectId}${query({ force: hardDelete })}`),
   createProject: (projectData: unknown) => post('/api/projects/create-project', projectData),

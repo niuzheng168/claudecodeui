@@ -142,6 +142,33 @@ function resolveProjectDisplayName(
 }
 
 /**
+ * Whether a session's conversation, current or edited away from, is a native
+ * Codex thread. Codex keeps those in its own databases and still reads their
+ * JSONL, so unlinking it would leave the thread behind without its history:
+ * permanent deletion belongs to the Codex app.
+ */
+async function hasNativeCodexThread(session: {
+  session_id: string;
+  provider: string;
+  provider_session_id: string | null;
+}): Promise<boolean> {
+  if (session.provider !== 'codex') {
+    return false;
+  }
+  const threadIds = new Set([
+    ...(session.provider_session_id ? [session.provider_session_id] : []),
+    ...sessionsDb.getSupersededProviderSessionIds(session.session_id, 'codex'),
+  ]);
+  for (const threadId of threadIds) {
+    const mode = await readCodexHistoryMode(threadId);
+    if (mode && mode !== 'legacy') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Application service for provider-backed session message operations.
  *
  * Callers pass a provider id and this service resolves the concrete provider
@@ -712,6 +739,25 @@ export const sessionsService = {
    * row disappears from active lists but remains restorable. Force-delete
    * optionally removes the transcript file before deleting the database row.
    */
+  /**
+   * How many of these sessions hold native Codex history, which only the Codex
+   * app can delete. Projects calls this before removing a project's
+   * transcripts, so it can refuse before anything is gone.
+   */
+  async countNativeCodexSessions(sessions: Array<{
+    session_id: string;
+    provider: string;
+    provider_session_id: string | null;
+  }>): Promise<number> {
+    let count = 0;
+    for (const session of sessions) {
+      if (await hasNativeCodexThread(session)) {
+        count += 1;
+      }
+    }
+    return count;
+  },
+
   async deleteOrArchiveSessionById(
     sessionId: string,
     options: {
@@ -736,14 +782,11 @@ export const sessionsService = {
       };
     }
 
-    if (session.provider === 'codex' && session.provider_session_id && options.deletedFromDisk) {
-      const mode = await readCodexHistoryMode(session.provider_session_id);
-      if (mode && mode !== 'legacy') {
-        throw new AppError('Permanently delete this native session in Codex app. Deleting its JSONL export does not delete its history safely.', {
-          code: 'CODEX_NATIVE_DELETE_UNSUPPORTED',
-          statusCode: 409,
-        });
-      }
+    if (options.deletedFromDisk && await hasNativeCodexThread(session)) {
+      throw new AppError('Permanently delete this native session in Codex app. Deleting its JSONL export does not delete its history safely.', {
+        code: 'CODEX_NATIVE_DELETE_UNSUPPORTED',
+        statusCode: 409,
+      });
     }
 
     let removedFromDisk = false;

@@ -421,6 +421,22 @@ export const sessionsDb = {
   },
 
   /**
+   * The provider conversations one session has left behind, for the caller
+   * that must know whose transcripts it would delete with it.
+   */
+  getSupersededProviderSessionIds(sessionId: string, provider: string): string[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT provider_session_id FROM superseded_provider_sessions
+         WHERE session_id = ? AND provider = ?`
+      )
+      .all(sessionId, provider) as Array<{ provider_session_id: string }>;
+
+    return rows.map((row) => row.provider_session_id);
+  },
+
+  /**
    * Forgets what a session left behind, once the session itself is gone.
    *
    * Without this the record outlives the row it was written for and keeps the

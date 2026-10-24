@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { sessionsService } from '@/modules/providers/index.js';
 import { AppError } from '@/shared/utils.js';
 
 function uniqueJsonlPathsFromSessions(
@@ -40,9 +41,21 @@ async function unlinkJsonlIfExists(filePath: string): Promise<void> {
 
 /**
  * Loads all session rows for the project path and removes each distinct `jsonl_path` file on disk.
+ *
+ * Refuses, before removing anything, when a session holds native Codex history:
+ * the Codex app still reads those transcripts, as the single-session delete
+ * already enforces.
  */
 export async function deleteSessionJsonlFilesForProjectPath(projectPath: string): Promise<void> {
   const sessions = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath);
+  const nativeCodexSessions = await sessionsService.countNativeCodexSessions(sessions);
+  if (nativeCodexSessions > 0) {
+    throw new AppError(
+      `This project has ${nativeCodexSessions} Codex ${nativeCodexSessions === 1 ? 'session' : 'sessions'} whose history the Codex app keeps. ` +
+        'Delete them permanently in Codex app first, or remove the project without deleting its data.',
+      { code: 'CODEX_NATIVE_DELETE_UNSUPPORTED', statusCode: 409 },
+    );
+  }
   // Including the transcripts a session has left behind: editing a message on
   // a provider that rewinds by branching moves the session onto a copy, and
   // the row stops pointing at the file the replaced turns are still in.
@@ -65,7 +78,8 @@ export async function deleteSessionJsonlFilesForProjectPath(projectPath: string)
 /**
  * - **Soft delete** (`force` false): set `isArchived` on the `projects` row (hide from the active list; DB only).
  * - **Force** (`force` true): for each session row for that `project_path`, delete the file at `jsonl_path`
- *   (when set), then remove session rows and the `projects` row.
+ *   (when set), then remove session rows and the `projects` row. A project holding native Codex
+ *   history is refused with 409 and left unchanged.
  */
 export async function deleteOrArchiveProject(projectId: string, force: boolean): Promise<void> {
   const row = projectsDb.getProjectById(projectId);

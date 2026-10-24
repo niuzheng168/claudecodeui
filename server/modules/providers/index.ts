@@ -11,7 +11,8 @@ export { codexCommandsService } from './services/codex-commands.service.js';
 export { claudeNativeCommandsService } from './list/claude/claude-commands.provider.js';
 
 // sessionsService: used by the websocket module's chat gateway to resolve an
-// edited message's resume point, which only the providers module can read.
+// edited message's resume point, which only the providers module can read, and
+// by Projects to keep a permanent delete away from native Codex history.
 export { sessionsService } from './services/sessions.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
