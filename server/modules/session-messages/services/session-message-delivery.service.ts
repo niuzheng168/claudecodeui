@@ -2,6 +2,7 @@ import { sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import {
   findForeignSessionProcess,
   providerCapabilitiesService,
+  providerModelsService,
   readLastPermissionMode,
 } from '@/modules/providers/index.js';
 import {
@@ -87,25 +88,34 @@ function findSession(sessionId: string) {
   return sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
 }
 
-/** The options a turn this message starts runs with; the session's own model and effort apply. */
-function turnOptions(provider: string): Record<string, unknown> {
+/**
+ * The options a turn this message starts runs with: the model and effort the
+ * composer would send for this session, including one Codey never ran (a
+ * managed node only runs a model it can name).
+ */
+async function turnOptions(provider: LLMProvider, sessionId: string): Promise<Record<string, unknown>> {
+  const options: Record<string, unknown> = {};
+  try {
+    const selection = await providerModelsService.resolveSessionModel(provider, { sessionId });
+    if (selection.model) options.model = selection.model;
+    if (selection.effort) options.effort = selection.effort;
+  } catch {
+    // The runtime reports a model it cannot run when the turn starts.
+  }
   // A Claude turn left on `default` stalls on its first tool call when nobody
   // is watching; the managed default is what the composer would send.
-  // Codex inherits the thread's own settings when none are given.
   if (provider === 'claude') {
-    return { permissionMode: providerCapabilitiesService.getProviderCapabilities('claude').defaultPermissionMode };
+    options.permissionMode = providerCapabilitiesService.getProviderCapabilities('claude').defaultPermissionMode;
   }
-  return {};
+  return options;
 }
 
 function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): boolean {
   return chatRunRegistry.isProcessing(sessionId) || runtime.hasBackgroundWork?.(sessionId) === true;
 }
 
-function queueMessage(userId: number, sessionId: string, input: SessionMessageInput, content: string, provider: string): void {
-  sessionDraftsDb.appendQueuedMessage(userId, sessionId, {
-    id: input.messageId, content, options: turnOptions(provider), attachments: [],
-  });
+function queueMessage(userId: number, sessionId: string, input: SessionMessageInput, content: string, options: Record<string, unknown>): void {
+  sessionDraftsDb.appendQueuedMessage(userId, sessionId, { id: input.messageId, content, options, attachments: [] });
 }
 
 /** Errors a run reported before it got going, or null while it runs or once it finished cleanly. */
@@ -171,21 +181,22 @@ export async function deliverSessionMessage(
   }
 
   const content = sessionMessageContent(input);
+  const options = await turnOptions(provider, sessionId);
   if (isSessionBusy(sessionId, runtime)) {
-    queueMessage(userId, sessionId, input, content, provider);
+    queueMessage(userId, sessionId, input, content, options);
     return { ...result, status: 'queued' };
   }
 
   const startedAt = Date.now();
   const outcome: { refused: string | null } = { refused: null };
-  const run = runDetachedChatTurn({ sessionId, userId, content, options: turnOptions(provider) }, { runtime })
+  const run = runDetachedChatTurn({ sessionId, userId, content, options }, { runtime })
     .then((value) => { if (!value.started) outcome.refused = value.error; })
     .catch((error: unknown) => { outcome.refused = error instanceof Error ? error.message : String(error); });
   // A refusal is settled synchronously enough to be seen right away; only a
   // started run is left to finish on its own.
   await Promise.race([run, new Promise((resolve) => setTimeout(resolve, START_POLL_MS))]);
   if (outcome.refused === 'A run was already in progress for this session.') {
-    queueMessage(userId, sessionId, input, content, provider);
+    queueMessage(userId, sessionId, input, content, options);
     return { ...result, status: 'queued' };
   }
   if (outcome.refused) {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { providerModelsService } from '@/modules/providers/index.js';
 import { crossSessionMessage } from '@/modules/session-messages/services/claude-peer-message.service.js';
 import {
   deliverSessionMessage,
@@ -86,12 +87,14 @@ test('the wrapper for a Claude process is the canonical one its own SendMessage 
 test('an idle session starts a turn with the message; a busy one queues it', async () => {
   await withNode(async ({ userId, root }) => {
     sessionsDb.createAppSession('idle', 'claude', root, 'Idle');
+    providerModelsService.setSessionModel('claude', 'idle', 'claude-opus-5.5');
     const runs: RunCall[] = [];
     const started = await deliverSessionMessage(input('idle'), { userId, runtime: runtime(runs), nodeId: NODE });
     assert.equal(started.status, 'started');
     assert.equal(runs.length, 1);
     assert.equal(runs[0].command, sessionMessageContent(input('idle')));
     assert.equal(runs[0].options.permissionMode !== undefined, true, 'a Claude turn gets the managed default mode');
+    assert.equal(runs[0].options.model, 'claude-opus-5.5', 'the model the composer would send');
 
     sessionsDb.createAppSession('busy', 'codex', root, 'Busy');
     chatRunRegistry.startRun({ appSessionId: 'busy', provider: 'codex', providerSessionId: null, connection: null, userId });
