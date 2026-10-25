@@ -191,7 +191,7 @@ throws is answered with `INTERNAL_ERROR`.**
 
 All six are built in exactly three client files: the composer builds sends, aborts and
 permission answers (`useChatComposerState.ts:825-837`, `:1121-1124`, `:1149-1156`),
-`chat.stop-task` is built by the background-tasks strip's ✕ (`BackgroundTasksStrip.tsx`), and
+`chat.stop-task` is built by the background-tasks strip's Stop (`BackgroundTasksStrip.tsx`), and
 `chat.subscribe` is built in `useChatSessionState.ts:668-674` and
 `ChatInterface.tsx:267-273`.
 
@@ -240,7 +240,7 @@ Every code that exists, with the line that emits it:
 | `EDIT_REWIND_FAILED` | `:400` | The rewind itself failed; the run is ended too |
 | `NO_ACTIVE_RUN` | `:428` | `chat.abort` for a session with nothing running |
 | `TASK_ID_REQUIRED` | | `chat.stop-task` without a task id |
-| `NO_SUCH_TASK` | | `chat.stop-task` for a task the runtime is not tracking (already settled, or never this session's) |
+| `NO_SUCH_TASK` | | `chat.stop-task` for a task the runtime is not tracking (already settled, or never this session's). The frame names the `taskId`; the client stops listing that task as running (`backgroundTaskStops.ts`) instead of adding an error to the conversation |
 | `UNKNOWN_MESSAGE_TYPE` | `:620` | Unrecognised `type` |
 | `INTERNAL_ERROR` | `:626` | Anything thrown out of a handler |
 

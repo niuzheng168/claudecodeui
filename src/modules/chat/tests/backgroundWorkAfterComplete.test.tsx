@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 
 import { renderHook } from '@testing-library/react';
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
+import { readBackgroundTaskStops, recordTaskStopRequest, resetBackgroundTaskStops } from '@/modules/chat/utils/backgroundTaskStops';
 import type { BackgroundTaskSummary, NormalizedMessage, ProjectSession, ServerEvent, SessionActivity } from '@/shared/types';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
@@ -15,6 +16,8 @@ import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
  * as background work with those tasks, until their notifications empty the
  * set, without waiting for the running-sessions poll.
  */
+
+afterEach(resetBackgroundTaskStops);
 
 type ActivityLog = Array<{ sessionId: string; tasks: BackgroundTaskSummary[] } | { sessionId: string; idle: true }>;
 
@@ -68,7 +71,7 @@ const renderHandlers = () => {
   }));
 
   const dispatch = (event: ServerEvent) => listener?.(event);
-  return { dispatch, log, syncs };
+  return { dispatch, log, syncs, stored };
 };
 
 const event = (fields: Record<string, unknown>): ServerEvent => ({
@@ -194,4 +197,33 @@ test('a refused stop request does not idle the session it was sent on', () => {
   // Any other rejection still means the send never became a run.
   dispatch(event({ kind: 'protocol_error', code: 'SESSION_NOT_FOUND', error: 'gone' }));
   assert.deepEqual(log, [{ sessionId: 'viewed-session', idle: true }]);
+});
+
+test('a task the server says is not running stops being background work, without an error in the conversation', () => {
+  // Its notification went by while the page was disconnected, so the rows
+  // still say running; the refused stop is the page's only word that it ended.
+  const { dispatch, log, stored } = renderHandlers();
+  workflowLaunch().forEach(dispatch);
+  dispatch(event({ kind: 'complete', success: true }));
+  const rowsBefore = stored.length;
+
+  recordTaskStopRequest('viewed-session', 'wxkj4kcvd');
+  dispatch(event({ kind: 'protocol_error', code: 'NO_SUCH_TASK', error: 'no such task', taskId: 'wxkj4kcvd' }));
+
+  assert.ok(readBackgroundTaskStops('viewed-session').ended.has('wxkj4kcvd'));
+  assert.equal(readBackgroundTaskStops('viewed-session').stopping.size, 0);
+  assert.deepEqual(log.at(-1), { sessionId: 'viewed-session', tasks: [] });
+  assert.equal(stored.length, rowsBefore);
+});
+
+test('a refusal from a node that does not name the task answers the oldest stop waiting', () => {
+  const { dispatch } = renderHandlers();
+  recordTaskStopRequest('viewed-session', 'first');
+  recordTaskStopRequest('viewed-session', 'second');
+
+  dispatch(event({ kind: 'protocol_error', code: 'NO_SUCH_TASK', error: 'no such task' }));
+
+  const stops = readBackgroundTaskStops('viewed-session');
+  assert.deepEqual([...stops.ended], ['first']);
+  assert.deepEqual([...stops.stopping], ['second']);
 });

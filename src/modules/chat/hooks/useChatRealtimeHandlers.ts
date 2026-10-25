@@ -7,6 +7,7 @@ import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { collectRunningBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
+import { readBackgroundTaskStops, recordRefusedTaskStop } from '@/modules/chat/utils/backgroundTaskStops';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -113,7 +114,9 @@ export function useChatRealtimeHandlers({
     // store's records are what the transcript's cards fold their live status
     // from, so this reads the same answer they draw.
     const reportRemainingBackgroundWork = (sid: string) => {
-      onSessionBackground?.(sid, collectRunningBackgroundTasks(normalizedToChatMessages(sessionStore.getMessages(sid))));
+      const { ended } = readBackgroundTaskStops(sid);
+      onSessionBackground?.(sid, collectRunningBackgroundTasks(normalizedToChatMessages(sessionStore.getMessages(sid)))
+        .filter((task) => !ended.has(task.taskId)));
     };
 
     const handleEvent = (msg: ServerEvent) => {
@@ -208,6 +211,15 @@ export function useChatRealtimeHandlers({
 
         case 'chat_abort_result':
         case 'protocol_error': {
+          if (sid && msg.kind === 'protocol_error' && msg.code === 'NO_SUCH_TASK') {
+            // The task ended without this page hearing of it; the strip drops
+            // it instead of the conversation gaining an error about it.
+            recordRefusedTaskStop(sid, typeof msg.taskId === 'string' ? msg.taskId : undefined);
+            if (getSessionActivity?.(sid)?.background) {
+              reportRemainingBackgroundWork(sid);
+            }
+            return;
+          }
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —
@@ -217,7 +229,6 @@ export function useChatRealtimeHandlers({
             // here would drop a response in flight on that session.
             if (
               msg.kind !== 'chat_abort_result'
-              && msg.code !== 'NO_SUCH_TASK'
               && msg.code !== 'TASK_ID_REQUIRED'
             ) {
               onSessionIdle?.(sid);

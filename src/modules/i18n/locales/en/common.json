@@ -392,7 +392,11 @@
     "backgroundCommand": "Command",
     "stopTask": "Stop",
     "taskRowNotLoaded": "Launched earlier in this conversation; click to load it",
-    "taskOfAgent": "Launched by one of this session's agents"
+    "taskOfAgent": "Launched by one of this session's agents",
+    "backgroundTaskCount_one": "{{count}} background task",
+    "backgroundTaskCount_other": "{{count}} background tasks",
+    "stoppingTask": "Stopping…",
+    "hideTasks": "Hide"
   },
   "cancel": "Cancel"
 }

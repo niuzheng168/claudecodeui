@@ -136,9 +136,11 @@ function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  details: AnyRecord = {}
 ): void {
   sendJson(ws, {
+    ...details,
     kind: 'protocol_error',
     code,
     error,
@@ -741,11 +743,13 @@ async function handleChatStopTask(
     taskId,
   ) ?? false;
   if (!stopped) {
+    // Names the task so the client can stop listing it as running.
     sendProtocolError(
       ws,
       'NO_SUCH_TASK',
       `Session "${sessionId}" has no running background task "${taskId}".`,
       sessionId,
+      { taskId },
     );
   }
 }

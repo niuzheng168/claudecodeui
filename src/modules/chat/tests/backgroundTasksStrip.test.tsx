@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 
 import '@/modules/i18n';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
+import { recordRefusedTaskStop, resetBackgroundTaskStops } from '@/modules/chat/utils/backgroundTaskStops';
 import { visibleCountToReveal } from '@/modules/chat/hooks/useChatSessionState';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import type { ChatMessage } from '@/shared/types';
@@ -14,6 +15,11 @@ const toolRow = (overrides: Partial<ChatMessage>): ChatMessage => ({
   timestamp: '2026-08-21T10:32:10.000Z',
   isToolUse: true,
   ...overrides,
+});
+
+afterEach(() => {
+  resetBackgroundTaskStops();
+  window.innerWidth = 1024;
 });
 
 describe('the background tasks strip', () => {
@@ -290,6 +296,83 @@ describe('the background tasks strip', () => {
       { type: 'chat.stop-task', sessionId: 'session-1', taskId: 'a1' },
       { type: 'chat.stop-task', sessionId: 'session-1', taskId: 'b5xsbzu5k' },
     ]);
+  });
+});
+
+/** Four agents launched in the background, named by their acknowledgements. */
+const fourAgents = (count = 4) => Array.from({ length: count }, (_, index) => toolRow({
+  toolName: 'Agent',
+  toolId: `toolu_agent_${index + 1}`,
+  subagent: { id: `a${index + 1}`, description: `Spot-check batch ${index + 1}`, status: 'running' },
+  toolResult: { content: '', isError: false, toolUseResult: { isAsync: true, status: 'async_launched', agentId: `a${index + 1}` } },
+}));
+
+describe('the background tasks strip, when a stop is refused', () => {
+  it('drops a task the server says is not running, though its row still says it is', () => {
+    const sendMessage = vi.fn();
+    render(<BackgroundTasksStrip sessionId="session-1" sendMessage={sendMessage} onReveal={() => {}} onLoadAll={() => {}} messages={fourAgents(2)} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Stop' })[0]);
+    // Waiting for the answer: a second click would only ask again.
+    expect((screen.getAllByRole('button', { name: 'Stop' })[0] as HTMLButtonElement).disabled).toBe(true);
+    act(() => recordRefusedTaskStop('session-1', 'a1'));
+
+    expect(screen.queryByText('Spot-check batch 1')).toBeNull();
+    expect(screen.getByText('Spot-check batch 2')).toBeTruthy();
+  });
+});
+
+describe('the background tasks strip on a phone', () => {
+  const renderOnPhone = (messages: ChatMessage[], sendMessage = vi.fn()) => {
+    window.innerWidth = 390;
+    return render(<BackgroundTasksStrip sessionId="session-1" sendMessage={sendMessage} onReveal={() => {}} onLoadAll={() => {}} messages={messages} />);
+  };
+
+  it('is one line saying how many tasks run, which opens the list', () => {
+    const sendMessage = vi.fn();
+    renderOnPhone(fourAgents(), sendMessage);
+
+    const summary = screen.getByRole('button', { name: 'Background tasks' });
+    expect(summary.textContent).toBe('4 background tasks');
+    expect(screen.queryByText('Spot-check batch 1')).toBeNull();
+
+    fireEvent.click(summary);
+    expect(screen.getByRole('dialog').textContent).toContain('Spot-check batch 4');
+    const stops = screen.getAllByRole('button', { name: 'Stop' });
+    expect(stops).toHaveLength(4);
+    fireEvent.click(stops[2]);
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'chat.stop-task', sessionId: 'session-1', taskId: 'a3' });
+    expect(screen.getAllByRole('button', { name: /Stop/ })[2].textContent).toBe('Stopping…');
+  });
+
+  it('names the task when there is only one, and opens its card from the list', () => {
+    const onReveal = vi.fn();
+    window.innerWidth = 390;
+    render(<BackgroundTasksStrip sessionId="session-1" sendMessage={() => {}} onReveal={onReveal} onLoadAll={() => {}} messages={fourAgents(1)} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Background tasks' }));
+    fireEvent.click(screen.getByTitle('Agent · Spot-check batch 1'));
+
+    expect(onReveal).toHaveBeenCalledWith(expect.objectContaining({ toolId: 'toolu_agent_1' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Background tasks' }).textContent).toBe('Agent · Spot-check batch 1');
+  });
+
+  it('closes the list on a tap outside it', () => {
+    renderOnPhone(fourAgents());
+    fireEvent.click(screen.getByRole('button', { name: 'Background tasks' }));
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('hides until another task starts', () => {
+    const { rerender } = renderOnPhone(fourAgents(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Background tasks' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.queryByRole('button', { name: 'Background tasks' })).toBeNull();
+
+    rerender(<BackgroundTasksStrip sessionId="session-1" sendMessage={() => {}} onReveal={() => {}} onLoadAll={() => {}} messages={fourAgents(3)} />);
+    expect(screen.getByRole('button', { name: 'Background tasks' }).textContent).toBe('3 background tasks');
   });
 });
 
