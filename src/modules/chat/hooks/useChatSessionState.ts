@@ -320,10 +320,13 @@ export function useChatSessionState({
     resetStreamingState();
     setCurrentSessionId(null);
     setPendingUserMessage(null);
+    // The session left may still be loading; its result is dropped once it is
+    // no longer the active one, so nothing else would end the loading state.
+    setIsLoadingSessionMessages(false);
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
-    
+
     setTokenBudget(null);
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setAllMessagesLoaded(false);
@@ -886,6 +889,8 @@ export function useChatSessionState({
 
       resetStreamingState();
       setCurrentSessionId(null);
+      // A load still in flight for the session left ends without a word.
+      setIsLoadingSessionMessages(false);
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
       setTotalMessages(0);
