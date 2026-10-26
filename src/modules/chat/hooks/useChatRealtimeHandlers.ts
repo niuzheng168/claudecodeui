@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
-import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage,GetSessionActivity,MarkSessionBackground } from '@/shared/types';
+import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage,GetSessionActivity,MarkSessionBackground,SessionOpenElsewhere } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
@@ -50,6 +50,8 @@ type UseChatRealtimeHandlersArgs = {
   getSessionActivity?: GetSessionActivity;
   requestLatestMessages: (sessionId: string, allowNetwork?: boolean) => Promise<void>;
   sessionStore: SessionStore;
+  /** A Claude turn was refused because `claude` in a terminal has the session open; the composer may offer to take it over. */
+  onSessionOpenElsewhere?: (sessionId: string, holder: SessionOpenElsewhere) => void;
 };
 
 /* ------------------------------------------------------------------ */
@@ -85,6 +87,7 @@ export function useChatRealtimeHandlers({
   getSessionActivity,
   requestLatestMessages,
   sessionStore,
+  onSessionOpenElsewhere,
 }: UseChatRealtimeHandlersArgs) {
   // ChatInterface shares one set between this hook and its sibling; a caller
   // that passes none (a test mounting the hook alone) gets a private one.
@@ -454,6 +457,18 @@ export function useChatRealtimeHandlers({
           break;
         }
 
+        case 'error': {
+          const takeOver = msg.takeOver as Record<string, unknown> | undefined;
+          if (sid && msg.code === 'CLAUDE_SESSION_OPEN_ELSEWHERE' && takeOver?.canTakeOver === true) {
+            onSessionOpenElsewhere?.(sid, {
+              pid: Number(takeOver.pid),
+              entrypoint: String(takeOver.entrypoint ?? ''),
+              messageId: typeof takeOver.messageId === 'string' ? takeOver.messageId : null,
+            });
+          }
+          break;
+        }
+
         // text, tool_use, tool_result, thinking, task_notification
         // → already routed to store above, no UI side effects needed
         default:
@@ -481,5 +496,6 @@ export function useChatRealtimeHandlers({
     getSessionActivity,
     requestLatestMessages,
     sessionStore,
+    onSessionOpenElsewhere,
   ]);
 }

@@ -254,6 +254,9 @@ function ChatInterface({
     steeringMessageId,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
+    takeOverPrompt,
+    askToTakeOverSession,
+    resolveTakeOverPrompt,
     queuedDraft,
     queuedDrafts,
     editQueuedDraft,
@@ -328,6 +331,7 @@ function ChatInterface({
     getSessionActivity,
     requestLatestMessages,
     sessionStore,
+    onSessionOpenElsewhere: askToTakeOverSession,
   });
 
   // Lets other modules (the quick settings Commands tab) hand text to the
@@ -607,6 +611,8 @@ function ChatInterface({
           queuedDrafts={queuedDrafts}
           backgroundSendPrompt={backgroundSendPrompt}
           onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
+          takeOverPrompt={takeOverPrompt}
+          onResolveTakeOverPrompt={resolveTakeOverPrompt}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
           attachedFiles={attachedFiles}

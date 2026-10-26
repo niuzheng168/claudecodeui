@@ -35,8 +35,13 @@ import {
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
   CODEY_CLAUDE_ENTRYPOINT,
+  endForeignSessionProcess,
   findForeignSessionProcess,
-  isTranscriptContinuedElsewhere
+  followForeignTurn,
+  isClaudeDesktopProcess,
+  isTranscriptContinuedElsewhere,
+  readForeignSessionStatus,
+  signalForeignSessionProcess
 } from '@/modules/providers/list/claude/claude-session-owner.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
@@ -72,6 +77,12 @@ const abortedSessionIds = new Set();
 // (see addSession). Their run loops must stay silent on wind-down: the map
 // entry, the abort flag, and all client-facing events belong to the new run.
 const supersededInstances = new WeakSet();
+// Session key -> the turn waiting for Claude Desktop or a terminal to finish
+// a turn of the session before taking it over; aborting it cancels the wait.
+const foreignTurnWaits = new Map();
+// Session key -> a turn Claude Desktop or a terminal is running that an open
+// tab follows (see prepareClaudeObservation), with what Stop interrupts.
+const observedForeignTurns = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -114,6 +125,9 @@ const idleProcessTimeoutMs = () => readNonNegativeInteger(process.env.CLAUDE_IDL
 const maxIdleProcesses = () => readNonNegativeInteger(process.env.CLAUDE_MAX_IDLE_PROCESSES, 3);
 // The longest a turn waits for a retired process of its session to exit.
 const RETIRE_WAIT_MS = 5000;
+// The longest a turn waits for Claude Desktop's or a terminal's process to
+// exit when it takes their session over.
+const TAKE_OVER_EXIT_WAIT_MS = 5000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -421,17 +435,174 @@ function withdrawRefusedBypassMode(sdkOptions, uid = process.getuid?.()) {
 }
 
 /**
- * Refusal for a turn whose session another Claude Code process has open.
+ * Names the Claude Code process outside Codey that has a session open.
  * @param {{ pid: number, entrypoint: string }} owner - From findForeignSessionProcess
- * @returns {AppError}
+ * @returns {string}
  */
-function sessionOpenElsewhereError(owner) {
-  const where = owner.entrypoint.startsWith('claude-desktop')
+function describeForeignProcess(owner) {
+  return isClaudeDesktopProcess(owner)
     ? `Claude Desktop (process ${owner.pid})`
     : `another Claude Code process (${owner.entrypoint}, process ${owner.pid})`;
-  return new AppError(`This session is open in ${where}. Continue it there; Codey can send to it again once `
-    + 'that process has exited. Two processes continuing one session split the conversation, '
-    + 'so your message was not sent.', { code: 'CLAUDE_SESSION_OPEN_ELSEWHERE', statusCode: 409 });
+}
+
+/**
+ * Refusal for a turn whose session another Claude Code process has open.
+ * `details` tells the client whether the user can confirm taking it over,
+ * which resends the turn with `takeOver: true`.
+ * @param {Object} owner - From findForeignSessionProcess
+ * @param {'confirm'|'background'|'stayed'} reason - A terminal's process ends
+ *   only on the user's word, a background session never, and `stayed` is a
+ *   process that did not exit when asked
+ * @returns {AppError}
+ */
+function sessionOpenElsewhereError(owner, reason) {
+  const where = describeForeignProcess(owner);
+  const message = {
+    confirm: `This session is open in ${where}, such as \`claude\` in a terminal. Continuing it here `
+      + 'ends that process, because two processes continuing one session split the conversation.',
+    background: `This session is open in ${where}, a background session Codey does not end. `
+      + 'Continue it there, or stop it first.',
+    stayed: `${where} did not exit when Codey asked it to, so the session was not taken over.`,
+  }[reason];
+  return new AppError(`${message} Your message was not sent.`, {
+    code: 'CLAUDE_SESSION_OPEN_ELSEWHERE',
+    statusCode: 409,
+    details: { pid: owner.pid, entrypoint: owner.entrypoint, canTakeOver: reason === 'confirm' },
+  });
+}
+
+/**
+ * Sends one transcript row another Claude Code process wrote to a Codey client.
+ * @param {Object} row - Transcript row
+ * @param {Object} writer - The run's writer
+ * @param {Function} normalizeMessage - The provider's normalizer
+ * @param {string} providerSessionId - Claude Code's session id
+ */
+function forwardForeignRow(row, writer, normalizeMessage, providerSessionId) {
+  for (const message of normalizeMessage(row, providerSessionId)) {
+    writer.send(message);
+  }
+}
+
+/**
+ * Makes this turn the session's only writer when Claude Desktop or a terminal
+ * has the session open, instead of refusing it.
+ *
+ * - An idle Claude Desktop process is ended right away: Desktop starts its
+ *   process again, resuming the session with this turn in it, when its user
+ *   next opens the session.
+ * - Another interactive process (`claude` in a terminal) is ended only when
+ *   the user confirmed it (`confirmed`), because that ends their terminal
+ *   program. A background session is never ended.
+ * - A process in the middle of a turn finishes it first. Meanwhile its rows
+ *   are forwarded to this turn's client, and Stop cancels this turn only.
+ *
+ * Ending an idle process is clean: nothing is being written, and Claude Code
+ * removes its registration on SIGTERM.
+ * @param {Object} owner - From findForeignSessionProcess
+ * @param {Object} input
+ * @param {string} input.providerSessionId - Claude Code's session id
+ * @param {string|undefined} input.cwd - The session's project directory
+ * @param {boolean} input.confirmed - The user agreed to end a terminal's process
+ * @param {Object} input.writer - The run's writer
+ * @param {Function} input.normalizeMessage - The provider's normalizer
+ * @param {AbortSignal} input.signal - Aborted when the user stops this turn
+ * @returns {Promise<void>} Settles once the session has no other writer
+ */
+async function takeOverSession(owner, { providerSessionId, cwd, confirmed, writer, normalizeMessage, signal }) {
+  if (owner.kind && owner.kind !== 'interactive') {
+    throw sessionOpenElsewhereError(owner, 'background');
+  }
+  if (!isClaudeDesktopProcess(owner) && !confirmed) {
+    throw sessionOpenElsewhereError(owner, 'confirm');
+  }
+  const name = isClaudeDesktopProcess(owner) ? 'Claude Desktop' : 'the other Claude Code process';
+  const status = (text) => writer.send(createNormalizedMessage({
+    kind: 'status', text, canInterrupt: true, sessionId: providerSessionId, provider: 'claude'
+  }));
+
+  for (;;) {
+    if (signal.aborted) {
+      throw new Error('The turn was stopped before the session was taken over.');
+    }
+    const state = await readForeignSessionStatus(owner, providerSessionId);
+    if (state === 'gone') {
+      return;
+    }
+    if (state === 'busy' || state === 'waiting') {
+      status(`Waiting for ${name} to finish its turn`);
+      await followForeignTurn({
+        owner, providerSessionId, cwd, signal,
+        onRow: (row) => forwardForeignRow(row, writer, normalizeMessage, providerSessionId),
+      });
+      continue;
+    }
+    if (state === null) {
+      // Its registration was being rewritten; read it again.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
+    }
+    status(`Taking this session over from ${name}`);
+    if (!(await endForeignSessionProcess(owner, TAKE_OVER_EXIT_WAIT_MS))) {
+      throw sessionOpenElsewhereError(owner, 'stayed');
+    }
+    status('');
+    return;
+  }
+}
+
+/**
+ * Lets an open tab follow a turn that Claude Desktop or a terminal is running
+ * in the session: its rows appear as they are written, the session shows as
+ * busy until the turn ends, a message sent meanwhile waits in the queue, and
+ * Stop interrupts that process's turn (see abortClaudeSDKSession). Nothing is
+ * sent to the process.
+ * @param {string} sessionId - App session id
+ * @param {Object} context - Provider-scoped lookups
+ * @returns {Promise<import('@/shared/types.js').ProviderRuntimeObservation|null>}
+ *   The observation, or null when no such turn runs
+ */
+async function prepareClaudeObservation(sessionId, context) {
+  const providerSessionId = context.resolveProviderSessionId(sessionId);
+  if (!providerSessionId || getSession(sessionId)?.status === 'active') {
+    return null;
+  }
+  const owner = await findForeignSessionProcess(providerSessionId);
+  if (!owner || (owner.status !== 'busy' && owner.status !== 'waiting')) {
+    return null;
+  }
+  const following = new AbortController();
+  let started = false;
+  return {
+    async start(writer) {
+      if (started) {
+        throw new Error('This Claude observer has already been attached.');
+      }
+      started = true;
+      observedForeignTurns.set(sessionId, { owner, following });
+      try {
+        const name = isClaudeDesktopProcess(owner) ? 'Claude Desktop' : 'Another Claude Code process';
+        writer.send(createNormalizedMessage({
+          kind: 'status', text: `${name} is running this turn`, canInterrupt: true, canSteer: false,
+          sessionId: providerSessionId, provider: 'claude'
+        }));
+        const ended = await followForeignTurn({
+          owner, providerSessionId, cwd: null, signal: following.signal,
+          onRow: (row) => forwardForeignRow(row, writer, context.normalizeMessage, providerSessionId),
+        });
+        if (ended !== 'aborted') {
+          writer.send(createCompleteMessage({ provider: 'claude', sessionId: providerSessionId, exitCode: 0 }));
+        }
+      } finally {
+        if (observedForeignTurns.get(sessionId)?.following === following) {
+          observedForeignTurns.delete(sessionId);
+        }
+      }
+    },
+    dispose() {
+      following.abort();
+    },
+  };
 }
 
 /**
@@ -1635,6 +1806,24 @@ function retireIdleClaudeProcesses() {
 }
 
 /**
+ * Retires the idle process Codey keeps for a session that Claude Desktop or a
+ * terminal has opened since. It holds the conversation as it was and would
+ * never be reused, but keeps its memory until the idle timeout. A process
+ * still running a turn, or waiting for background work, is left alone.
+ *
+ * Used by the sessions watcher (sessions-watcher.service.ts) when another
+ * process registers for the session.
+ * @param {string} providerSessionId - Claude Code's session id
+ */
+function retireClaudeProcessesOpenedElsewhere(providerSessionId) {
+  for (const proc of [...activeSessions.values()]) {
+    if (proc.providerSessionId === providerSessionId && proc.status === 'idle' && !proc.heldForBackgroundWork) {
+      retireProcess(proc);
+    }
+  }
+}
+
+/**
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
  * @param {Object} options - Query options
@@ -1794,7 +1983,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Send error to WebSocket, then the terminal complete. A run that already
     // reported completion still surfaces the error, but must not emit a
     // second terminal complete.
-    ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    // A session open in a terminal names the process, and the send it refused,
+    // so the client that sent it can offer to take the session over and resend.
+    const takeOver = error instanceof AppError && error.code === 'CLAUDE_SESSION_OPEN_ELSEWHERE'
+      ? { code: error.code, takeOver: { ...error.details, messageId: options.clientMessageId ?? null } }
+      : {};
+    ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, ...takeOver, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     if (!turnCompleteSent) {
       ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
     }
@@ -2029,7 +2223,25 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (resident && resident.status !== 'active') {
           retireProcess(resident);
         }
-        throw sessionOpenElsewhereError(owner);
+        const waitKey = sessionKey();
+        const wait = new AbortController();
+        if (waitKey) {
+          foreignTurnWaits.set(waitKey, wait);
+        }
+        try {
+          await takeOverSession(owner, {
+            providerSessionId: sdkOptions.resume,
+            cwd: options.cwd,
+            confirmed: options.takeOver === true,
+            writer: ws,
+            normalizeMessage: context.normalizeMessage,
+            signal: wait.signal,
+          });
+        } finally {
+          if (waitKey && foreignTurnWaits.get(waitKey) === wait) {
+            foreignTurnWaits.delete(waitKey);
+          }
+        }
       }
     }
     let reusable = Boolean(resident && resident.status === 'idle' && !resident.retired
@@ -2110,10 +2322,35 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
 /**
  * Aborts the turn running in a session's process and closes the process.
+ *
+ * A turn still waiting for Claude Desktop or a terminal to finish theirs is
+ * cancelled without touching that process. A turn of theirs that a tab
+ * follows is interrupted with SIGINT, only on the user's explicit Stop.
  * @param {string} sessionId - Session identifier
+ * @param {import('@/shared/types.js').ProviderAbortOptions} [options]
  * @returns {boolean} True if a running turn was aborted, false if none was found
  */
-async function abortClaudeSDKSession(sessionId) {
+async function abortClaudeSDKSession(sessionId, options = {}) {
+  const waiting = foreignTurnWaits.get(sessionId);
+  if (waiting) {
+    // The turn's failure report reads this and stays silent.
+    abortedSessionIds.add(sessionId);
+    waiting.abort();
+    return true;
+  }
+
+  const observed = observedForeignTurns.get(sessionId);
+  if (observed) {
+    if (!options.allowExternalTurn) {
+      return false;
+    }
+    const interrupted = await signalForeignSessionProcess(observed.owner, 'SIGINT');
+    if (interrupted) {
+      observed.following.abort();
+    }
+    return interrupted;
+  }
+
   const session = getSession(sessionId);
 
   if (!session) {
@@ -2287,6 +2524,7 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 export const claudeRuntime = {
   run: queryClaudeSDK,
   abort: abortClaudeSDKSession,
+  prepareObservation: prepareClaudeObservation,
   canSteer: canSteerClaudeSDKSession,
   steer: steerClaudeSDKSession,
   permissions: {
@@ -2310,6 +2548,7 @@ export {
   getPendingApprovalsForSession,
   reconnectSessionWriter,
   retireIdleClaudeProcesses,
+  retireClaudeProcessesOpenedElsewhere,
   extractTokenBudget,
   extractCumulativeTokenBudget
 };

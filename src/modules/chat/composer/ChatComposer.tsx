@@ -20,7 +20,7 @@ import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { isCodeyPortalSso, isComposerModeShortcut } from '@/shared/utils';
-import type { BackgroundSendChoice, BackgroundSendPrompt, ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, SessionTakeOverPrompt, ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -37,6 +37,7 @@ import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
+import SessionTakeOverDialog from '@/modules/chat/composer/SessionTakeOverDialog';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
 import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMenu';
@@ -91,6 +92,9 @@ type ChatComposerProps = {
   /** Open while a send waits for the user to decide about the session's background work. */
   backgroundSendPrompt?: BackgroundSendPrompt | null;
   onResolveBackgroundSendPrompt?: (choice: BackgroundSendChoice) => void;
+  /** Open while a refused Claude turn waits for the user to decide about the terminal that has its session open. */
+  takeOverPrompt?: SessionTakeOverPrompt | null;
+  onResolveTakeOverPrompt?: (confirmed: boolean) => void;
   /** Set while the composer is replacing an already-sent message. */
   isEditingSentMessage: boolean;
   onCancelEditMessage: () => void;
@@ -185,6 +189,8 @@ export default function ChatComposer({
   queuedDrafts,
   backgroundSendPrompt = null,
   onResolveBackgroundSendPrompt,
+  takeOverPrompt = null,
+  onResolveTakeOverPrompt,
   isEditingSentMessage,
   onCancelEditMessage,
   scheduledMessages,
@@ -446,6 +452,13 @@ export default function ChatComposer({
         <BackgroundSendDialog
           prompt={backgroundSendPrompt}
           onResolve={onResolveBackgroundSendPrompt}
+        />
+      )}
+
+      {onResolveTakeOverPrompt && (
+        <SessionTakeOverDialog
+          prompt={takeOverPrompt}
+          onResolve={onResolveTakeOverPrompt}
         />
       )}
 

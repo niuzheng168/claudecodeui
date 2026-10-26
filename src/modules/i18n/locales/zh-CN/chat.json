@@ -390,6 +390,12 @@
     },
     "providers": {
       "assistant": "Assistant"
+    },
+    "sessionOpenElsewhere": {
+      "title": "这个会话在另一个 Claude Code 进程里打开着",
+      "description": "本机的 Claude Code（{{entrypoint}}，进程 {{pid}}）打开着这个会话，比如终端里的 `claude`。在这里发送会结束那个进程，之后可以在那里用 `claude --resume` 继续这个会话。两个进程同时续写一个会话会让对话分叉。",
+      "cancel": "取消",
+      "confirm": "结束它并发送"
     }
   },
   "projectSelection": {

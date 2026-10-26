@@ -5,6 +5,8 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
+import { retireClaudeProcessesOpenedElsewhere } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { readForeignRegistrationSessionId } from '@/modules/providers/list/claude/claude-session-owner.service.js';
 import { synchronizeCodexDaemonSessions, synchronizeCodexSessionIndex } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
 import { resolveCodexHomeDirectory } from '@/shared/index.js';
@@ -202,6 +204,51 @@ async function onUpdate(
 }
 
 /**
+ * Handles a Claude Code process registration that was written or rewritten.
+ * Claude Desktop and terminal processes rewrite theirs as they start, begin a
+ * turn and end one, so the session is refreshed at once instead of on the
+ * transcript poll: an open tab picks up the turn and follows it (the Claude
+ * runtime's prepareObservation). An idle process Codey kept for the session is
+ * retired, since the session now continues elsewhere.
+ */
+async function onClaudeRegistration(filePath: string): Promise<void> {
+  const providerSessionId = await readForeignRegistrationSessionId(filePath);
+  if (!providerSessionId) {
+    return;
+  }
+  retireClaudeProcessesOpenedElsewhere(providerSessionId);
+  queuePendingWatcherUpdate('change', 'claude', providerSessionId);
+}
+
+/**
+ * Watches the registrations Claude Code processes keep in
+ * `~/.claude/sessions/<pid>.json`. The directory holds one small file per
+ * running process, so it is watched through file system events, not polled.
+ */
+async function watchClaudeRegistrations(): Promise<void> {
+  const directory = path.join(os.homedir(), '.claude', 'sessions');
+  try {
+    await fsPromises.mkdir(directory, { recursive: true });
+    const watcher = chokidar.watch(directory, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: 0,
+    });
+    watcher
+      .on('add', (filePath: string) => { void onClaudeRegistration(filePath); })
+      .on('change', (filePath: string) => { void onClaudeRegistration(filePath); })
+      .on('error', (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('Claude registration watcher error', { error: message });
+      });
+    watchers.push(watcher);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Failed to watch Claude Code registrations', { directory, error: message });
+  }
+}
+
+/**
  * Used by the server bootstrap to start provider watchers and initial DB synchronization.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
@@ -264,6 +311,8 @@ export async function initializeSessionsWatcher(): Promise<void> {
       });
     }
   }
+
+  await watchClaudeRegistrations();
 }
 
 /**

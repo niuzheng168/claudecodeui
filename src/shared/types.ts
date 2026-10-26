@@ -925,6 +925,24 @@ export type BackgroundSendPrompt = {
   work: string[];
 };
 
+/**
+ * A Claude turn the node refused because `claude` in a terminal has the
+ * session open (CLAUDE_SESSION_OPEN_ELSEWHERE). The user may end that process
+ * and resend the turn; `pid` and `entrypoint` name the process.
+ */
+export type SessionTakeOverPrompt = {
+  sessionId: string;
+  pid: number;
+  entrypoint: string;
+};
+
+/** The process named by a refused turn's `takeOver` details, and the send it refused. */
+export type SessionOpenElsewhere = {
+  pid: number;
+  entrypoint: string;
+  messageId: string | null;
+};
+
 /** Viewport-relative composer popup bounds; exactly one of top/bottom anchors the surface without overflowing narrow or short windows. */
 export type ComposerMenuAnchor = {
   right: number;

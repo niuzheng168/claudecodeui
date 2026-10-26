@@ -337,6 +337,12 @@
     },
     "providers": {
       "assistant": "助理"
+    },
+    "sessionOpenElsewhere": {
+      "title": "這個工作階段在另一個 Claude Code 處理程序中開啟著",
+      "description": "本機的 Claude Code（{{entrypoint}}，處理程序 {{pid}}）開啟著這個工作階段，例如終端機裡的 `claude`。在這裡傳送會結束那個處理程序，之後可以在那裡用 `claude --resume` 繼續這個工作階段。兩個處理程序同時續寫一個工作階段會讓對話分岔。",
+      "cancel": "取消",
+      "confirm": "結束它並傳送"
     }
   },
   "projectSelection": {

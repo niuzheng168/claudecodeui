@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { BackgroundSendChoice, BackgroundSendPrompt, StoredQueuedMessage, SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { BackgroundSendChoice, BackgroundSendPrompt, SessionOpenElsewhere, SessionTakeOverPrompt, StoredQueuedMessage, SteerChatMessage, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import { isComposerModeShortcut, isNativeClaudeCommand, isNativeCodexCommand } from '@/shared/utils';
 import {
@@ -764,6 +764,42 @@ export function useChatComposerState({
     backgroundSendResolverRef.current = null;
   }, []);
 
+  // The last turn this composer sent to each session, so a Claude turn the
+  // node refused because `claude` in a terminal has the session open can be
+  // resent once the user agrees to end that process.
+  const lastSentTurnsRef = useRef(new Map<string, { clientMessageId?: string; options: Record<string, unknown> }>());
+  const [takeOverPrompt, setTakeOverPrompt] = useState<SessionTakeOverPrompt | null>(null);
+  const takeOverPromptRef = useRef<SessionTakeOverPrompt | null>(null);
+
+  // Asks only about a refusal of the turn this composer sent last: a refusal
+  // replayed to a reopened tab, or one of another tab's sends, is just shown.
+  const askToTakeOverSession = useCallback((sessionId: string, holder: SessionOpenElsewhere) => {
+    const turn = lastSentTurnsRef.current.get(sessionId);
+    if (!turn || !holder.messageId || turn.clientMessageId !== holder.messageId) {
+      return;
+    }
+    const prompt = { sessionId, pid: holder.pid, entrypoint: holder.entrypoint };
+    takeOverPromptRef.current = prompt;
+    setTakeOverPrompt(prompt);
+  }, []);
+
+  // Confirming resends the refused turn, with the same identity, as one that
+  // may end the terminal's process; the bubble already on screen stays its own.
+  const resolveTakeOverPrompt = useCallback((confirmed: boolean) => {
+    const prompt = takeOverPromptRef.current;
+    takeOverPromptRef.current = null;
+    setTakeOverPrompt(null);
+    const turn = prompt ? lastSentTurnsRef.current.get(prompt.sessionId) : undefined;
+    if (!prompt || !turn) {
+      return;
+    }
+    lastSentTurnsRef.current.delete(prompt.sessionId);
+    if (confirmed) {
+      onSessionProcessing?.(prompt.sessionId, { statusText: null, canInterrupt: true });
+      sendMessage({ ...turn, options: { ...turn.options, takeOver: true } });
+    }
+  }, [onSessionProcessing, sendMessage]);
+
   // Persist a message to send "when this finishes" and show it as a queued
   // card. Used while a turn is in flight (or earlier queued messages still
   // wait) and when the user chooses to queue behind background work.
@@ -1178,7 +1214,7 @@ export function useChatComposerState({
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
-      sendMessage({
+      const sentTurn = {
         // Replacing an already-sent message is its own frame: it changes the
         // shape of the conversation, so it gets validated separately and can
         // report why it was refused.
@@ -1192,7 +1228,13 @@ export function useChatComposerState({
           ...nativeSendOptions,
           attachments: uploadedAttachments,
         },
-      });
+      };
+      // An edit has already rewound the conversation when it is refused, so
+      // only a plain send can be resent as it was.
+      if (clientMessageId && !editingAnchorId) {
+        lastSentTurnsRef.current.set(targetSessionId, sentTurn);
+      }
+      sendMessage(sentTurn);
       setEditingAnchorId(null);
 
       // Recorded under the (possibly just-allocated) session id, so the first
@@ -1713,6 +1755,9 @@ export function useChatComposerState({
       ? steeringState.error : null,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
+    takeOverPrompt,
+    askToTakeOverSession,
+    resolveTakeOverPrompt,
     queuedDraft,
     queuedDrafts,
     editQueuedDraft,

@@ -453,6 +453,12 @@
     },
     "providers": {
       "assistant": "Assistant"
+    },
+    "sessionOpenElsewhere": {
+      "title": "This session is open in another Claude Code process",
+      "description": "Claude Code ({{entrypoint}}, process {{pid}}) on this machine has this session open, for example `claude` in a terminal. Sending from here ends that process; `claude --resume` continues the session there later. Two processes continuing one session would split the conversation.",
+      "cancel": "Cancel",
+      "confirm": "End it and send"
     }
   },
   "projectSelection": {
