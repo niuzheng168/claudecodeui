@@ -14,9 +14,9 @@ import { connectedClients } from '@/modules/websocket/services/websocket-state.s
  * A session's turn ends while its agents, workflow or backgrounded command are
  * still going. The run registry marks the run completed at the turn's
  * `complete`, but the runtime keeps producing events through that run's
- * writer — task progress, and the turn the CLI pushes when the task reports.
- * A tab opened during that work has to attach to the run to see them, and the
- * run has to still be there to attach to.
+ * writer — task progress until the turn the CLI pushes when a task reports,
+ * which gets a run of its own. A tab opened during that work has to attach to
+ * the run to see them, and the run has to still be there to attach to.
  */
 
 const SESSION_ID = 'held-session';

@@ -240,6 +240,30 @@ export const chatRunRegistry = {
     return run;
   },
 
+  /**
+   * Starts a run for a turn the provider began without a send: the Claude CLI
+   * relaying what a background task reported. Without one the session looked
+   * idle for the whole turn. The tabs that watched the session's previous run
+   * keep watching this one, without subscribing again.
+   *
+   * Used by the providers module's runtime service, which hands the writer to
+   * the Claude runtime. Returns `null` when a run is already in progress; the
+   * runtime then keeps sending through the writer it has.
+   */
+  startFollowUpRun(input: {
+    appSessionId: string;
+    provider: LLMProvider;
+    providerSessionId: string | null;
+    userId: string | number | null;
+  }): ChatRun | null {
+    const previous = runs.get(input.appSessionId);
+    const run = chatRunRegistry.startRun({ ...input, connection: null });
+    if (run && previous) {
+      run.writer.inheritAudience(previous.writer);
+    }
+    return run;
+  },
+
   getRun(appSessionId: string): ChatRun | undefined {
     return runs.get(appSessionId);
   },

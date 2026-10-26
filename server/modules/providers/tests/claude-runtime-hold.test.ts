@@ -7,6 +7,7 @@ import test, { after, before } from 'node:test';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
+  abortClaudeSDKSession,
   getClaudeSDKSessionStartTime,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
@@ -53,6 +54,7 @@ type Scripted = {
   end: () => void;
   released: () => boolean;
   stopped: string[];
+  interrupts: () => number;
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -60,6 +62,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   const queue: Array<Record<string, unknown> | null> = [];
   let wake: (() => void) | null = null;
   let released = false;
+  let interrupts = 0;
   const stopped: string[] = [];
 
   const script: Scripted = {
@@ -67,6 +70,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     end: () => { queue.push(null); wake?.(); },
     released: () => released,
     stopped,
+    interrupts: () => interrupts,
   };
 
   const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
@@ -91,7 +95,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     })();
 
     return Object.assign(iterator, {
-      interrupt: async () => {},
+      interrupt: async () => { interrupts += 1; },
       stopTask: async (taskId: string) => { stopped.push(taskId); },
     });
   };
@@ -101,6 +105,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
 
 async function withRun(
   runTest: (context: { script: Scripted; sent: NormalizedMessage[]; done: Promise<unknown> }) => Promise<void>,
+  contextOverrides: Partial<ProviderRuntimeContext> = {},
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
@@ -114,6 +119,7 @@ async function withRun(
     normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
     isProviderInstalled: async () => true,
     createQuery,
+    ...contextOverrides,
   };
 
   try {
@@ -412,4 +418,115 @@ test('with resident processes, a new turn that cannot reuse the held process sto
       await rm(cwd, { recursive: true, force: true });
     }
   });
+});
+
+/** Stands in for the run registry's hook: records each run it opens and what goes through it. */
+function createFollowUpRuns({ inProgress = false } = {}) {
+  const opened: Array<{ args: unknown[]; sent: NormalizedMessage[] }> = [];
+  const startFollowUpRun: NonNullable<ProviderRuntimeContext['startFollowUpRun']> = (...args) => {
+    const run = { args, sent: [] as NormalizedMessage[] };
+    opened.push(run);
+    // A run already in progress leaves the turn without one of its own.
+    return inProgress ? null : { send: (message) => { run.sent.push(message as NormalizedMessage); }, userId: null };
+  };
+  return { opened, startFollowUpRun };
+}
+
+const assistantText = (text: string) => ({
+  type: 'assistant', session_id: NATIVE_ID, parent_tool_use_id: null,
+  message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
+/** The client's turn launches background agents and ends. */
+function launchBackgroundAgents(script: Scripted, taskIds: string[]) {
+  script.emit(init());
+  for (const taskId of taskIds) {
+    script.emit(toolUse(`toolu_${taskId}`, 'Agent', { prompt: 'sleep 90', subagent_type: 'general-purpose', run_in_background: true }));
+    script.emit(taskStarted(taskId, `toolu_${taskId}`, 'local_agent'));
+    script.emit(ack(`toolu_${taskId}`, 'Async agent launched successfully.', { status: 'async_launched', agentId: taskId }));
+  }
+  script.emit(result());
+}
+
+const completes = (messages: NormalizedMessage[]) => messages.filter((message) => message.kind === 'complete');
+
+test('a turn the CLI starts on its own runs in a run of its own', async () => {
+  const followUps = createFollowUpRuns();
+  await withRun(async ({ script, sent }) => {
+    launchBackgroundAgents(script, ['a1']);
+    await waitFor(() => completes(sent).length === 1);
+
+    // The agent reports, and the CLI relays it in a turn nobody sent.
+    script.emit(taskNotification('a1', 'toolu_a1', 'completed'));
+    script.emit(init());
+    script.emit(assistantText('The agent finished.'));
+    script.emit(result());
+    await waitFor(() => completes(followUps.opened[0]?.sent ?? []).length === 1);
+
+    assert.deepEqual(followUps.opened.map((run) => run.args), [[SESSION_ID, NATIVE_ID, null]]);
+    const [followUp] = followUps.opened;
+    assert.equal(followUp.sent[0].kind, 'status', 'the session is busy from the turn\'s start');
+    assert.equal(followUp.sent[0].canInterrupt, true);
+    assert.ok(followUp.sent.some((message) => message.kind === 'text' && message.content === 'The agent finished.'));
+    assert.equal(completes(followUp.sent)[0].exitCode, 0);
+    assert.equal(sent.some((message) => message.kind === 'text' && message.content === 'The agent finished.'), false,
+      'the turn does not go to the client turn\'s writer');
+    assert.equal(completes(sent).length, 1);
+    assert.equal(script.released(), true, 'nothing is outstanding after the turn, so the process is let go');
+  }, { startFollowUpRun: followUps.startFollowUpRun });
+});
+
+test('a turn the CLI starts while a run is in progress goes to the writer it has', async () => {
+  const followUps = createFollowUpRuns({ inProgress: true });
+  await withRun(async ({ script, sent }) => {
+    launchBackgroundAgents(script, ['a1']);
+    await waitFor(() => completes(sent).length === 1);
+
+    script.emit(taskNotification('a1', 'toolu_a1', 'completed'));
+    script.emit(init());
+    script.emit(assistantText('The agent finished.'));
+    script.emit(result());
+    await waitFor(() => script.released());
+
+    assert.equal(followUps.opened.length, 1, 'a run was asked for');
+    assert.ok(sent.some((message) => message.kind === 'text' && message.content === 'The agent finished.'));
+    assert.equal(completes(sent).length, 1, 'and no run of its own is ended');
+  }, { startFollowUpRun: followUps.startFollowUpRun });
+});
+
+test('a turn the CLI started on its own still ends its run when the process does', async () => {
+  const followUps = createFollowUpRuns();
+  await withRun(async ({ script, sent }) => {
+    launchBackgroundAgents(script, ['a1']);
+    await waitFor(() => completes(sent).length === 1);
+
+    script.emit(taskNotification('a1', 'toolu_a1', 'completed'));
+    script.emit(init());
+    script.end();
+    await waitFor(() => completes(followUps.opened[0]?.sent ?? []).length === 1);
+
+    assert.equal(completes(followUps.opened[0].sent)[0].exitCode, 1);
+  }, { startFollowUpRun: followUps.startFollowUpRun });
+});
+
+test('stopping a turn the CLI started on its own keeps the process for the work still going', async () => {
+  const followUps = createFollowUpRuns();
+  await withRun(async ({ script, sent }) => {
+    launchBackgroundAgents(script, ['a1', 'a2']);
+    await waitFor(() => completes(sent).length === 1);
+
+    script.emit(taskNotification('a1', 'toolu_a1', 'completed'));
+    script.emit(init());
+    await waitFor(() => followUps.opened.length === 1);
+
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    assert.equal(script.interrupts(), 1);
+    // The interrupted turn ends; the caller has already ended its run.
+    script.emit(result());
+    await settle();
+
+    assert.deepEqual(completes(followUps.opened[0].sent), []);
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.tasks.map((task) => task.taskId)), [['a2']]);
+    assert.equal(script.released(), false, 'the second agent keeps its process');
+  }, { startFollowUpRun: followUps.startFollowUpRun });
 });

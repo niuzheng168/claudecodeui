@@ -792,6 +792,19 @@ export type ProviderRuntimeContext = {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   isProviderInstalled(): Promise<boolean>;
   /**
+   * Opens a run for a turn the provider started on its own, without a send —
+   * the Claude CLI relaying what a background task reported — so the session
+   * shows as busy while it runs. Returns the writer the turn's events go
+   * through, or null when the session already has a run in progress. Unset
+   * when a test drives a runtime directly; the runtime then keeps sending
+   * through the writer of the last turn.
+   */
+  startFollowUpRun?(
+    sessionId: string,
+    providerSessionId: string | null,
+    userId: string | number | null,
+  ): ProviderRuntimeWriter | null;
+  /**
    * Builds the SDK query for a run. Production leaves this unset and the
    * runtime uses the SDK's own; tests supply a scripted stream so the hold
    * and background-work paths can be driven without a CLI process.

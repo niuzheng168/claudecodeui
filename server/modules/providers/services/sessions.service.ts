@@ -212,6 +212,9 @@ export const sessionsService = {
           canInterrupt: false,
           tasks,
         });
+        // A client keeps the last entry it reads for a session, so a second
+        // one claiming a turn would hide the tasks.
+        runningById.set(sessionId, entries[entries.length - 1]);
       }
     }
 

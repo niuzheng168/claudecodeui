@@ -311,3 +311,57 @@ test('startRun rejects a second concurrent run for the same session', async () =
     assert.ok(third);
   });
 });
+
+test('a follow-up run streams to the tabs that watched the session\'s previous run', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-7', 'claude', '/workspace/demo');
+    const starter = new FakeConnection();
+    const previous = chatRunRegistry.startRun({
+      appSessionId: 'app-run-7',
+      provider: 'claude',
+      providerSessionId: 'native-7',
+      connection: starter,
+      userId: 'user-7',
+    });
+    assert.ok(previous);
+    const secondTab = new FakeConnection();
+    assert.equal(chatRunRegistry.attachConnection('app-run-7', secondTab), true);
+
+    // While a run is going, the CLI's own turn has no run of its own.
+    assert.equal(chatRunRegistry.startFollowUpRun({
+      appSessionId: 'app-run-7', provider: 'claude', providerSessionId: 'native-7', userId: 'user-7',
+    }), null);
+
+    previous.writer.send({ kind: 'complete', provider: 'claude', sessionId: 'native-7', exitCode: 0 });
+    const followUp = chatRunRegistry.startFollowUpRun({
+      appSessionId: 'app-run-7', provider: 'claude', providerSessionId: 'native-7', userId: 'user-7',
+    });
+    assert.ok(followUp);
+    assert.equal(chatRunRegistry.isProcessing('app-run-7'), true);
+    assert.equal(followUp.writer.userId, 'user-7');
+
+    followUp.writer.send({ kind: 'text', provider: 'claude', sessionId: 'native-7', content: 'the task reported' });
+    for (const connection of [starter, secondTab]) {
+      const last = connection.frames[connection.frames.length - 1];
+      assert.equal(last.content, 'the task reported');
+      assert.equal(last.runId, followUp.id);
+      assert.equal(last.seq, 1, 'the follow-up run is sequenced from its own start');
+    }
+  });
+});
+
+test('a follow-up run after the previous one was evicted starts with no audience', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-8', 'claude', '/workspace/demo');
+    const followUp = chatRunRegistry.startFollowUpRun({
+      appSessionId: 'app-run-8', provider: 'claude', providerSessionId: 'native-8', userId: null,
+    });
+    assert.ok(followUp);
+
+    // A tab that subscribes later replays it from the start.
+    followUp.writer.send({ kind: 'text', provider: 'claude', sessionId: 'native-8', content: 'early' });
+    const connection = new FakeConnection();
+    assert.equal(chatRunRegistry.attachConnection('app-run-8', connection), true);
+    assert.deepEqual(chatRunRegistry.replayEvents('app-run-8', 0).map((event) => event.content), ['early']);
+  });
+});

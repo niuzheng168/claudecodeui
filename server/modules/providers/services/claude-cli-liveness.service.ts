@@ -2,6 +2,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { CODEY_CLAUDE_ENTRYPOINT } from '@/modules/providers/list/claude/claude-session-owner.service.js';
+
 /**
  * One Claude CLI process that is currently producing a response.
  *
@@ -82,6 +84,13 @@ async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSessi
   const providerSessionId = typeof record.sessionId === 'string' ? record.sessionId : '';
   const pid = typeof record.pid === 'number' ? record.pid : NaN;
   if (!providerSessionId || !Number.isInteger(pid) || pid <= 0 || record.status !== 'busy') {
+    return null;
+  }
+
+  // The Claude runtime reports the processes Codey launches itself, and knows
+  // what this record cannot tell: Claude Code also registers as busy after a
+  // turn ended while one of its background agents is still working.
+  if (record.entrypoint === CODEY_CLAUDE_ENTRYPOINT) {
     return null;
   }
 

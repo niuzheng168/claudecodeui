@@ -4,6 +4,7 @@ import { sessionsService } from '@/modules/providers/services/sessions.service.j
 import { codexSessionTitleService } from '@/modules/providers/list/codex/codex-session-title.service.js';
 import { claudeSessionTitleService } from '@/modules/providers/list/claude/claude-session-title.service.js';
 import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { AppError, readObjectRecord } from '@/shared/index.js';
 import type {
   AnyRecord,
@@ -31,6 +32,12 @@ type ProviderRuntimeServiceDependencies = {
   getProviderModels: typeof providerModelsService.getProviderModels;
   namesNewSessions(provider: LLMProvider): boolean;
   scheduleTitle(input: NewSessionTitleRequest, provider: LLMProvider): Promise<void>;
+  startFollowUpRun(
+    provider: LLMProvider,
+    sessionId: string,
+    providerSessionId: string | null,
+    userId: string | number | null,
+  ): ProviderRuntimeWriter | null;
 };
 
 const defaultDependencies: ProviderRuntimeServiceDependencies = {
@@ -45,6 +52,9 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
   scheduleTitle: (input, provider) => (
     provider === 'claude' ? claudeSessionTitleService : codexSessionTitleService
   ).schedule(input),
+  startFollowUpRun: (provider, sessionId, providerSessionId, userId) => chatRunRegistry.startFollowUpRun({
+    appSessionId: sessionId, provider, providerSessionId, userId,
+  })?.writer ?? null,
 };
 
 /**
@@ -67,6 +77,8 @@ export function createProviderRuntimeService(
       dependencies.resolveResumeModel(provider.id, sessionId, requestedModel),
     getProviderModels: async () => dependencies.getProviderModels(provider.id),
     normalizeMessage: (raw, sessionId) => provider.sessions.normalizeMessage(raw, sessionId),
+    startFollowUpRun: (sessionId, providerSessionId, userId) =>
+      dependencies.startFollowUpRun(provider.id, sessionId, providerSessionId, userId),
     async isProviderInstalled() {
       try {
         return (await provider.auth.getStatus()).installed;

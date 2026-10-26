@@ -350,6 +350,12 @@ has a running run, which is exactly how `RUN_IN_PROGRESS` happens. A `ChatRun` h
 session id, the provider-native id once known, a status, a `lastSeq` counter, an event
 buffer and its writer.
 
+`startFollowUpRun` starts a run for a turn the provider began without a send: the Claude
+CLI relaying what a background task reported. The Claude runtime asks for it when such a
+turn starts and ends it at the turn's `result`, so the session shows as running for that
+turn like for any other. The sockets that watched the session's previous run keep watching
+the new one.
+
 Every outbound event passes through `decorateAndRecordEvent` (`:84-116`), which does four
 things in order:
 

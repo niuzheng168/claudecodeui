@@ -140,6 +140,17 @@ export class ChatSessionWriter {
     this.connections.add(newConnection);
   }
 
+  /**
+   * Adds every socket watching `previous` to this run's audience, for a run
+   * that continues a session those tabs already watch (see
+   * `chatRunRegistry.startFollowUpRun`).
+   */
+  inheritAudience(previous: ChatSessionWriter): void {
+    for (const connection of previous.connections) {
+      this.connections.add(connection);
+    }
+  }
+
   setSessionId(sessionId: string): void {
     this.captureProviderSessionId(sessionId);
   }

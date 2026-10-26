@@ -7,6 +7,8 @@ import path from 'node:path';
  * Agent SDK's. The Claude runtime (claude-runtime.provider.js) pins it in the
  * launch environment, so a Codey node started from a Claude Desktop or
  * terminal shell cannot inherit theirs and mistake its own processes for them.
+ * The CLI liveness check (claude-cli-liveness.service.ts) skips these
+ * processes for the same reason: the runtime reports them itself.
  */
 export const CODEY_CLAUDE_ENTRYPOINT = 'sdk-ts';
 

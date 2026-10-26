@@ -1707,13 +1707,53 @@ function forwardMessage(proc, message) {
 }
 
 /**
+ * Gives a turn the CLI starts on its own (background work reporting back) a
+ * run of its own, so the session shows as busy while the turn runs instead of
+ * idle. The turn, and the background work still going after it, send through
+ * the new run's writer from here on. Without a run (one is already in
+ * progress, or the runtime was driven without the hook) they keep going to
+ * the last turn's writer.
+ * @param {Object} proc - Process record
+ */
+function openFollowUpRun(proc) {
+  if (proc.followUpRun || !proc.appSessionId || !proc.startFollowUpRun) {
+    return;
+  }
+  const writer = proc.startFollowUpRun(proc.appSessionId, proc.providerSessionId, proc.writer?.userId ?? null);
+  if (!writer) {
+    return;
+  }
+  proc.writer = writer;
+  proc.followUpRun = true;
+  writer.send(createNormalizedMessage({
+    kind: 'status', canInterrupt: true, canSteer: false, sessionId: proc.providerSessionId, provider: 'claude'
+  }));
+}
+
+/**
+ * Ends the run openFollowUpRun started, once its turn is over.
+ * @param {Object} proc - Process record
+ * @param {number} exitCode - 0 when the CLI finished the turn
+ */
+function closeFollowUpRun(proc, exitCode) {
+  if (!proc.followUpRun) {
+    return;
+  }
+  proc.followUpRun = false;
+  proc.writer.send(createCompleteMessage({ provider: 'claude', sessionId: proc.providerSessionId, exitCode }));
+}
+
+/**
  * Handles what the CLI sends while no Codey turn runs in the process:
- * background work reporting back in a follow-up turn. It goes to the last
- * turn's writer, as it did when the process was held open only for that work.
+ * background work reporting back, and the follow-up turns in which the CLI
+ * relays what it reported.
  * @param {Object} proc - Process record
  * @param {Object} message - SDK stream message
  */
 function handleIdleMessage(proc, message) {
+  if (message.type === 'system' && message.subtype === 'init') {
+    openFollowUpRun(proc);
+  }
   trackBackgroundWork(proc, message);
   trackReportedContextWindow(proc, message);
   if (message.isReplay === true && !isLocalCommandOutput(message)) {
@@ -1730,6 +1770,7 @@ function handleIdleMessage(proc, message) {
   }
   if (message.type === 'result') {
     noteCliTurnEnded(proc, true);
+    closeFollowUpRun(proc, 0);
     scheduleIdleProcess(proc);
   } else if (
     proc.heldForBackgroundWork
@@ -1790,7 +1831,11 @@ async function pumpProcess(proc) {
   proc.turn = null;
   if (turn) {
     await turn.onEnd(failure);
-  } else if (failure && !wasRetired) {
+    return;
+  }
+  // A turn the CLI started on its own ends with its process.
+  closeFollowUpRun(proc, 1);
+  if (failure && !wasRetired) {
     console.warn(`[Claude SDK] Idle process for session ${proc.key} ended:`, failure?.message || failure);
   }
 }
@@ -1801,7 +1846,7 @@ async function pumpProcess(proc) {
  * @param {Object} init - Launch options, the first prompt and the turn's sinks
  * @returns {Object} Process record
  */
-function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, turn, writer, sessionSummary, appSessionId, providerSessionId, contextWindow, normalizeMessage, createQuery = query }) {
+function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, turn, writer, sessionSummary, appSessionId, providerSessionId, contextWindow, normalizeMessage, startFollowUpRun, createQuery = query }) {
   const proc = {
     key: null,
     instance: null,
@@ -1829,6 +1874,10 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
     sessionTokenLedger: null,
     liveRequestTokens: new Map(),
     normalizeMessage,
+    // Opens a run for a turn the CLI starts on its own; see openFollowUpRun.
+    startFollowUpRun,
+    // True while such a turn runs in a run of its own.
+    followUpRun: false,
     // True from the CLI's `system init` until its `result`: it is running a turn.
     cliBusy: true,
     // Set when a turn starts background work, moved to `heldForBackgroundWork`
@@ -2344,9 +2393,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     if (reusable && resident.push(promptMessage)) {
       proc = resident;
       clearProcessTimer(proc);
+      // A turn the CLI started on its own and still runs streams to this
+      // turn from here on, so the run it had is over for its clients.
+      closeFollowUpRun(proc, 0);
       Object.assign(proc, {
         status: 'active', turn, writer: ws, sessionSummary, contextWindow,
-        normalizeMessage: context.normalizeMessage, lastActiveAt: Date.now(),
+        normalizeMessage: context.normalizeMessage, startFollowUpRun: context.startFollowUpRun, lastActiveAt: Date.now(),
       });
       // A CLI already running a turn (background work reporting back) takes
       // the prompt up later; its replay tells when. A slash command is never
@@ -2382,6 +2434,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         providerSessionId,
         contextWindow,
         normalizeMessage: context.normalizeMessage,
+        startFollowUpRun: context.startFollowUpRun,
         createQuery: context.createQuery,
       });
       if (sessionKey()) {
@@ -2410,9 +2463,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 /**
  * Aborts the turn running in a session's process and closes the process.
  *
- * A turn still waiting for Claude Desktop or a terminal to finish theirs is
- * cancelled without touching that process. A turn of theirs that a tab
- * follows is interrupted with SIGINT, only on the user's explicit Stop.
+ * A turn the CLI started on its own is interrupted and the process left
+ * running. A turn still waiting for Claude Desktop or a terminal to finish
+ * theirs is cancelled without touching that process. A turn of theirs that a
+ * tab follows is interrupted with SIGINT, only on the user's explicit Stop.
  * @param {string} sessionId - Session identifier
  * @param {import('@/shared/types.js').ProviderAbortOptions} [options]
  * @returns {boolean} True if a running turn was aborted, false if none was found
@@ -2443,6 +2497,20 @@ async function abortClaudeSDKSession(sessionId, options = {}) {
   if (!session) {
     console.log(`Session ${sessionId} not found`);
     return false;
+  }
+
+  if (session.status !== 'active' && session.followUpRun) {
+    // A turn the CLI started on its own: interrupt only the turn. The process
+    // stays, with the background work it is still running; the caller ends
+    // the run.
+    try {
+      await session.instance.interrupt();
+    } catch (error) {
+      console.error(`Error interrupting follow-up turn for session ${sessionId}:`, error);
+      return false;
+    }
+    session.followUpRun = false;
+    return true;
   }
 
   if (session.status !== 'active') {

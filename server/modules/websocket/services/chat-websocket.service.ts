@@ -795,9 +795,10 @@ async function handleChatSubscribe(
     // Future live events for this run should land on the socket that asked —
     // this is what makes mid-stream page refreshes work for all providers.
     // A session whose turn ended but whose background work is still going
-    // keeps producing events through the same writer (task progress, the
-    // turn the CLI pushes when a task reports), so a tab opened during that
-    // work attaches too; the registry keeps the run while the work lasts.
+    // keeps producing events through the same writer (task progress; the
+    // turn the CLI pushes when a task reports gets a run of its own), so a
+    // tab opened during that work attaches too; the registry keeps the run
+    // while the work lasts.
     if (isProcessing || dependencies.runtime.hasBackgroundWork?.(sessionId) === true) {
       chatRunRegistry.attachConnection(sessionId, ws);
     }
