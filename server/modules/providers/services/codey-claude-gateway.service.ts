@@ -73,9 +73,13 @@ export function createCodeyClaudeGateway(dependencies: {
   const environment = dependencies.environment ?? (() => process.env);
   const fetchModels = dependencies.fetch ?? globalThis.fetch;
   // Windows from the newest catalog read, for usage readers that only need a
-  // display total. Runs always validate against a fresh catalog.
+  // display total.
   let contextWindows: Map<string, number> | undefined;
   let contextWindowsRequest: Promise<unknown> | undefined;
+  // Runs validate against a fresh catalog. A gateway that waits on a slow
+  // upstream catalog can miss the timeout, so a run then uses the newest
+  // catalog it did return; a gateway that refuses the connection still fails.
+  let lastCatalog: ProviderModelsDefinition | undefined;
 
   function configuration() {
     const env = environment();
@@ -109,7 +113,11 @@ export function createCodeyClaudeGateway(dependencies: {
         headers: { Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(5000), redirect: 'error',
       });
-    } catch {
+    } catch (error) {
+      if (lastCatalog && error instanceof Error && error.name === 'TimeoutError') {
+        console.warn('[Codey] The model API did not list its models within 5 s; using its previous catalog.');
+        return lastCatalog;
+      }
       throw new AppError('The Codey model API is unavailable.', {
         code: 'CODEY_MODEL_API_UNAVAILABLE', statusCode: 503,
       });
@@ -162,7 +170,8 @@ export function createCodeyClaudeGateway(dependencies: {
       option.contextWindow ? [[option.value, option.contextWindow] as const] : []
     )));
     // No fallback to a public Anthropic model or another harness when unavailable.
-    return { OPTIONS: options, DEFAULT: options[0]?.value ?? '', modelApiManaged: true };
+    lastCatalog = { OPTIONS: options, DEFAULT: options[0]?.value ?? '', modelApiManaged: true };
+    return lastCatalog;
   }
 
   return {

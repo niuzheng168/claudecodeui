@@ -159,6 +159,27 @@ test('usage readers share one catalog read and reuse its windows', async () => {
   assert.equal(reads, 1);
 });
 
+test('a slow model API reuses the previous catalog; a refusing or failing one does not', async () => {
+  const timeout = async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); };
+  const listed = async () => Response.json({ data: [{ id: 'claude-opus-5.5', supported_endpoints: ['/v1/messages'] }] });
+  let next: () => Promise<Response> = timeout;
+  const managedGateway = gateway(managed, (() => next()) as typeof fetch);
+  await assert.rejects(managedGateway.getModels(), /model API is unavailable/);
+
+  next = listed;
+  const catalog = await managedGateway.getModels();
+  next = timeout;
+  assert.deepEqual(await managedGateway.getModels(), catalog);
+
+  for (const failure of [
+    async () => { throw new TypeError('fetch failed'); },
+    async () => new Response('', { status: 503 }),
+  ]) {
+    next = failure;
+    await assert.rejects(managedGateway.getModels(), /model API (is unavailable|returned HTTP 503)/);
+  }
+});
+
 test('a catalog window above Claude Code\'s default selects 1M and compacts at 60%', () => {
   const env = { PATH: 'host-path' };
   const launch = buildClaudeContextLaunch('claude-opus-5.5', 1_000_000, env);
