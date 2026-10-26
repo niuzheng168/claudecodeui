@@ -224,7 +224,10 @@ test('typing after the server sent the queued message does not bring it back', a
 test('queueing behind background work adds a card after a message already waiting there', async () => {
   const background: SessionActivityMap = new Map([[
     'session-1',
-    { statusText: null, canInterrupt: false, startedAt: 1, background: true, tasks: [] },
+    {
+      statusText: null, canInterrupt: false, startedAt: 1, background: true,
+      tasks: [{ taskId: 'b1', toolUseId: 'toolu_bash', taskType: 'local_bash', description: 'Run the job', startedAt: 1 }],
+    },
   ]]);
   const view = render({ isLoading: false, processingSessions: background });
 

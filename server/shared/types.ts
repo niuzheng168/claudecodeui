@@ -547,6 +547,25 @@ export type BackgroundTaskSummary = {
 };
 
 /**
+ * A task a live session scheduled for itself — CronCreate, ScheduleWakeup or
+ * /loop — as the Claude Code process serving it reports at the end of every
+ * turn. The task lives in that process: it starts a turn of its own when it
+ * is due, and ends with the process.
+ *
+ * `since` is the server clock when the process first reported the task.
+ */
+export type ScheduledTaskSummary = {
+  id: string;
+  /** Cron expression in the node's local time, e.g. "3-59/10 * * * *". */
+  schedule: string;
+  /** False for a one-shot, which fires once and is gone. */
+  recurring: boolean;
+  /** What the task submits when it fires, clipped. */
+  prompt: string;
+  since: number;
+};
+
+/**
  * Where one agent of a running workflow stands, as the SDK reports it on the
  * run's `task_progress` events.
  *

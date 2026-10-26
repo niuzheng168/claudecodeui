@@ -182,8 +182,10 @@ export function createProviderRuntimeService(
     },
 
     hasBackgroundWork(sessionId: string): boolean {
+      // Only running tasks send through the last run; a scheduled task fires
+      // a turn, and with it a run, of its own.
       return dependencies.listProviders().some((provider) =>
-        (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId));
+        (provider.runtime.listBackgroundWork?.() ?? []).some((entry) => entry.sessionId === sessionId && entry.tasks.length > 0));
     },
 
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {

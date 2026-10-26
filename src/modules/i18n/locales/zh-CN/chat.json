@@ -384,6 +384,10 @@
       "startingNow": "Starting now"
     },
     "stop": "停止",
+    "scheduledWork": "定时任务",
+    "scheduledTask": {
+      "count": "{{count}} 个定时任务"
+    },
     "controls": {
       "stopGeneration": "Stop Generation",
       "pressEscToStop": "Press Esc anytime to stop"

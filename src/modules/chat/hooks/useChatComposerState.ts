@@ -1146,8 +1146,10 @@ export function useChatComposerState({
       // stopped, or finish where nothing is listening. Sending is the user's
       // call, but not one to make for them — and queueing behind the work,
       // which the server holds until it finishes, is the safe alternative.
+      // Tasks the session scheduled are no reason to ask: Claude Code takes
+      // them over when it resumes the session for the new turn.
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
-      if (backgroundActivity?.background) {
+      if (backgroundActivity?.background && (backgroundActivity.tasks?.length ?? 0) > 0) {
         const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
           .map((task) => describeBackgroundTask(task, t));
         const choice = await askBeforeSendingOverBackgroundWork(work);

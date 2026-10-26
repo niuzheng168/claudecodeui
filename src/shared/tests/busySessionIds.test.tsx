@@ -144,3 +144,35 @@ test('a session left with background work stays busy and joins the background se
   assert.equal(result.current.backgroundIds.size, 0, 'a new turn is a response in flight again');
   assert.deepEqual([...result.current.busyIds], ['session-1']);
 });
+
+test('one session\'s state is read from the sets: running, waiting for its user, or background work', async () => {
+  const { SessionProtectionProvider, useSessionActivityState, useSessionProtectionActions } = await import('@/shared/context/SessionProtectionContext');
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(SessionProtectionProvider, null, children);
+  const { result } = renderHook(
+    () => ({ state: useSessionActivityState('session-1'), actions: useSessionProtectionActions() }),
+    { wrapper },
+  );
+  const startedAt = Date.now() - 60_000;
+
+  assert.equal(result.current.state, null);
+  act(() => {
+    result.current.actions.markSessionProcessing('session-1');
+  });
+  assert.equal(result.current.state, 'running');
+  act(() => {
+    result.current.actions.syncProcessingSessions([{ sessionId: 'session-1', startedAt, waitingForUser: true }]);
+  });
+  assert.equal(result.current.state, 'waiting');
+  act(() => {
+    result.current.actions.syncProcessingSessions([{
+      sessionId: 'session-1', startedAt, canInterrupt: false, background: true,
+      scheduled: [{ id: 'c1', schedule: '3-59/10 * * * *', recurring: true, prompt: 'Report', since: startedAt }],
+    }]);
+  });
+  assert.equal(result.current.state, 'background');
+  act(() => {
+    result.current.actions.syncProcessingSessions([]);
+  });
+  assert.equal(result.current.state, null);
+});

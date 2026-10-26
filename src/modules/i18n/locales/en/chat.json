@@ -453,6 +453,10 @@
         "sendAnyway": "Send anyway"
       }
     },
+    "scheduledWork": "Scheduled",
+    "scheduledTask": {
+      "count": "{{count}} scheduled tasks"
+    },
     "controls": {
       "stopGeneration": "Stop Generation",
       "pressEscToStop": "Press Esc anytime to stop"

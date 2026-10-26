@@ -262,6 +262,24 @@ export type BackgroundTaskSummary = {
   nested?: boolean;
 };
 
+/**
+ * A task a session scheduled for itself (CronCreate, ScheduleWakeup, /loop),
+ * as the running-sessions poll lists it. It starts a turn of its own when it
+ * is due, and outlives a new turn: Claude Code takes it over when it resumes
+ * the session.
+ */
+export type ScheduledTaskSummary = {
+  id: string;
+  /** Cron expression in the node's local time. */
+  schedule: string;
+  /** False for a one-shot, which fires once and is gone. */
+  recurring: boolean;
+  /** What the task submits when it fires, clipped. */
+  prompt: string;
+  /** When the session's process first reported it (epoch ms). */
+  since: number;
+};
+
 /** What a busy session is doing, as shown by the activity indicator: producing a response, or only running background tasks. */
 export type SessionActivity = {
   /** Provider-supplied status line; null renders the default activity label. */
@@ -274,14 +292,25 @@ export type SessionActivity = {
    */
   startedAt: number;
   /**
-   * Set when no response is being produced and only background tasks keep
-   * the session busy. The composer stays usable: the CLI accepts a new turn
-   * while they run.
+   * Set when no response is being produced and only background tasks, or
+   * tasks it scheduled for itself, keep the session busy. The composer stays
+   * usable: the CLI accepts a new turn while they run.
    */
   background?: boolean;
   /** The background tasks the session still has running, with or without a response in flight. */
   tasks?: BackgroundTaskSummary[];
+  /** The tasks the session scheduled for itself, as the last poll listed them. */
+  scheduled?: ScheduledTaskSummary[];
+  /** The session waits for its user to answer a question or permission prompt, as the last poll said. */
+  waitingForUser?: boolean;
 };
+
+/**
+ * What a busy session is doing, for an indicator: waiting for its user,
+ * producing a response, or only running background work or waiting for the
+ * tasks it scheduled.
+ */
+export type SessionActivityState = 'waiting' | 'running' | 'background';
 
 /** Every busy session, keyed by session id. Read it to tell whether a session is busy; check `background` to tell how. */
 export type SessionActivityMap = ReadonlyMap<string, SessionActivity>;
@@ -298,7 +327,7 @@ export type MarkSessionIdle = (
   opts?: { ifStartedBefore?: number },
 ) => void;
 
-/** Records the background tasks a session still has once its turn ended; an empty list marks it idle. */
+/** Records the background tasks a session still has once its turn ended; an empty list marks it idle unless it has tasks scheduled. */
 export type MarkSessionBackground = (
   sessionId: string,
   tasks: BackgroundTaskSummary[],
@@ -321,9 +350,11 @@ export type SessionActivitySnapshot = {
   statusText?: string | null;
   canInterrupt?: boolean;
   startedAt?: number;
-  /** True when the server lists the session for its background tasks alone, with no chat run. */
+  /** True when the server lists the session for its background tasks, or the tasks it scheduled, alone, with no chat run. */
   background?: boolean;
   tasks?: BackgroundTaskSummary[];
+  scheduled?: ScheduledTaskSummary[];
+  waitingForUser?: boolean;
 };
 
 // ---------------------------

@@ -4,7 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { test } from 'vitest';
 
 import { useSessionProtection } from '@/shared/hooks/useSessionProtection';
-import type { BackgroundTaskSummary } from '@/shared/types';
+import type { BackgroundTaskSummary, ScheduledTaskSummary } from '@/shared/types';
 
 /**
  * A session whose turn has ended while the agents, workflows or commands it
@@ -130,4 +130,65 @@ test('a poll that changes what it says about a listed task is not dropped as a r
   const listed = result.current.getSessionActivity('session-1')?.tasks?.[0];
   assert.equal(listed?.nested, true);
   assert.equal(listed?.description, 'Audit the whole frontend');
+});
+
+const scheduled = (overrides: Partial<ScheduledTaskSummary> = {}): ScheduledTaskSummary => ({
+  id: 'c1',
+  schedule: '3-59/10 * * * *',
+  recurring: true,
+  prompt: 'Report the training progress',
+  since: Date.now() - 600_000,
+  ...overrides,
+});
+
+test('a session the poll lists for a task it scheduled stays busy through the turns the task fires', () => {
+  // The transcript knows nothing of scheduled tasks: when a turn ends with no
+  // background task left, the ones the poll listed keep the session busy
+  // until a poll no longer lists them.
+  const { result } = renderHook(() => useSessionProtection());
+  const listed = scheduled();
+
+  act(() => {
+    result.current.syncProcessingSessions([
+      { sessionId: 'session-1', startedAt: listed.since, canInterrupt: false, background: true, scheduled: [listed] },
+    ]);
+  });
+  assert.equal(result.current.getSessionActivity('session-1')?.background, true);
+  assert.deepEqual(result.current.getSessionActivity('session-1')?.scheduled, [listed]);
+  assert.equal(result.current.isSessionProcessing('session-1'), false);
+
+  act(() => {
+    result.current.markSessionProcessing('session-1', { statusText: null, canInterrupt: true });
+  });
+  assert.equal(result.current.isSessionProcessing('session-1'), true);
+  assert.deepEqual(result.current.getSessionActivity('session-1')?.scheduled, [listed], 'the task stays scheduled under the turn');
+
+  act(() => {
+    result.current.markSessionBackground('session-1', []);
+  });
+  const activity = result.current.getSessionActivity('session-1');
+  assert.equal(activity?.background, true, 'the turn ended, the task is still scheduled');
+  assert.equal(activity?.tasks, undefined);
+  assert.deepEqual(activity?.scheduled, [listed]);
+  assert.equal(activity?.startedAt, listed.since);
+
+  act(() => {
+    result.current.syncProcessingSessions([]);
+  });
+  assert.equal(result.current.getSessionActivity('session-1'), undefined, 'a poll that no longer lists it drops it');
+});
+
+test('the poll says which busy session waits for its user, and a later poll that stops saying so is not a repeat', () => {
+  const { result } = renderHook(() => useSessionProtection());
+  const startedAt = Date.now() - 60_000;
+
+  act(() => {
+    result.current.syncProcessingSessions([{ sessionId: 'session-1', startedAt, waitingForUser: true }]);
+  });
+  assert.equal(result.current.getSessionActivity('session-1')?.waitingForUser, true);
+
+  act(() => {
+    result.current.syncProcessingSessions([{ sessionId: 'session-1', startedAt }]);
+  });
+  assert.equal(result.current.getSessionActivity('session-1')?.waitingForUser, undefined);
 });

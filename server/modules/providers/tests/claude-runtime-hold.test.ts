@@ -11,6 +11,7 @@ import {
   getClaudeSDKSessionStartTime,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
+  retireClaudeProcessesOpenedElsewhere,
   retireIdleClaudeProcesses,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
@@ -55,7 +56,11 @@ type Scripted = {
   released: () => boolean;
   stopped: string[];
   interrupts: () => number;
+  /** Runs the Stop hooks the runtime registered, as the CLI does right before a turn's `result`. */
+  stopHook: (sessionCrons: unknown[]) => Promise<void>;
 };
+
+type HookMatchers = Array<{ hooks: Array<(input: Record<string, unknown>) => Promise<unknown>> }>;
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
 function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContext['createQuery']>; script: Scripted } {
@@ -63,6 +68,7 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
   let wake: (() => void) | null = null;
   let released = false;
   let interrupts = 0;
+  let stopHooks: HookMatchers | null = null;
   const stopped: string[] = [];
 
   const script: Scripted = {
@@ -71,9 +77,19 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     released: () => released,
     stopped,
     interrupts: () => interrupts,
+    stopHook: async (sessionCrons) => {
+      // The runtime launches the process after the test has started scripting.
+      await waitFor(() => stopHooks !== null);
+      for (const matcher of stopHooks ?? []) {
+        for (const hook of matcher.hooks) {
+          await hook({ hook_event_name: 'Stop', stop_hook_active: false, background_tasks: [], session_crons: sessionCrons });
+        }
+      }
+    },
   };
 
-  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt, options }) => {
+    stopHooks = (options.hooks as { Stop?: HookMatchers } | undefined)?.Stop ?? [];
     void (async () => {
       for await (const _message of prompt) { /* the CLI reads its stdin */ }
       released = true;
@@ -529,4 +545,165 @@ test('stopping a turn the CLI started on its own keeps the process for the work 
     assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.tasks.map((task) => task.taskId)), [['a2']]);
     assert.equal(script.released(), false, 'the second agent keeps its process');
   }, { startFollowUpRun: followUps.startFollowUpRun });
+});
+
+// Tasks the session scheduled for itself (CronCreate, ScheduleWakeup, /loop)
+// are only known from what Claude Code passes to the Stop hook before a
+// turn's `result`.
+const cron = (id: string, recurring = true) => ({ id, schedule: '3-59/10 * * * *', recurring, prompt: `Report ${id}` });
+const withoutSince = (scheduled: Array<Record<string, unknown>> | undefined) =>
+  scheduled?.map(({ since, ...task }) => { assert.equal(typeof since, 'number'); return task; });
+
+test('a task the session scheduled holds its process, also across the turns it fires', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '3-59/10 * * * *', prompt: 'Report c1' }));
+    script.emit(ack('toolu_cron', 'Scheduled recurring job c1', {}));
+    await script.stopHook([cron('c1')]);
+    script.emit(result());
+    await waitFor(() => completes(sent).length === 1);
+
+    const [listed] = listClaudeSDKBackgroundWork();
+    assert.equal(listed?.sessionId, SESSION_ID);
+    assert.deepEqual(listed.tasks, []);
+    assert.deepEqual(withoutSince(listed.scheduled), [{ id: 'c1', schedule: '3-59/10 * * * *', recurring: true, prompt: 'Report c1' }]);
+    assert.equal(script.released(), false, 'the task lives in the process, so it is held');
+
+    // The task fires a turn of its own, and is still there after it.
+    script.emit(init());
+    script.emit(assistantText('Progress report.'));
+    await script.stopHook([cron('c1')]);
+    script.emit(result());
+    await settle();
+    assert.equal(script.released(), false, 'a recurring task keeps holding it');
+    assert.equal(listClaudeSDKBackgroundWork()[0]?.scheduled?.[0]?.since, listed.scheduled?.[0]?.since,
+      'the task keeps the time it was first reported');
+
+    // A turn after which nothing is scheduled any more lets it go.
+    script.emit(init());
+    script.emit(assistantText('Deleted the report.'));
+    await script.stopHook([]);
+    script.emit(result());
+    await waitFor(() => script.released());
+    assert.deepEqual(listClaudeSDKBackgroundWork(), []);
+  });
+});
+
+test('a process holds for a task the session scheduled before it was resumed', async () => {
+  await withRun(async ({ script, sent }) => {
+    // This turn schedules nothing; the CLI took the task over from the
+    // session's last process when it resumed the session.
+    script.emit(init());
+    script.emit(assistantText('Training is still running.'));
+    await script.stopHook([cron('c1')]);
+    script.emit(result());
+    await waitFor(() => completes(sent).length === 1);
+    await settle();
+
+    assert.equal(script.released(), false);
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => [entry.sessionId, withoutSince(entry.scheduled)?.map((task) => task.id)]),
+      [[SESSION_ID, ['c1']]]);
+  });
+});
+
+test('a one-shot task that fired lets the process go', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_cron', 'CronCreate', { cron: '0 9 27 10 *', prompt: 'Report c1', recurring: false }));
+    script.emit(ack('toolu_cron', 'Scheduled one-shot job c1', {}));
+    await script.stopHook([cron('c1', false)]);
+    script.emit(result());
+    await waitFor(() => completes(sent).length === 1);
+    assert.equal(script.released(), false);
+
+    script.emit(init());
+    script.emit(assistantText('Reminder.'));
+    await script.stopHook([]);
+    script.emit(result());
+    await waitFor(() => script.released());
+    assert.deepEqual(listClaudeSDKBackgroundWork(), []);
+  });
+});
+
+test('with resident processes, processes held for scheduled tasks do not count against the idle cap', async () => {
+  const previous = process.env.CLAUDE_MAX_IDLE_PROCESSES;
+  process.env.CLAUDE_MAX_IDLE_PROCESSES = '1';
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
+  const sessions = new ClaudeSessionsProvider({ getLiveRunStartTime: () => null });
+  const runs: Array<{ script: Scripted; done: Promise<unknown> }> = [];
+
+  /** One finished turn of its own session, whose Stop hook reports `scheduled`. */
+  const finishTurn = async (sessionId: string, scheduled: unknown[]) => {
+    const { createQuery, script } = createScriptedQuery();
+    const sent: NormalizedMessage[] = [];
+    const writer = { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null };
+    const context: ProviderRuntimeContext = {
+      resolveProviderSessionId: () => null,
+      resolveResumeModel: async () => undefined,
+      getProviderModels: async () => CLAUDE_PREDEFINED_MODELS as never,
+      normalizeMessage: (raw, id) => sessions.normalizeMessage(raw, id),
+      isProviderInstalled: async () => true,
+      createQuery,
+    };
+    const done = queryClaudeSDK('hello', { sessionId, cwd }, writer as never, context);
+    script.emit({ ...init(), session_id: `native-${sessionId}` });
+    script.emit({ ...assistantText('Done.'), session_id: `native-${sessionId}` });
+    await script.stopHook(scheduled);
+    script.emit({ ...result(), session_id: `native-${sessionId}` });
+    await waitFor(() => completes(sent).length === 1);
+    await done;
+    runs.push({ script, done });
+    return script;
+  };
+
+  try {
+    const first = await finishTurn('app-scheduled-1', [cron('c1')]);
+    const second = await finishTurn('app-scheduled-2', [cron('c2')]);
+    const plain = await finishTurn('app-plain', []);
+    await settle();
+
+    assert.equal(first.released(), false, 'its scheduled task keeps the first process');
+    assert.equal(second.released(), false, 'and the second one\'s');
+    assert.equal(plain.released(), false, 'the one idle resident process is within the cap');
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.sessionId).sort(), ['app-scheduled-1', 'app-scheduled-2']);
+  } finally {
+    // A retired process is only gone once its CLI ends, so end them first.
+    for (const { script } of runs) script.end();
+    await retireIdleClaudeProcesses();
+    process.env.CLAUDE_MAX_IDLE_PROCESSES = previous;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a process held only for scheduled tasks steps aside when Claude Desktop or a terminal opens the session', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit(assistantText('Scheduled the report.'));
+    await script.stopHook([cron('c1')]);
+    script.emit(result());
+    await waitFor(() => completes(sent).length === 1);
+    assert.equal(script.released(), false);
+
+    // The other process resumed the session and took the task over with it;
+    // two processes would both run it.
+    retireClaudeProcessesOpenedElsewhere(NATIVE_ID);
+    await waitFor(() => script.released());
+    assert.deepEqual(listClaudeSDKBackgroundWork(), []);
+  });
+});
+
+test('a process with a background task still going stays when Claude Desktop or a terminal opens the session', async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit(toolUse('toolu_agent', 'Agent', { prompt: 'sleep 90', subagent_type: 'general-purpose', run_in_background: true }));
+    script.emit(taskStarted('a1', 'toolu_agent', 'local_agent'));
+    script.emit(ack('toolu_agent', 'Async agent launched successfully.', { status: 'async_launched', agentId: 'a1' }));
+    await script.stopHook([cron('c1')]);
+    script.emit(result());
+    await waitFor(() => completes(sent).length === 1);
+
+    retireClaudeProcessesOpenedElsewhere(NATIVE_ID);
+    await settle();
+    assert.equal(script.released(), false, 'its agent would be cut off');
+  });
 });

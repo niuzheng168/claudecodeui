@@ -213,3 +213,23 @@ test('a session with nothing in the background sends without asking', async () =
   assert.equal(view.result.current.backgroundSendPrompt, null);
   assert.equal(sends().length, 1);
 });
+
+test('a session that only has tasks it scheduled sends without asking: they outlive the new turn', async () => {
+  // Claude Code takes the scheduled tasks over when it resumes the session,
+  // and queueing behind them would hold the message until they are deleted.
+  const { view, sends } = render(new Map([[
+    'session-1',
+    {
+      statusText: null,
+      canInterrupt: false,
+      startedAt: 1,
+      background: true,
+      scheduled: [{ id: 'c1', schedule: '3-59/10 * * * *', recurring: true, prompt: 'Report the training progress', since: 1 }],
+    },
+  ]]));
+  await act(async () => { view.result.current.setInput('hello'); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  assert.equal(view.result.current.backgroundSendPrompt, null);
+  assert.equal(sends().length, 1);
+});

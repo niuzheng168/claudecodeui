@@ -99,7 +99,12 @@
     "untitledSession": "Untitled Session",
     "projectFiles": "Project Files",
     "renameSessionHint": "{{title}} (double-click to rename)",
-    "renameSessionLabel": "Session title"
+    "renameSessionLabel": "Session title",
+    "sessionState": {
+      "waiting": "Waiting for your input",
+      "running": "Running",
+      "background": "Background work"
+    }
   },
   "fileTree": {
     "loading": "Loading files...",

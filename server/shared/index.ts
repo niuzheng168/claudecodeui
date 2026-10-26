@@ -34,7 +34,7 @@ export { parseFrontMatter } from './frontmatter.js';
 export type { IProviderSessions, IProviderSessionSynchronizer, IProviderFork } from './interfaces.js';
 export type {
   BackgroundTaskSummary, CodexHistoryPageRequest, FetchHistoryOptions, FetchHistoryResult, MemoryCitation,
-  NormalizedMessage, SubagentActivity, SubagentInfo, WorkflowAgentActivity,
+  NormalizedMessage, ScheduledTaskSummary, SubagentActivity, SubagentInfo, WorkflowAgentActivity,
 } from './types.js';
 export {
   buildLookupMap, extractFirstValidJsonlData, findFilesRecursivelyCreatedAfter,

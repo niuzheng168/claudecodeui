@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 
 import { Shimmer } from '@/shared/ui';
-import type { BackgroundTaskSummary, SessionActivity } from '@/shared/types';
+import type { BackgroundTaskSummary, ScheduledTaskSummary, SessionActivity } from '@/shared/types';
 import { describeBackgroundTask, ownBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
 
 type ActivityIndicatorProps = {
@@ -31,6 +31,13 @@ function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], t: TFunction
     : t('claudeStatus.backgroundTask.count', { count: tasks.length, defaultValue: '{{count}} tasks' });
 }
 
+/** What the session scheduled: the one task by the first line of its prompt, or how many when there are several. */
+function describeScheduledTasks(tasks: ScheduledTaskSummary[], t: TFunction): string {
+  return tasks.length === 1
+    ? tasks[0].prompt.split('\n', 1)[0].trim() || tasks[0].schedule
+    : t('claudeStatus.scheduledTask.count', { count: tasks.length, defaultValue: '{{count}} scheduled tasks' });
+}
+
 /**
  * Minimal response-in-progress indicator, in the spirit of the inline status
  * lines in Claude Code / Codex / OpenCode: a shimmering activity label, the
@@ -40,7 +47,8 @@ function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], t: TFunction
  *
  * A session whose turn has ended while the tasks it launched still run is
  * drawn in the workflow and agent cards' purple, naming the work, and with no
- * Stop: nothing is responding, and the composer can send.
+ * Stop: nothing is responding, and the composer can send. A session that only
+ * has tasks scheduled to wake it later is drawn the same way, naming them.
  *
  * Rendered by chat's ChatComposer above the input so the user can see and
  * interrupt the in-flight turn without leaving the composer.
@@ -81,12 +89,18 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
   if (!renderedActivity) return null;
 
   const isBackground = Boolean(renderedActivity.background);
+  // Tasks running in the background say more than tasks waiting to start.
+  const scheduledOnly = isBackground && !renderedActivity.tasks?.length && Boolean(renderedActivity.scheduled?.length);
   const actionWords = ACTION_KEYS.map((key, i) => t(key, { defaultValue: DEFAULT_ACTION_WORDS[i] }));
-  const label = isBackground
-    ? t('claudeStatus.backgroundWork', 'Background work')
-    : (renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
-      .replace(/\.+$/, '');
-  const detail = isBackground ? describeBackgroundTasks(renderedActivity.tasks ?? [], t) : '';
+  const label = scheduledOnly
+    ? t('claudeStatus.scheduledWork', 'Scheduled')
+    : isBackground
+      ? t('claudeStatus.backgroundWork', 'Background work')
+      : (renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
+        .replace(/\.+$/, '');
+  const detail = scheduledOnly
+    ? describeScheduledTasks(renderedActivity.scheduled ?? [], t)
+    : isBackground ? describeBackgroundTasks(renderedActivity.tasks ?? [], t) : '';
 
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;

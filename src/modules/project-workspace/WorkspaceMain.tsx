@@ -10,6 +10,7 @@ import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, DirectoryRevealRequest, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import { useSessionActivityState } from '@/shared/context/SessionProtectionContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
@@ -71,6 +72,7 @@ function WorkspaceMain({
 
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
+  const sessionState = useSessionActivityState(selectedSession?.id);
 
   useTaskMasterProjectSync(selectedProject);
   // The folder an in-chat `path/` reference asked to reveal. Held as an object
@@ -161,6 +163,7 @@ function WorkspaceMain({
         setActiveTab={setActiveTab}
         selectedProject={selectedProject}
         selectedSession={selectedSession}
+        sessionState={sessionState}
         shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}

@@ -6,7 +6,7 @@ import { test, vi } from 'vitest';
 
 import '@/modules/i18n';
 import ActivityIndicator from '@/modules/chat/composer/ActivityIndicator';
-import type { BackgroundTaskSummary, SessionActivity } from '@/shared/types';
+import type { BackgroundTaskSummary, ScheduledTaskSummary, SessionActivity } from '@/shared/types';
 
 /**
  * The pill above the composer used to vanish at the turn's `complete` even
@@ -84,4 +84,31 @@ test('a response in flight still shows the Stop button and the primary dot', () 
   assert.ok(screen.getByRole('button', { name: 'Stop' }));
   assert.ok(container.querySelector('.bg-primary'));
   assert.equal(container.querySelector('.bg-purple-500'), null);
+});
+
+const scheduled = (id: string, prompt: string): ScheduledTaskSummary => ({
+  id, schedule: '3-59/10 * * * *', recurring: true, prompt, since: Date.now() - 65_000,
+});
+
+test('a session that only has tasks it scheduled names the task by its prompt, or counts them, and offers no Stop', () => {
+  const since = Date.now() - 65_000;
+  const scheduledOnly = (tasks: ScheduledTaskSummary[]): SessionActivity => ({
+    statusText: null, canInterrupt: false, startedAt: since, background: true, scheduled: tasks,
+  });
+
+  const one = render(<ActivityIndicator activity={scheduledOnly([scheduled('c1', 'Report the training progress\nThen go on.')])} onAbort={() => {}} />);
+  assert.match(one.container.textContent ?? '', /Scheduled…/);
+  assert.match(one.container.textContent ?? '', /Report the training progress/);
+  assert.doesNotMatch(one.container.textContent ?? '', /Then go on/, 'the first line names it');
+  assert.equal(screen.queryByRole('button', { name: 'Stop' }), null);
+  one.unmount();
+
+  const two = render(<ActivityIndicator activity={scheduledOnly([scheduled('c1', 'Report'), scheduled('c2', 'Check')])} />);
+  assert.match(two.container.textContent ?? '', /2 scheduled tasks/);
+  two.unmount();
+
+  // Work running in the background says more than work waiting to start.
+  const both = render(<ActivityIndicator activity={{ ...backgroundActivity([task()]), scheduled: [scheduled('c1', 'Report')] }} />);
+  assert.match(both.container.textContent ?? '', /Background work…/);
+  assert.match(both.container.textContent ?? '', /Workflow frontend-architecture-audit/);
 });

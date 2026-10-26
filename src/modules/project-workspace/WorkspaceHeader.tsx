@@ -2,7 +2,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { AppTab, Project, ProjectSession } from '@/shared/types';
+import type { AppTab, Project, ProjectSession, SessionActivityState } from '@/shared/types';
 import { cn } from '@/shared/utils';
 import MobileMenuButton from '@/modules/project-workspace/MobileMenuButton';
 import WorkspaceConnectionStatus from '@/modules/project-workspace/WorkspaceConnectionStatus';
@@ -14,6 +14,8 @@ type WorkspaceHeaderProps = {
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
+  /** What the selected session is doing, drawn under its icon; null or absent while it is not busy. */
+  sessionState?: SessionActivityState | null;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
   isMobile: boolean;
@@ -28,6 +30,7 @@ export default function WorkspaceHeader({
   setActiveTab,
   selectedProject,
   selectedSession,
+  sessionState = null,
   shouldShowTasksTab,
   shouldShowBrowserTab,
   isMobile,
@@ -104,6 +107,7 @@ export default function WorkspaceHeader({
             activeTab={activeTab}
             selectedProject={selectedProject}
             selectedSession={selectedSession}
+            sessionState={sessionState}
             shouldShowTasksTab={shouldShowTasksTab}
             onRenameSession={onRenameSession}
           />

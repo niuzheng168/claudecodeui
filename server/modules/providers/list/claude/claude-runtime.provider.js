@@ -740,7 +740,9 @@ function retireProcess(proc) {
  * Decides what a process does once no turn is running in it: wait for
  * background work to report back, stay resident for the session's next turn,
  * or exit. Idle resident processes beyond the cap are retired, least recently
- * used first and those still waiting on background work last.
+ * used first and those still waiting on background work last. A process held
+ * for tasks its session scheduled has no ceiling and does not count against
+ * the cap: the tasks live in it, and retiring it would cancel them.
  * @param {Object} proc - Process record
  */
 function scheduleIdleProcess(proc) {
@@ -748,6 +750,11 @@ function scheduleIdleProcess(proc) {
     return;
   }
   if (proc.heldForBackgroundWork) {
+    if (hasScheduledWork(proc)) {
+      // The next task may be hours away, so silence says nothing.
+      clearProcessTimer(proc);
+      return;
+    }
     // The ceiling measures silence: background activity re-arms it.
     armProcessTimer(proc, BG_WAIT_CEILING_MS);
     return;
@@ -759,7 +766,8 @@ function scheduleIdleProcess(proc) {
   }
   armProcessTimer(proc, idleProcessTimeoutMs());
   const idle = [...activeSessions.values()]
-    .filter((candidate) => candidate.status === 'idle' && !candidate.retired)
+    .filter((candidate) => candidate.status === 'idle' && !candidate.retired
+      && !(candidate.heldForBackgroundWork && hasScheduledWork(candidate)))
     .sort((a, b) => Number(a.heldForBackgroundWork) - Number(b.heldForBackgroundWork) || a.lastActiveAt - b.lastActiveAt);
   for (const candidate of idle.slice(0, Math.max(0, idle.length - maxIdle))) {
     retireProcess(candidate);
@@ -774,6 +782,43 @@ function scheduleIdleProcess(proc) {
  */
 function hasOutstandingBackgroundWork(proc) {
   return isRegisteredProcess(proc) && backgroundWork.hasOutstanding(proc.key);
+}
+
+// How much of a scheduled task's prompt the running-sessions list carries.
+const SCHEDULED_PROMPT_MAX_CHARS = 200;
+
+/**
+ * Records the tasks the process's session has scheduled for itself, as its
+ * Stop hook reported them; a task keeps the time it was first reported. A CLI
+ * that does not report them leaves the record unknown (null), and the hold
+ * goes by what the turn's tool calls launched alone.
+ * @param {Object} proc - Process record
+ * @param {unknown} crons - The hook input's `session_crons`
+ */
+function noteScheduledTasks(proc, crons) {
+  if (!Array.isArray(crons)) {
+    return;
+  }
+  const known = new Map((proc.scheduledTasks ?? []).map((task) => [task.id, task]));
+  const now = Date.now();
+  proc.scheduledTasks = crons
+    .filter((cron) => typeof cron?.id === 'string' && cron.id && typeof cron.schedule === 'string')
+    .map((cron) => ({
+      id: cron.id,
+      schedule: cron.schedule,
+      recurring: cron.recurring === true,
+      prompt: typeof cron.prompt === 'string' ? cron.prompt.slice(0, SCHEDULED_PROMPT_MAX_CHARS) : '',
+      since: known.get(cron.id)?.since ?? now
+    }));
+}
+
+/**
+ * Whether the process's session has tasks scheduled to wake it later.
+ * @param {Object} proc - Process record
+ * @returns {boolean}
+ */
+function hasScheduledWork(proc) {
+  return (proc.scheduledTasks?.length ?? 0) > 0;
 }
 
 /**
@@ -806,12 +851,17 @@ function trackBackgroundWork(proc, message) {
  * full ceiling with nothing outstanding. `startsBackgroundWork` stays the rule
  * for tools that emit no task events (Monitor, ScheduleWakeup, CronCreate,
  * TaskCreate) and for an SDK that does not report tasks at all.
+ *
+ * Tasks the session scheduled for itself hold the process for as long as the
+ * Stop hook reports any, including ones a resumed process took over: each
+ * fires a turn of its own, which only a live process can run.
  * @param {Object} proc - Process record
  * @param {boolean} reportsBack - The turn was the CLI's own follow-up, not a Codey turn
  */
 function noteCliTurnEnded(proc, reportsBack) {
   const stillOutstanding = hasOutstandingBackgroundWork(proc);
-  if (reportsBack && proc.heldForBackgroundWork && !stillOutstanding) {
+  const scheduled = hasScheduledWork(proc);
+  if (reportsBack && proc.heldForBackgroundWork && !stillOutstanding && !scheduled) {
     // The last of the work the process was held for has reported back.
     notifyBackgroundWorkCompleted({
       userId: proc.writer?.userId || null,
@@ -820,9 +870,9 @@ function noteCliTurnEnded(proc, reportsBack) {
       sessionName: proc.sessionSummary
     });
   }
-  proc.heldForBackgroundWork = proc.sawTaskEventThisTurn
+  proc.heldForBackgroundWork = scheduled || (proc.sawTaskEventThisTurn
     ? stillOutstanding
-    : proc.backgroundWorkPending || stillOutstanding;
+    : proc.backgroundWorkPending || stillOutstanding);
   proc.backgroundWorkPending = false;
   proc.sawTaskEventThisTurn = false;
 }
@@ -1596,6 +1646,16 @@ function bindProcessCallbacks(proc, sdkOptions) {
         }));
         return {};
       }]
+    }],
+    // The tasks a session has scheduled for itself are only reported here:
+    // Claude Code passes them to every Stop hook, right before the turn's
+    // `result` (checked against Claude Code 2.1.310, also for a resumed
+    // session and for a turn a task fired).
+    Stop: [{
+      hooks: [async (input) => {
+        noteScheduledTasks(proc, input?.session_crons);
+        return {};
+      }]
     }]
   };
 
@@ -1783,9 +1843,14 @@ function handleIdleMessage(proc, message) {
     // `stopped` notification — so when that was the last outstanding task
     // nothing will ever push the `result` that ends the hold, and the process
     // would sit until the ceiling. End it here. A completed task is
-    // different: the CLI relays its result in a turn of its own.
-    proc.heldForBackgroundWork = false;
+    // different: the CLI relays its result in a turn of its own. Tasks the
+    // session scheduled keep holding it.
+    proc.heldForBackgroundWork = hasScheduledWork(proc);
     scheduleIdleProcess(proc);
+  } else if (proc.heldForBackgroundWork && hasScheduledWork(proc) && !proc.cliBusy) {
+    // What the CLI says between turns (its `command_lifecycle` bookkeeping
+    // after a scheduled task's turn) starts no countdown: the process waits
+    // for the next task without one.
   } else if (!proc.retired) {
     // Activity pushes the countdown back out.
     armProcessTimer(proc, proc.heldForBackgroundWork ? BG_WAIT_CEILING_MS : idleProcessTimeoutMs());
@@ -1887,6 +1952,9 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
     // task events then decide the hold (see noteCliTurnEnded).
     sawTaskEventThisTurn: false,
     heldForBackgroundWork: false,
+    // The tasks the session has scheduled for itself, as the last Stop hook
+    // reported them; null until one has (see noteScheduledTasks).
+    scheduledTasks: null,
     // The CLI moved to another session (a typed /clear), so the process no
     // longer continues the one Codey maps; it exits after the turn.
     retireAfterTurn: false,
@@ -1944,7 +2012,9 @@ function retireIdleClaudeProcesses() {
  * Retires the idle process Codey keeps for a session that Claude Desktop or a
  * terminal has opened since. It holds the conversation as it was and would
  * never be reused, but keeps its memory until the idle timeout. A process
- * still running a turn, or waiting for background work, is left alone.
+ * still running a turn, or waiting for background work, is left alone. One
+ * held only for the tasks its session scheduled is not: the other process
+ * took them over when it resumed the session, and both would run them.
  *
  * Used by the sessions watcher (sessions-watcher.service.ts) when another
  * process registers for the session.
@@ -1952,7 +2022,8 @@ function retireIdleClaudeProcesses() {
  */
 function retireClaudeProcessesOpenedElsewhere(providerSessionId) {
   for (const proc of [...activeSessions.values()]) {
-    if (proc.providerSessionId === providerSessionId && proc.status === 'idle' && !proc.heldForBackgroundWork) {
+    if (proc.providerSessionId === providerSessionId && proc.status === 'idle'
+      && (!proc.heldForBackgroundWork || (hasScheduledWork(proc) && !hasOutstandingBackgroundWork(proc)))) {
       retireProcess(proc);
     }
   }
@@ -2573,16 +2644,23 @@ async function steerClaudeSDKSession(sessionId, command, options = {}) {
 }
 
 /**
- * Sessions whose background tasks are still outstanding, with the tasks.
+ * Sessions whose background tasks are still outstanding, with the tasks, and
+ * sessions with tasks scheduled to wake them later, with those.
  *
  * A session stays here after its turn's `result` for as long as its process
  * is held for the work — which is exactly the window in which nothing else
  * (the chat run registry marks the run completed at `result`) knows the
  * session is still busy.
- * @returns {Array<{ sessionId: string, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary> }>}
+ * @returns {Array<{ sessionId: string, tasks: Array<import('@/shared/types.js').BackgroundTaskSummary>, scheduled?: Array<import('@/shared/types.js').ScheduledTaskSummary> }>}
  */
 function listClaudeSDKBackgroundWork() {
-  return backgroundWork.list();
+  const work = new Map(backgroundWork.list().map((entry) => [entry.sessionId, entry]));
+  for (const [sessionId, proc] of activeSessions) {
+    if (!proc.retired && hasScheduledWork(proc)) {
+      work.set(sessionId, { sessionId, tasks: work.get(sessionId)?.tasks ?? [], scheduled: proc.scheduledTasks });
+    }
+  }
+  return [...work.values()];
 }
 
 /**

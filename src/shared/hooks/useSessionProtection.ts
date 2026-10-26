@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 
-import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SyncProcessingSessions } from '@/shared/types';
+import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, ScheduledTaskSummary, SessionActivity, SessionActivityMap, SessionActivitySnapshot, SyncProcessingSessions } from '@/shared/types';
 
 
 
@@ -18,12 +18,20 @@ const backgroundTasksKey = (tasks: readonly BackgroundTaskSummary[] | undefined)
     .map((task) => [task.taskId, task.toolUseId, task.taskType, task.description, task.workflowName ?? '', task.startedAt, task.nested ? 1 : 0].join('\u0001'))
     .join('\u0000');
 
+/** The scheduled tasks as an identity, by every field the indicators read. */
+const scheduledTasksKey = (tasks: readonly ScheduledTaskSummary[] | undefined): string =>
+  (tasks ?? [])
+    .map((task) => [task.id, task.schedule, task.recurring ? 1 : 0, task.prompt, task.since].join('\u0001'))
+    .join('\u0000');
+
 const sessionActivitiesMatch = (left: SessionActivity, right: SessionActivity): boolean =>
   left.statusText === right.statusText
   && left.canInterrupt === right.canInterrupt
   && left.startedAt === right.startedAt
   && Boolean(left.background) === Boolean(right.background)
-  && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks);
+  && Boolean(left.waitingForUser) === Boolean(right.waitingForUser)
+  && backgroundTasksKey(left.tasks) === backgroundTasksKey(right.tasks)
+  && scheduledTasksKey(left.scheduled) === scheduledTasksKey(right.scheduled);
 
 const sessionActivityMapsMatch = (
   left: ReadonlyMap<string, SessionActivity>,
@@ -53,8 +61,9 @@ const sessionActivityMapsMatch = (
  *
  * An entry is either a response in flight or, flagged `background`, a
  * session whose turn has ended while the tasks it launched — agents,
- * workflows, backgrounded commands — are still running. Only the former
- * counts as processing: the composer stays usable during the latter.
+ * workflows, backgrounded commands — are still running, or which has tasks
+ * scheduled to start turns of their own. Only the former counts as
+ * processing: the composer stays usable during the latter.
  */
 export function useSessionProtection() {
   const [processingSessions, setProcessingSessions] = useState<Map<string, SessionActivity>>(
@@ -79,9 +88,10 @@ export function useSessionProtection() {
           activity?.statusText !== undefined ? activity.statusText : continuing?.statusText ?? null,
         canInterrupt: activity?.canInterrupt ?? continuing?.canInterrupt ?? true,
         startedAt: continuing?.startedAt ?? Date.now(),
-        // The tasks keep running under the new turn; they are reported again
-        // when it ends.
+        // The tasks keep running under the new turn, and the scheduled ones
+        // stay scheduled; they are reported again when it ends.
         ...(existing?.tasks ? { tasks: existing.tasks } : {}),
+        ...(existing?.scheduled ? { scheduled: existing.scheduled } : {}),
       };
 
       if (
@@ -128,7 +138,10 @@ export function useSessionProtection() {
   const markSessionBackground = useCallback<MarkSessionBackground>((sessionId, tasks) => {
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
-      if (tasks.length === 0) {
+      // Tasks the session scheduled outlive its turns, so they keep it busy
+      // until a poll says they are gone; the transcript does not know them.
+      const scheduled = existing?.scheduled ?? [];
+      if (tasks.length === 0 && scheduled.length === 0) {
         if (!existing) {
           return prev;
         }
@@ -140,9 +153,10 @@ export function useSessionProtection() {
       const next: SessionActivity = {
         statusText: null,
         canInterrupt: false,
-        startedAt: Math.min(...tasks.map((task) => task.startedAt)),
+        startedAt: Math.min(...tasks.map((task) => task.startedAt), ...scheduled.map((task) => task.since)),
         background: true,
-        tasks,
+        ...(tasks.length > 0 ? { tasks } : {}),
+        ...(scheduled.length > 0 ? { scheduled } : {}),
       };
       if (existing && sessionActivitiesMatch(existing, next)) {
         return prev;
@@ -195,6 +209,8 @@ export function useSessionProtection() {
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
           ...(snapshot.background ? { background: true } : {}),
           ...(snapshot.tasks ? { tasks: snapshot.tasks } : {}),
+          ...(snapshot.scheduled?.length ? { scheduled: snapshot.scheduled } : {}),
+          ...(snapshot.waitingForUser ? { waitingForUser: true } : {}),
         });
       }
 

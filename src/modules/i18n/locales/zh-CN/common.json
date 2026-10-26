@@ -97,7 +97,12 @@
     "createProjectDesktop": "点击侧边栏中的文件夹图标以创建新项目",
     "newSession": "新会话",
     "untitledSession": "未命名会话",
-    "projectFiles": "项目文件"
+    "projectFiles": "项目文件",
+    "sessionState": {
+      "waiting": "等待输入",
+      "running": "进行中",
+      "background": "后台任务"
+    }
   },
   "fileTree": {
     "loading": "正在加载文件...",

@@ -10,7 +10,7 @@ import type { ReactNode } from 'react';
 import {
   useSessionProtection,
 } from '@/shared/hooks/useSessionProtection';
-import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, SessionActivity, SessionActivityMap, SyncProcessingSessions } from '@/shared/types';
+import type { BackgroundTaskSummary, GetSessionActivity, IsSessionProcessing, MarkSessionBackground, MarkSessionIdle, MarkSessionProcessing, ScheduledTaskSummary, SessionActivity, SessionActivityMap, SessionActivityState, SyncProcessingSessions } from '@/shared/types';
 import { api } from '@/shared/api';
 
 type RunningSessionApiItem = {
@@ -20,6 +20,8 @@ type RunningSessionApiItem = {
   canInterrupt?: unknown;
   background?: unknown;
   tasks?: unknown;
+  scheduled?: unknown;
+  waitingForUser?: unknown;
 };
 
 type RunningSessionsApiPayload = {
@@ -41,6 +43,7 @@ const SessionProtectionStateContext = createContext<SessionActivityMap | null>(n
 const SessionProtectionActionsContext = createContext<SessionProtectionActions | null>(null);
 const BusySessionIdsContext = createContext<ReadonlySet<string> | null>(null);
 const BackgroundSessionIdsContext = createContext<ReadonlySet<string> | null>(null);
+const WaitingSessionIdsContext = createContext<ReadonlySet<string> | null>(null);
 
 /**
  * The set of session ids whose activity passes `include`, with a stable
@@ -72,6 +75,7 @@ function useSessionIdSet(
 
 const isAnyActivity = () => true;
 const isBackgroundOnly = (activity: SessionActivity) => Boolean(activity.background);
+const isWaitingForUser = (activity: SessionActivity) => Boolean(activity.waitingForUser);
 
 const parseStartedAt = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
@@ -120,6 +124,29 @@ const parseBackgroundTasks = (value: unknown): BackgroundTaskSummary[] | undefin
   return tasks;
 };
 
+/** The poll's scheduled tasks, each kept only in the shape the indicators read. */
+const parseScheduledTasks = (value: unknown): ScheduledTaskSummary[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const tasks: ScheduledTaskSummary[] = [];
+  for (const item of value) {
+    const task = item as Partial<Record<keyof ScheduledTaskSummary, unknown>> | null;
+    if (
+      !task
+      || typeof task.id !== 'string'
+      || typeof task.schedule !== 'string'
+      || typeof task.prompt !== 'string'
+      || typeof task.since !== 'number'
+    ) {
+      continue;
+    }
+    tasks.push({ id: task.id, schedule: task.schedule, recurring: task.recurring === true, prompt: task.prompt, since: task.since });
+  }
+  return tasks;
+};
+
 /** Mounted by the project-workspace route; tracks which sessions are busy — producing a response or running background tasks — so chat, sidebar and project-workspace agree on session activity. */
 export function SessionProtectionProvider({ children }: { children: ReactNode }) {
   const {
@@ -156,6 +183,8 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
               canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
               background: session.background === true,
               tasks: parseBackgroundTasks(session.tasks),
+              scheduled: parseScheduledTasks(session.scheduled),
+              waitingForUser: session.waitingForUser === true,
             };
           })
           .filter((session): session is NonNullable<typeof session> => Boolean(session)),
@@ -198,14 +227,17 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
 
   const busySessionIds = useSessionIdSet(processingSessions, isAnyActivity);
   const backgroundSessionIds = useSessionIdSet(processingSessions, isBackgroundOnly);
+  const waitingSessionIds = useSessionIdSet(processingSessions, isWaitingForUser);
 
   return (
     <SessionProtectionActionsContext.Provider value={actions}>
       <BusySessionIdsContext.Provider value={busySessionIds}>
         <BackgroundSessionIdsContext.Provider value={backgroundSessionIds}>
-          <SessionProtectionStateContext.Provider value={processingSessions}>
-            {children}
-          </SessionProtectionStateContext.Provider>
+          <WaitingSessionIdsContext.Provider value={waitingSessionIds}>
+            <SessionProtectionStateContext.Provider value={processingSessions}>
+              {children}
+            </SessionProtectionStateContext.Provider>
+          </WaitingSessionIdsContext.Provider>
         </BackgroundSessionIdsContext.Provider>
       </BusySessionIdsContext.Provider>
     </SessionProtectionActionsContext.Provider>
@@ -236,6 +268,37 @@ export function useBackgroundSessionIdSet(): ReadonlySet<string> {
     throw new Error('useBackgroundSessionIdSet must be used within SessionProtectionProvider');
   }
   return backgroundSessionIds;
+}
+
+/**
+ * The busy sessions that wait for their user to answer a question or a
+ * permission prompt, as the running-sessions poll last said. A subset of
+ * useBusySessionIdSet, with the same stable identity.
+ */
+export function useWaitingSessionIdSet(): ReadonlySet<string> {
+  const waitingSessionIds = useContext(WaitingSessionIdsContext);
+  if (!waitingSessionIds) {
+    throw new Error('useWaitingSessionIdSet must be used within SessionProtectionProvider');
+  }
+  return waitingSessionIds;
+}
+
+/**
+ * What one session is doing, or null while it is not busy. Built from the
+ * membership sets, so it re-renders when a session's state changes, never on
+ * a status line.
+ */
+export function useSessionActivityState(sessionId: string | null | undefined): SessionActivityState | null {
+  const busySessionIds = useBusySessionIdSet();
+  const backgroundSessionIds = useBackgroundSessionIdSet();
+  const waitingSessionIds = useWaitingSessionIdSet();
+  if (!sessionId || !busySessionIds.has(sessionId)) {
+    return null;
+  }
+  if (waitingSessionIds.has(sessionId)) {
+    return 'waiting';
+  }
+  return backgroundSessionIds.has(sessionId) ? 'background' : 'running';
 }
 
 export function useProcessingSessions(): SessionActivityMap {

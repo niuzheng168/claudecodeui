@@ -23,6 +23,7 @@ import type {
   ProviderSteerReceipt,
   ProviderRuntimePermissionGateway,
   ProviderRuntimeWriter,
+  ScheduledTaskSummary,
   UpsertProviderMcpServerInput,
   WorkflowAgentActivity,
 } from '@/shared/types.js';
@@ -89,12 +90,14 @@ export interface IProviderRuntime {
   steer?(sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
-   * Sessions with background tasks still outstanding, whether or not their
-   * turn has ended. Only a runtime that keeps its process open past a turn for
-   * such work has anything to report; the others leave this undefined and the
-   * running-sessions list falls back to chat runs alone.
+   * Sessions with background tasks still outstanding, or tasks scheduled to
+   * wake them later, whether or not their turn has ended. Only a runtime that
+   * keeps its process open past a turn for such work has anything to report;
+   * the others leave this undefined and the running-sessions list falls back
+   * to chat runs alone. `tasks` is empty for a session that only has
+   * `scheduled` work.
    */
-  listBackgroundWork?(): Array<{ sessionId: string; tasks: BackgroundTaskSummary[] }>;
+  listBackgroundWork?(): Array<{ sessionId: string; tasks: BackgroundTaskSummary[]; scheduled?: ScheduledTaskSummary[] }>;
   /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already

@@ -9,7 +9,7 @@ import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { IProvider } from '@/shared/interfaces.js';
-import type { BackgroundTaskSummary } from '@/shared/types.js';
+import type { BackgroundTaskSummary, ScheduledTaskSummary } from '@/shared/types.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -344,6 +344,58 @@ test('running sessions carry their tasks on a chat run that is still going', { c
           lastSeq: 0,
           tasks,
         });
+      },
+    ));
+  });
+});
+
+const scheduledTask = (id: string, since: number): ScheduledTaskSummary => ({
+  id, schedule: '3-59/10 * * * *', recurring: true, prompt: `Report ${id}`, since,
+});
+
+test('running sessions list a session whose only work is a task it scheduled', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('scheduled-session', 'claude', '/tmp/running-project');
+    const scheduled = [scheduledTask('report', 3_000)];
+    await withClaudeCliRegistry([], async () => await withProviders(
+      { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'scheduled-session', tasks: [], scheduled }] } },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'scheduled-session',
+          provider: 'claude',
+          startedAt: 3_000,
+          lastSeq: 0,
+          background: true,
+          canInterrupt: false,
+          scheduled,
+        }]);
+      },
+    ));
+  });
+});
+
+test('running sessions carry their scheduled tasks on a chat run that is still going', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('busy-session', 'claude', '/tmp/running-project');
+    // A task the session scheduled fired: its turn runs as a chat run.
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'busy-session', provider: 'claude', providerSessionId: null, connection: null, userId: null,
+    });
+    assert.ok(run);
+
+    const tasks = [task('agent', 5_000)];
+    const scheduled = [scheduledTask('report', 3_000)];
+    await withClaudeCliRegistry([], async () => await withProviders(
+      { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'busy-session', tasks, scheduled }] } },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'busy-session',
+          provider: 'claude',
+          startedAt: run.startedAt,
+          lastSeq: 0,
+          tasks,
+          scheduled,
+        }]);
       },
     ));
   });
