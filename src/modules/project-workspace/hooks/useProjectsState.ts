@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 import { api } from '@/shared/api';
+import { onWorkbenchNewSession } from '@/shared/codeyWorkbench';
 import type { ServerEvent,
   AppTab,
   LLMProvider,
@@ -1094,6 +1095,25 @@ export function useProjectsState({
       navigate('/', { replace: true });
     }
   }, [handleNewSession, isLoadingProjects, navigate, projects, sessionId]);
+
+  // A Workbench frame that is already open is asked by message instead, so the
+  // page is not loaded again. The Workbench may have just added the directory
+  // to this machine: until the list has it, the request says what it is.
+  useEffect(() => onWorkbenchNewSession(({ projectId, path, name }) => {
+    const listed = projectsRef.current.find((candidate) => candidate.projectId === projectId);
+    handleNewSession(listed ?? {
+      projectId,
+      path,
+      fullPath: path,
+      displayName: name || path,
+      isStarred: false,
+      sessions: [],
+      sessionMeta: { hasMore: false, total: 0 },
+    });
+    if (!listed) {
+      void refreshProjectsSilently();
+    }
+  }), [handleNewSession, refreshProjectsSilently]);
 
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {

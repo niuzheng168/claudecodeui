@@ -12,12 +12,14 @@ import { useEffect, useSyncExternalStore } from 'react';
  * shows the directories itself. Builds without it get the Workbench's own bar
  * above the frame instead.
  *
- * The Workbench also switches an open frame to another session of its machine
- * by asking it to, so the app is not loaded again and only the conversation
- * changes. `data-codey-workbench-navigation` says this build does that; the
- * Workbench opens a new frame for builds without it. `data-codey-workbench-ready`
- * is there while the workspace is drawn, past its loading screen: a frame that
- * is still loading stays out of sight until then.
+ * The Workbench keeps one frame per machine and switches it to another session
+ * of its machine, or to the new session page of one of its projects, by asking
+ * it to, so the app is not loaded again and only the conversation changes.
+ * `data-codey-workbench-navigation` says this build opens sessions when asked,
+ * `data-codey-workbench-new-session` that it opens new session pages; the
+ * Workbench loads the page at the new address for builds without them.
+ * `data-codey-workbench-ready` is there while the workspace is drawn, past its
+ * loading screen: a frame that is still loading stays out of sight until then.
  */
 
 export type WorkbenchDirectory = {
@@ -37,16 +39,27 @@ export type WorkbenchDirectories = {
   selected: number;
 };
 
+/** A project of this machine the Workbench asks to start a new session in. */
+export type WorkbenchNewSession = {
+  projectId: string;
+  /** The project's directory and name, for a project this page has not listed yet. */
+  path: string;
+  name: string;
+};
+
 export const WORKBENCH_DIRECTORIES_MESSAGE = 'codey-workbench:new-session-directories';
 export const WORKBENCH_CHOOSE_DIRECTORY_MESSAGE = 'codey-workbench:choose-new-session-directory';
 export const WORKBENCH_OPEN_SESSION_MESSAGE = 'codey-workbench:open-session';
+export const WORKBENCH_NEW_SESSION_MESSAGE = 'codey-workbench:new-session';
 const PAGE_MARK = 'codeyWorkbenchDirectories';
 const NAVIGATION_MARK = 'codeyWorkbenchNavigation';
+const NEW_SESSION_MARK = 'codeyWorkbenchNewSession';
 const READY_MARK = 'codeyWorkbenchReady';
 
 let current: WorkbenchDirectories | null = null;
 const listeners = new Set<() => void>();
 const openSessionListeners = new Set<(sessionId: string) => void>();
+const newSessionListeners = new Set<(request: WorkbenchNewSession) => void>();
 let readyHolders = 0;
 
 function readDirectory(value: unknown): WorkbenchDirectory | null {
@@ -72,6 +85,16 @@ function readDirectories(data: Record<string, unknown>): WorkbenchDirectories | 
   return { directories: directories as WorkbenchDirectory[], selected };
 }
 
+function readNewSession(data: Record<string, unknown>): WorkbenchNewSession | null {
+  const { projectId, path, name } = data;
+  if (typeof projectId !== 'string' || !projectId) return null;
+  return {
+    projectId,
+    path: typeof path === 'string' ? path : '',
+    name: typeof name === 'string' ? name : '',
+  };
+}
+
 function handleMessage(event: MessageEvent): void {
   // Only the page that embeds this one, on this origin, says where sessions may start.
   if (event.source !== window.parent || event.origin !== window.location.origin) return;
@@ -80,6 +103,11 @@ function handleMessage(event: MessageEvent): void {
   if (data.type === WORKBENCH_OPEN_SESSION_MESSAGE) {
     const { sessionId } = data;
     if (typeof sessionId === 'string' && sessionId) openSessionListeners.forEach((listener) => listener(sessionId));
+    return;
+  }
+  if (data.type === WORKBENCH_NEW_SESSION_MESSAGE) {
+    const request = readNewSession(data);
+    if (request) newSessionListeners.forEach((listener) => listener(request));
     return;
   }
   if (data.type !== WORKBENCH_DIRECTORIES_MESSAGE) return;
@@ -93,6 +121,7 @@ if (typeof window !== 'undefined') {
   if (window.parent !== window) {
     document.documentElement.dataset[PAGE_MARK] = '';
     document.documentElement.dataset[NAVIGATION_MARK] = '';
+    document.documentElement.dataset[NEW_SESSION_MARK] = '';
   }
 }
 
@@ -103,6 +132,16 @@ if (typeof window !== 'undefined') {
 export function onWorkbenchOpenSession(listener: (sessionId: string) => void): () => void {
   openSessionListeners.add(listener);
   return () => openSessionListeners.delete(listener);
+}
+
+/**
+ * Calls `listener` with each project the Workbench asks this frame to start a
+ * new session in. The workspace opens that project's new session page, as its
+ * own sidebar's "New Session" does.
+ */
+export function onWorkbenchNewSession(listener: (request: WorkbenchNewSession) => void): () => void {
+  newSessionListeners.add(listener);
+  return () => newSessionListeners.delete(listener);
 }
 
 /** Marks the page ready for the Workbench while the calling component, the drawn workspace, is mounted. */
