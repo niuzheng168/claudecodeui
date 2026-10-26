@@ -5,7 +5,7 @@ import path from 'node:path';
 import { CODEY_CLAUDE_ENTRYPOINT } from '@/modules/providers/list/claude/claude-session-owner.service.js';
 
 /**
- * One Claude CLI process that is currently producing a response.
+ * One Claude CLI process that is in the middle of a turn.
  *
  * `providerSessionId` is Claude's own session id, which is what the registry
  * records; callers map it onto an app session themselves.
@@ -13,6 +13,8 @@ import { CODEY_CLAUDE_ENTRYPOINT } from '@/modules/providers/list/claude/claude-
 type LiveClaudeCliSession = {
   providerSessionId: string;
   startedAt: number;
+  /** The turn waits for its user to answer a prompt (`waiting`) instead of working (`busy`). */
+  waitingForUser: boolean;
 };
 
 /**
@@ -65,7 +67,7 @@ async function isRecordedProcessAlive(pid: number, procStart: unknown): Promise<
   }
 }
 
-/** Reads one registry file, returning null for anything that is not a live busy session. */
+/** Reads one registry file, returning null for anything that is not a live session mid-turn. */
 async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSession | null> {
   let parsed: unknown;
   try {
@@ -83,7 +85,8 @@ async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSessi
 
   const providerSessionId = typeof record.sessionId === 'string' ? record.sessionId : '';
   const pid = typeof record.pid === 'number' ? record.pid : NaN;
-  if (!providerSessionId || !Number.isInteger(pid) || pid <= 0 || record.status !== 'busy') {
+  if (!providerSessionId || !Number.isInteger(pid) || pid <= 0
+    || (record.status !== 'busy' && record.status !== 'waiting')) {
     return null;
   }
 
@@ -99,11 +102,12 @@ async function readLiveBusySession(filePath: string): Promise<LiveClaudeCliSessi
   }
 
   const startedAt = typeof record.startedAt === 'number' ? record.startedAt : Date.now();
-  return { providerSessionId, startedAt };
+  return { providerSessionId, startedAt, waitingForUser: record.status === 'waiting' };
 }
 
 /**
- * Lists the Claude CLI sessions that are mid-turn right now.
+ * Lists the Claude CLI sessions that are mid-turn right now: working, or
+ * waiting for their user to answer a prompt.
  *
  * Used by the providers module's sessions service so the running-sessions poll
  * also reports turns driven outside CloudCLI's own chat runs — including the

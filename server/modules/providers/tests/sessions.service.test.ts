@@ -486,6 +486,62 @@ test('a Claude process Codey launched is left to the runtime to report', { concu
   });
 });
 
+test('a run held on a question or permission prompt is waiting for its user', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('asking-session', 'codex', '/tmp/running-project');
+    sessionsDb.createAppSession('working-session', 'claude', '/tmp/running-project');
+    for (const sessionId of ['asking-session', 'working-session']) {
+      assert.ok(chatRunRegistry.startRun({
+        appSessionId: sessionId, provider: sessionId === 'asking-session' ? 'codex' : 'claude', providerSessionId: null, connection: null, userId: null,
+      }));
+    }
+    const permissions = (...asking: string[]) => ({
+      resolve: () => undefined,
+      listPending: (sessionId: string) => (asking.includes(sessionId) ? [{ requestId: 'r1', toolName: 'AskUserQuestion' }] : []),
+    });
+
+    await withClaudeCliRegistry([], async () => await withProviders(
+      {
+        claude: { run: async () => undefined, abort: () => false, permissions: permissions() },
+        codex: { run: async () => undefined, abort: () => false, permissions: permissions('asking-session', 'working-session') },
+      },
+      async () => {
+        const sessions = await sessionsService.listRunningSessions();
+        // Only the provider that runs a session is asked about it.
+        assert.deepEqual(sessions.map((session) => [session.sessionId, session.waitingForUser]), [
+          ['asking-session', true],
+          ['working-session', undefined],
+        ]);
+      },
+    ));
+  });
+});
+
+test('a Claude CLI turn waiting for its user is reported as waiting', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('desktop-session', 'claude', '/tmp/running-project');
+    sessionsDb.assignProviderSessionId('desktop-session', 'claude-native-desktop');
+
+    await withClaudeCliRegistry(
+      [{ pid: process.pid, sessionId: 'claude-native-desktop', status: 'waiting', entrypoint: 'claude-desktop-3p', startedAt: 8_000 }],
+      async () => await withProviders(
+        { claude: { run: async () => undefined, abort: () => false } },
+        async () => {
+          assert.deepEqual(await sessionsService.listRunningSessions(), [{
+            sessionId: 'desktop-session',
+            provider: 'claude',
+            startedAt: 8_000,
+            lastSeq: 0,
+            canInterrupt: false,
+            statusText: 'Waiting for input in the Claude CLI',
+            waitingForUser: true,
+          }]);
+        },
+      ),
+    );
+  });
+});
+
 test('an unreadable registry never fails the running-sessions poll', { concurrency: false }, async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('safe-session', 'claude', '/tmp/running-project');

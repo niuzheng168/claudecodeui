@@ -251,7 +251,7 @@ What remains is a `Map<sessionId, SessionActivity>` of `{ statusText, canInterru
 | --- | --- |
 | `markSessionProcessing` | The composer, just before `chat.send`; a `chat_subscribed` ack with `isProcessing: true`; a `status` frame carrying text; a `permission_request` |
 | `markSessionIdle` | `complete`; `protocol_error`; a `chat_subscribed` ack with `isProcessing: false` |
-| `syncProcessingSessions` | Every 5 s from `GET /api/providers/sessions/running`, which returns `chatRunRegistry.listRunningRuns()` |
+| `syncProcessingSessions` | Every 5 s from `GET /api/providers/sessions/running`, which returns `chatRunRegistry.listRunningRuns()`, sessions whose background work outlived their turn (`background: true`) and turns a Claude CLI outside Codey runs. An entry held on a question or permission prompt carries `waitingForUser: true`; the Codey Workbench colours those sessions apart |
 
 Two guards make it stable:
 

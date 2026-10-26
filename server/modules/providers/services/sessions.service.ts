@@ -44,6 +44,8 @@ type RunningSessionEntry = {
   canInterrupt?: false;
   statusText?: string;
   tasks?: BackgroundTaskSummary[];
+  /** The session waits for its user to answer a question or permission prompt. */
+  waitingForUser?: true;
 };
 
 type CreateAppSessionResult = {
@@ -185,7 +187,9 @@ export const sessionsService = {
 
   /**
    * Returns app-facing ids for provider runs that are currently processing,
-   * plus every session whose background work outlived its turn.
+   * plus every session whose background work outlived its turn. An entry with
+   * `waitingForUser` is held on a question or permission prompt; the Codey
+   * Workbench colours those sessions differently from ones at work.
    *
    * This is intentionally status-only: callers that only need sidebar activity
    * indicators should not attach to chat streams or request replayed messages.
@@ -236,9 +240,18 @@ export const sessionsService = {
         // There is no run here to abort: the turn belongs to a CLI process
         // CloudCLI does not own, so it can be reported but not interrupted.
         canInterrupt: false,
-        statusText: 'Running in the Claude CLI',
+        statusText: live.waitingForUser ? 'Waiting for input in the Claude CLI' : 'Running in the Claude CLI',
+        ...(live.waitingForUser ? { waitingForUser: true as const } : {}),
       });
       runningById.set(session.session_id, entries[entries.length - 1]);
+    }
+
+    // A prompt can also hold a background agent after its turn ended.
+    const providers = new Map(providerRegistry.listProviders().map((provider) => [provider.id, provider]));
+    for (const entry of entries) {
+      if ((providers.get(entry.provider)?.runtime.permissions?.listPending(entry.sessionId).length ?? 0) > 0) {
+        entry.waitingForUser = true;
+      }
     }
 
     return entries;
