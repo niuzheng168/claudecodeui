@@ -98,6 +98,24 @@ test('steering uses the owned turn, keeps streaming, and never changes model/per
   });
 });
 
+test('a native turn reports its context and the thread total as Codex measures them', async (t) => {
+  await fixture(t, async ({ messages, emit }) => {
+    emit('thread/tokenUsage/updated', {
+      tokenUsage: {
+        total: { totalTokens: 3_199_875, inputTokens: 3_167_589, cachedInputTokens: 2_817_407, outputTokens: 32_286 },
+        last: { totalTokens: 117_727, inputTokens: 117_635, cachedInputTokens: 117_403, outputTokens: 92 },
+        modelContextWindow: 922_000,
+      },
+    });
+    const budget = messages.find((message) => message.kind === 'status' && message.text === 'token_budget');
+    assert.equal(budget?.sessionId, 'app-session');
+    assert.deepEqual(budget?.tokenBudget, {
+      used: 117_727, total: 922_000, sessionTokens: 3_199_875,
+      inputTokens: 117_635, outputTokens: 92, breakdown: { input: 117_635, output: 92 },
+    });
+  });
+});
+
 test('steering encodes uploaded images and file references with native input types', async (t) => {
   await fixture(t, async ({ runtime, requests }) => {
     const image = path.join(getGlobalImageAssetsDir(), 'steer.png');

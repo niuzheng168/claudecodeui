@@ -392,6 +392,8 @@ Custom commands can be created in:
         tokenUsage: {
           used,
           total,
+          // Every request of the session, for providers that report it.
+          ...(Number.isFinite(tokenUsage.sessionTokens) ? { sessionTokens: tokenUsage.sessionTokens } : {}),
         },
         ...(hasTokenBreakdown
           ? {

@@ -54,7 +54,10 @@ import {
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import {
   getReportedClaudeContextWindow,
-  rememberClaudeContextWindow
+  readClaudeRequestTokens,
+  readClaudeSessionTokens,
+  rememberClaudeContextWindow,
+  resolveClaudeTranscriptPath
 } from '@/modules/providers/services/provider-token-usage.service.js';
 import { AppError, createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
 
@@ -880,6 +883,7 @@ function isEmptyTokenBudget(budget) {
  * @property {number} [cacheReadTokens]
  * @property {number} [cacheCreationTokens]
  * @property {number} [cacheTokens]
+ * @property {number} [sessionTokens] - Every request of the session, added by publishTokenBudget
  * @property {{ input: number, output: number }} breakdown
  */
 
@@ -970,6 +974,81 @@ function trackReportedContextWindow(proc, message) {
     sessionHistoryCache.invalidate(proc.key);
   }
   return reported;
+}
+
+/**
+ * Starts counting the requests a resumed session made before this process,
+ * which every budget the process publishes adds its own requests to. A new
+ * conversation has made none. An unreadable transcript counts as empty rather
+ * than holding the counter back.
+ * @param {Object} proc - Process record
+ * @param {Object} sdkOptions - The process's launch options
+ */
+function loadSessionTokenLedger(proc, sdkOptions) {
+  if (!sdkOptions.resume) {
+    proc.sessionTokenLedger = { total: 0, requestIds: new Set() };
+    return;
+  }
+  void (async () => {
+    const transcriptPath = resolveClaudeTranscriptPath(proc.appSessionId, sdkOptions.resume, sdkOptions.cwd);
+    return transcriptPath ? await readClaudeSessionTokens(transcriptPath) : null;
+  })()
+    .catch(() => null)
+    .then((ledger) => {
+      proc.sessionTokenLedger = ledger ?? { total: 0, requestIds: new Set() };
+    });
+}
+
+/**
+ * Notes the tokens a main-thread request of this process consumed, once per
+ * request however many messages repeat its usage.
+ * @param {Object} proc - Process record
+ * @param {Object} message - SDK stream message
+ */
+function trackRequestTokens(proc, message) {
+  const request = readClaudeRequestTokens(message);
+  if (request) {
+    proc.liveRequestTokens.set(request.id, request.tokens);
+  }
+}
+
+/**
+ * The session's token total: the requests its transcript held when the
+ * process started, plus the ones the process made since. A request the
+ * transcript has caught up with in the meantime is counted once.
+ * @param {Object} proc - Process record
+ * @returns {number|undefined} Undefined until the transcript has been counted
+ */
+function sessionTokenTotal(proc) {
+  const ledger = proc.sessionTokenLedger;
+  if (!ledger) {
+    return undefined;
+  }
+  let total = ledger.total;
+  for (const [id, tokens] of proc.liveRequestTokens) {
+    if (!ledger.requestIds.has(id)) {
+      total += tokens;
+    }
+  }
+  return total;
+}
+
+/**
+ * Sends a budget to the client, with the session's token total when known.
+ * @param {Object} proc - Process record
+ * @param {Object} writer - Where the budget goes
+ * @param {TokenBudget} tokenBudget - The context-window budget
+ * @param {string|null} sessionId - Session the budget is stamped with
+ */
+function publishTokenBudget(proc, writer, tokenBudget, sessionId) {
+  const sessionTokens = sessionTokenTotal(proc);
+  writer.send(createNormalizedMessage({
+    kind: 'status',
+    text: 'token_budget',
+    tokenBudget: sessionTokens === undefined ? tokenBudget : { ...tokenBudget, sessionTokens },
+    sessionId,
+    provider: 'claude'
+  }));
 }
 
 /**
@@ -1641,9 +1720,10 @@ function handleIdleMessage(proc, message) {
     return;
   }
   forwardMessage(proc, message);
+  trackRequestTokens(proc, message);
   const tokenBudget = extractTokenBudget(message, knownContextWindow(proc));
   if (tokenBudget) {
-    proc.writer.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: proc.providerSessionId, provider: 'claude' }));
+    publishTokenBudget(proc, proc.writer, tokenBudget, proc.providerSessionId);
   }
   if (startsBackgroundWork(message)) {
     proc.backgroundWorkPending = true;
@@ -1743,6 +1823,11 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
     // reported for; see trackReportedContextWindow.
     reportedContextWindow: getReportedClaudeContextWindow(providerSessionId) ?? null,
     mainThreadModel: null,
+    // The session's requests counted from its transcript when the process
+    // started (null while that read runs), and the ones made since by id;
+    // see sessionTokenTotal.
+    sessionTokenLedger: null,
+    liveRequestTokens: new Map(),
     normalizeMessage,
     // True from the CLI's `system init` until its `result`: it is running a turn.
     cliBusy: true,
@@ -1764,6 +1849,7 @@ function spawnClaudeProcess({ sdkOptions, signature, promptMessage, resident, tu
     ended: Promise.resolve()
   };
   bindProcessCallbacks(proc, sdkOptions);
+  loadSessionTokenLedger(proc, sdkOptions);
 
   // `createQuery` is the SDK's own `query` unless the caller supplies one
   // (tests script the stream to drive the process logic without a CLI).
@@ -2079,6 +2165,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
+      trackRequestTokens(proc, message);
       const budgetContextWindow = knownContextWindow(proc);
       let tokenBudgetData = extractTokenBudget(message, budgetContextWindow)
         || (assistantBudgetSent || awaitingPrompt ? null : extractCumulativeTokenBudget(message, budgetContextWindow));
@@ -2092,7 +2179,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           assistantBudgetSent = true;
         }
         lastSentTokenBudget = tokenBudgetData;
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        publishTokenBudget(proc, ws, tokenBudgetData, capturedSessionId || sessionId || null);
       }
 
       if (startsBackgroundWork(message)) {

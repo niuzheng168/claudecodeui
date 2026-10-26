@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,8 @@ import Database from 'better-sqlite3';
 
 import {
   createProviderTokenUsageService,
+  readClaudeSessionTokens,
+  readCodexTokenUsage,
   summarizeClaudeTokenUsage,
 } from '@/modules/providers/services/provider-token-usage.service.js';
 import { AppError } from '@/shared/index.js';
@@ -40,7 +42,12 @@ test('token usage lookup requires only the app-facing session id for Claude', as
     await writeFile(sessionFilePath, [
       JSON.stringify({
         type: 'assistant',
+        message: { id: 'msg_1', usage: { input_tokens: 40, output_tokens: 8 } },
+      }),
+      JSON.stringify({
+        type: 'assistant',
         message: {
+          id: 'msg_2',
           usage: {
             input_tokens: 100,
             cache_read_input_tokens: 20,
@@ -61,6 +68,7 @@ test('token usage lookup requires only the app-facing session id for Claude', as
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
       used: 155,
       total: 1_000_000,
+      sessionTokens: 203,
       inputTokens: 125,
       outputTokens: 30,
       cacheReadTokens: 20,
@@ -108,9 +116,11 @@ test('Codex token usage uses the latest token_count snapshot', async () => {
       }),
     });
 
+    // A rollout with no `last_token_usage` has only the thread total to offer.
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
       used: 49,
       total: 250_000,
+      sessionTokens: 49,
       inputTokens: 40,
       outputTokens: 9,
       breakdown: { input: 40, output: 9 },
@@ -118,6 +128,105 @@ test('Codex token usage uses the latest token_count snapshot', async () => {
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
+});
+
+test('Codex token usage measures the context by the newest request and the session by the thread total', async () => {
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-codex-last-'));
+  const sessionFilePath = path.join(tempDirectory, 'rollout-provider-session.jsonl');
+
+  try {
+    // Shape captured from a Codex 0.156 rollout.
+    await writeFile(sessionFilePath, JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 3_167_589, cached_input_tokens: 2_817_407, output_tokens: 32_286, total_tokens: 3_199_875,
+          },
+          last_token_usage: {
+            input_tokens: 117_635, cached_input_tokens: 117_403, output_tokens: 92, total_tokens: 117_727,
+          },
+          model_context_window: 922_000,
+        },
+      },
+    }));
+
+    const service = createProviderTokenUsageService({
+      getSessionById: () => createSessionRow({ provider: 'codex', jsonl_path: sessionFilePath }),
+    });
+
+    assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
+      used: 117_727,
+      total: 922_000,
+      sessionTokens: 3_199_875,
+      inputTokens: 117_635,
+      outputTokens: 92,
+      breakdown: { input: 117_635, output: 92 },
+    });
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('the app-server token report reads like a rollout token_count', () => {
+  assert.deepEqual(readCodexTokenUsage({
+    total: { totalTokens: 3_199_875, inputTokens: 3_167_589, cachedInputTokens: 2_817_407, outputTokens: 32_286 },
+    last: { totalTokens: 117_727, inputTokens: 117_635, cachedInputTokens: 117_403, outputTokens: 92 },
+    modelContextWindow: 922_000,
+  }), {
+    used: 117_727,
+    total: 922_000,
+    sessionTokens: 3_199_875,
+    inputTokens: 117_635,
+    outputTokens: 92,
+    breakdown: { input: 117_635, output: 92 },
+  });
+});
+
+test('the Claude session total counts every main-thread request once, across reads', async () => {
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-claude-ledger-'));
+  const sessionFilePath = path.join(tempDirectory, 'provider-session.jsonl');
+  const row = (id: string, usage: Record<string, number>, extra: Record<string, unknown> = {}) => JSON.stringify({
+    type: 'assistant', uuid: `row-${id}-${Math.random()}`, message: { id, usage }, ...extra,
+  });
+
+  try {
+    await writeFile(sessionFilePath, [
+      // One request, written as one row per content block.
+      row('msg_1', { input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 5 }),
+      row('msg_1', { input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 5 }),
+      row('msg_2', { input_tokens: 3, cache_creation_input_tokens: 200, output_tokens: 7 }),
+      // A subagent's request and a synthetic row made nothing this session paid for.
+      row('msg_sub', { input_tokens: 500, output_tokens: 50 }, { isSidechain: true }),
+      row('msg_synthetic', { input_tokens: 0, output_tokens: 0 }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'usage' } }),
+      '',
+    ].join('\n'));
+
+    const first = await readClaudeSessionTokens(sessionFilePath);
+    assert.equal(first.total, 1015 + 210);
+
+    // Claude Code appends; a half-written row waits for its newline.
+    const appended = row('msg_3', { input_tokens: 1, cache_read_input_tokens: 1200, output_tokens: 9 });
+    await appendFile(sessionFilePath, `${row('msg_2', { input_tokens: 3, cache_creation_input_tokens: 200, output_tokens: 7 })}\n`);
+    await appendFile(sessionFilePath, appended.slice(0, 20));
+    assert.equal((await readClaudeSessionTokens(sessionFilePath)).total, 1225);
+
+    await appendFile(sessionFilePath, `${appended.slice(20)}\n`);
+    const latest = await readClaudeSessionTokens(sessionFilePath);
+    assert.equal(latest.total, 1225 + 1210);
+    assert.ok(latest.requestIds.has('msg_3'));
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('the Claude summarizer passes the counted session total through', () => {
+  const entries = [{ type: 'assistant', message: { usage: { input_tokens: 5, output_tokens: 5 } } }];
+
+  assert.equal(summarizeClaudeTokenUsage(entries, '200000', 12_345).sessionTokens, 12_345);
+  assert.equal('sessionTokens' in summarizeClaudeTokenUsage(entries, '200000'), false);
 });
 
 test('OpenCode token usage resolves its provider-native id from the session row', async () => {
@@ -339,6 +448,7 @@ test('Codex token usage reads only the tail of a large rollout', async () => {
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
       used: 29,
       total: 150_000,
+      sessionTokens: 29,
       inputTokens: 21,
       outputTokens: 8,
       breakdown: { input: 21, output: 8 },

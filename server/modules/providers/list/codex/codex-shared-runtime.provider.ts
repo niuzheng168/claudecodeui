@@ -12,6 +12,7 @@ import { controlCodexGoal, formatCodexGoalResult, getCodexGoal, parseCodexGoalCo
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { codexRuntime as sdkRuntime } from '@/modules/providers/list/codex/codex-runtime.provider.js';
 import { assertCodexDesktopSelection, readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
+import { readCodexTokenUsage } from '@/modules/providers/services/provider-token-usage.service.js';
 import type { CodexGoal, CodexGoalCommand, ICodexDesktopThreadOwner, ICodexRpcClient, IProviderRuntime, AnyRecord, ProviderAbortOptions, ProviderRuntimeContext, ProviderRuntimeObservation, ProviderRuntimeWriter } from '@/shared/index.js';
 import {
   AppError, createCompleteMessage, createNormalizedMessage, readObjectRecord,
@@ -687,6 +688,13 @@ export class CodexSharedRuntime implements IProviderRuntime {
             text: step.step, completed: step.status === 'completed',
           })),
         }, run.threadId)) send(writer, message);
+      } else if (method === 'thread/tokenUsage/updated') {
+        const tokenBudget = readCodexTokenUsage(params.tokenUsage);
+        if (tokenBudget) {
+          send(writer, createNormalizedMessage({
+            provider: 'codex', sessionId, kind: 'status', text: 'token_budget', tokenBudget,
+          }));
+        }
       } else if (method === 'turn/completed') {
         flush();
         if (!goalCommand) {

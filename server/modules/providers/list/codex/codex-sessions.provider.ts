@@ -9,6 +9,7 @@ import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.
 import { connectCodexNativeClient } from '@/modules/providers/list/codex/codex-native-client.service.js';
 import { projectCodexDaemonItem } from '@/modules/providers/list/codex/codex-daemon-items.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
+import { readCodexTokenUsage } from '@/modules/providers/services/provider-token-usage.service.js';
 import type {
   AnyRecord,
   FetchHistoryOptions,
@@ -1381,11 +1382,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     // ── event_msg ──────────────────────────────────────────────────────────
     if (entry.type === 'event_msg') {
       if (payload.type === 'token_count' && payload.info) {
-        const info = payload.info as AnyRecord;
-        if (info.total_token_usage) {
-          const usage = info.total_token_usage as AnyRecord;
-          tokenUsage = { used: usage.total_tokens || 0, total: info.model_context_window || 200000 };
-        }
+        tokenUsage = readCodexTokenUsage(payload.info) ?? tokenUsage;
         continue;
       }
 

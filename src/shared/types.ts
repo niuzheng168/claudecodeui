@@ -831,8 +831,11 @@ export type ModelCommandData = {
 /** Result payload of the chat `/cost` slash command, carrying the session's token usage totals and input/output breakdown for the command modal's usage view. */
 export type CostCommandData = {
   tokenUsage?: {
+    /** Tokens the context window holds. */
     used?: number;
     total?: number;
+    /** Tokens every request of the session consumed; absent for providers that do not report it. */
+    sessionTokens?: number;
   };
   tokenBreakdown?: {
     input?: number;

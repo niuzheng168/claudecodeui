@@ -30,12 +30,16 @@ type ProviderTokenUsageServiceDependencies = {
     model: string | null | undefined,
     providerSessionId: string | null | undefined,
   ) => Promise<number | string | undefined>;
+  readClaudeSessionTokens: (transcriptPath: string) => Promise<number>;
   isProviderSessionSuperseded: (providerSessionId: string, provider: string) => boolean;
 };
 
 type TokenUsageResult = {
+  /** Tokens the context window holds: the newest request's prompt and reply. */
   used: number;
   total?: number;
+  /** Tokens every request of the session consumed, cached input included. */
+  sessionTokens?: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -96,6 +100,7 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
     }
   },
   getClaudeContextWindow: (model, providerSessionId) => resolveClaudeContextWindow(model, providerSessionId),
+  readClaudeSessionTokens: async (transcriptPath) => (await readClaudeSessionTokens(transcriptPath)).total,
   isProviderSessionSuperseded: (providerSessionId, provider) =>
     sessionsDb.isProviderSessionSuperseded(providerSessionId, provider),
 };
@@ -201,6 +206,51 @@ async function findCodexSessionFile(
   return null;
 }
 
+function readCodexUsageBreakdown(usage: unknown): { inputTokens: number; outputTokens: number; totalTokens: number } | null {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+  const record = usage as AnyRecord;
+  const inputTokens = readUsageNumber(record.input_tokens ?? record.inputTokens);
+  const outputTokens = readUsageNumber(record.output_tokens ?? record.outputTokens);
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: readUsageNumber(record.total_tokens ?? record.totalTokens) || inputTokens + outputTokens,
+  };
+}
+
+/**
+ * Usage from Codex's token report: a rollout's `token_count` info, or the
+ * app-server's `thread/tokenUsage/updated` `tokenUsage` (camelCase, same
+ * meaning). `last` is the newest request, i.e. what the context window holds;
+ * `total` sums every request of the thread, cached input included.
+ *
+ * Used by the token-usage route, the Codex history reader and the native
+ * runtime's live counter, so all three report the same numbers.
+ */
+export function readCodexTokenUsage(info: unknown): TokenUsageResult | null {
+  if (!info || typeof info !== 'object') {
+    return null;
+  }
+  const record = info as AnyRecord;
+  const sessionUsage = readCodexUsageBreakdown(record.total_token_usage ?? record.total);
+  // Rollouts from before Codex reported the newest request only carry the total.
+  const contextUsage = readCodexUsageBreakdown(record.last_token_usage ?? record.last) ?? sessionUsage;
+  if (!contextUsage) {
+    return null;
+  }
+
+  return {
+    used: contextUsage.totalTokens,
+    total: readUsageNumber(record.model_context_window ?? record.modelContextWindow) || 200_000,
+    ...(sessionUsage ? { sessionTokens: sessionUsage.totalTokens } : {}),
+    inputTokens: contextUsage.inputTokens,
+    outputTokens: contextUsage.outputTokens,
+    breakdown: { input: contextUsage.inputTokens, output: contextUsage.outputTokens },
+  };
+}
+
 /** Newest `token_count` snapshot in the given JSONL text, or null when it has none. */
 function findCodexTokenUsage(fileContent: string): TokenUsageResult | null {
   const lines = fileContent.trim().split('\n');
@@ -208,29 +258,12 @@ function findCodexTokenUsage(fileContent: string): TokenUsageResult | null {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     try {
       const entry = JSON.parse(lines[index]) as AnyRecord;
-      const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
-        ? entry.payload.info
+      const usage = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
+        ? readCodexTokenUsage(entry.payload.info)
         : null;
-      if (!tokenInfo) {
-        continue;
+      if (usage) {
+        return usage;
       }
-
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let totalTokens = 0;
-      if (tokenInfo.total_token_usage) {
-        inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
-        outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
-        totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
-          || inputTokens + outputTokens;
-      }
-      return {
-        used: totalTokens,
-        total: readUsageNumber(tokenInfo.model_context_window) || 200_000,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
-      };
     } catch {
       // A provider may be writing the last JSONL line while this read happens.
     }
@@ -243,6 +276,7 @@ function emptyCodexTokenUsage(): TokenUsageResult {
   return {
     used: 0,
     total: 200_000,
+    sessionTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
     breakdown: { input: 0, output: 0 },
@@ -265,10 +299,14 @@ function emptyCodexTokenUsage(): TokenUsageResult {
  * The total is the window `resolveClaudeContextWindow` picked for the session
  * (the managed catalog's, else the one the SDK reported, else the
  * CONTEXT_WINDOW setting), with 160K when none is known.
+ *
+ * `sessionTokens` is passed through when the caller counted it, which takes
+ * the whole transcript (see `readClaudeSessionTokens`), not just these rows.
  */
 export function summarizeClaudeTokenUsage(
   entries: AnyRecord[],
   configuredContextWindow: number | string | undefined = process.env.CONTEXT_WINDOW,
+  sessionTokens?: number,
 ): TokenUsageResult {
   let inputTokens = 0;
   let outputTokens = 0;
@@ -323,6 +361,7 @@ export function summarizeClaudeTokenUsage(
   return {
     used: inputTokens + outputTokens,
     total: contextWindow,
+    ...(sessionTokens !== undefined ? { sessionTokens } : {}),
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -330,6 +369,168 @@ export function summarizeClaudeTokenUsage(
     cacheTokens,
     breakdown: { input: inputTokens, output: outputTokens },
   };
+}
+
+/**
+ * The tokens one main-thread Claude API request consumed (its whole prompt,
+ * cached input included, plus its reply), keyed by the API message id.
+ *
+ * Claude Code writes one transcript row per content block and the SDK streams
+ * one message per block, all repeating the request's usage, so the id is what
+ * counts a request once. Subagent requests are left out: they never enter this
+ * session's context, and their transcripts live in files of their own.
+ *
+ * Used by `readClaudeSessionTokens` for transcript rows and by the Claude
+ * runtime for the SDK messages of a live turn.
+ */
+export function readClaudeRequestTokens(entry: AnyRecord | null | undefined): { id: string; tokens: number } | null {
+  if (entry?.type !== 'assistant' || entry.isSidechain === true || entry.parent_tool_use_id) {
+    return null;
+  }
+  const usage = entry.message?.usage;
+  const id = entry.message?.id ?? entry.uuid;
+  if (!usage || typeof usage !== 'object' || typeof id !== 'string' || !id) {
+    return null;
+  }
+
+  const tokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens)
+    + readUsageNumber(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens)
+    + readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens)
+    + readUsageNumber(usage.output_tokens ?? usage.outputTokens);
+  // `<synthetic>` rows carry an all-zero usage block and made no request.
+  return tokens > 0 ? { id, tokens } : null;
+}
+
+/** A transcript's counted requests, and how far into the file they were read. */
+export type ClaudeSessionTokenLedger = {
+  total: number;
+  requestIds: Set<string>;
+  /** Bytes read so far; always the end of a whole line. */
+  offset: number;
+  inode: number;
+};
+
+/**
+ * Ledgers by transcript path. A transcript only ever grows, so a later read
+ * picks up where the last one stopped instead of parsing the file again; the
+ * history reader, the token-usage route and every Claude run share them.
+ */
+const claudeSessionTokenLedgers = new Map<string, ClaudeSessionTokenLedger>();
+const claudeSessionTokenReads = new Map<string, Promise<ClaudeSessionTokenLedger>>();
+/** One ledger per recently used session; the cap only bounds a long-lived server's memory. */
+const MAX_CLAUDE_SESSION_TOKEN_LEDGERS = 100;
+const CLAUDE_TRANSCRIPT_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+
+function countClaudeTranscriptLines(ledger: ClaudeSessionTokenLedger, text: string): void {
+  for (const line of text.split('\n')) {
+    // Only assistant rows carry usage; skipping the rest unparsed keeps a
+    // transcript full of tool output and images cheap to read.
+    if (!line.includes('"usage"')) {
+      continue;
+    }
+    let request: ReturnType<typeof readClaudeRequestTokens>;
+    try {
+      request = readClaudeRequestTokens(JSON.parse(line) as AnyRecord);
+    } catch {
+      continue;
+    }
+    if (request && !ledger.requestIds.has(request.id)) {
+      ledger.requestIds.add(request.id);
+      ledger.total += request.tokens;
+    }
+  }
+}
+
+async function updateClaudeSessionTokenLedger(transcriptPath: string): Promise<ClaudeSessionTokenLedger> {
+  const handle = await fsp.open(transcriptPath, 'r');
+  try {
+    const { size, ino } = await handle.stat();
+    const previous = claudeSessionTokenLedgers.get(transcriptPath);
+    // A replaced or truncated file is a different transcript: count it afresh.
+    // Updated in place: a run holding it sees the newest count, and `total`
+    // and `requestIds` change together, so they agree at every await below.
+    const ledger = previous && previous.inode === ino && previous.offset <= size
+      ? previous
+      : { total: 0, requestIds: new Set<string>(), offset: 0, inode: ino };
+
+    let position = ledger.offset;
+    let pending = Buffer.alloc(0);
+    while (position < size) {
+      const chunk = Buffer.alloc(Math.min(CLAUDE_TRANSCRIPT_READ_CHUNK_BYTES, size - position));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) {
+        break;
+      }
+      position += bytesRead;
+      const data = pending.length > 0 ? Buffer.concat([pending, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
+      // Splitting on the newline byte keeps multi-byte characters whole; a
+      // last line without one may still be being written and waits.
+      const lastNewline = data.lastIndexOf(0x0a);
+      if (lastNewline === -1) {
+        pending = data;
+        continue;
+      }
+      countClaudeTranscriptLines(ledger, data.toString('utf8', 0, lastNewline));
+      pending = data.subarray(lastNewline + 1);
+    }
+    ledger.offset = position - pending.length;
+
+    claudeSessionTokenLedgers.delete(transcriptPath);
+    claudeSessionTokenLedgers.set(transcriptPath, ledger);
+    if (claudeSessionTokenLedgers.size > MAX_CLAUDE_SESSION_TOKEN_LEDGERS) {
+      const oldestPath = claudeSessionTokenLedgers.keys().next().value;
+      if (oldestPath !== undefined) {
+        claudeSessionTokenLedgers.delete(oldestPath);
+      }
+    }
+    return ledger;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Every token a Claude session's requests consumed, read from its transcript:
+ * each main-thread request counted once (see `readClaudeRequestTokens`), on
+ * every branch the file holds, since an abandoned branch was paid for too.
+ *
+ * Used by the Claude history reader and the token-usage route for the
+ * composer's session total, and by the Claude runtime as the base its live
+ * turns add to. Rejects when the transcript cannot be read.
+ */
+export async function readClaudeSessionTokens(transcriptPath: string): Promise<ClaudeSessionTokenLedger> {
+  // Concurrent readers of one file share a read rather than racing to update it.
+  const inFlight = claudeSessionTokenReads.get(transcriptPath);
+  if (inFlight) {
+    return inFlight;
+  }
+  const read = updateClaudeSessionTokenLedger(transcriptPath).finally(() => {
+    claudeSessionTokenReads.delete(transcriptPath);
+  });
+  claudeSessionTokenReads.set(transcriptPath, read);
+  return read;
+}
+
+/**
+ * Where Claude Code keeps a provider session's transcript: the path recorded
+ * on the app session row when it is that session's, else the one Claude Code
+ * derives from the working directory. Null when neither is known.
+ *
+ * Used by the Claude runtime to count a resumed session's earlier requests.
+ */
+export function resolveClaudeTranscriptPath(
+  appSessionId: string | null | undefined,
+  providerSessionId: string,
+  cwd: string | null | undefined,
+): string | null {
+  const recordedPath = appSessionId ? sessionsDb.getSessionById(appSessionId)?.jsonl_path : null;
+  if (recordedPath && path.basename(recordedPath) === `${providerSessionId}.jsonl`) {
+    return recordedPath;
+  }
+  if (!cwd) {
+    return null;
+  }
+  return path.join(os.homedir(), '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9-]/g, '-'), `${providerSessionId}.jsonl`);
 }
 
 function parseClaudeUsageEntries(fileContent: string): AnyRecord[] {
@@ -548,6 +749,7 @@ export function createProviderTokenUsageService(
       return summarizeClaudeTokenUsage(
         entries,
         await dependencies.getClaudeContextWindow(session.model, providerSessionId),
+        await dependencies.readClaudeSessionTokens(sessionFilePath),
       );
     },
   };

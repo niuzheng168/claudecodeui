@@ -33,6 +33,7 @@ import {
 import { sessionsDb } from '@/modules/database/index.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import {
+  readClaudeSessionTokens,
   resolveClaudeContextWindow,
   summarizeClaudeTokenUsage,
 } from '@/modules/providers/services/provider-token-usage.service.js';
@@ -1892,6 +1893,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
     const { page, hasMore } = sliceTailPage(transcript, normalizedLimit, normalizedOffset);
+    const session = sessionsDb.getSessionById(sessionId);
 
     return {
       messages: page,
@@ -1904,7 +1906,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // whatever it was when the session was opened.
       tokenUsage: summarizeClaudeTokenUsage(
         rawMessages,
-        await resolveClaudeContextWindow(sessionsDb.getSessionById(sessionId)?.model, providerSessionId),
+        await resolveClaudeContextWindow(session?.model, providerSessionId),
+        // A session with no transcript yet has made no request.
+        session?.jsonl_path ? (await readClaudeSessionTokens(session.jsonl_path)).total : 0,
       ),
     };
   }

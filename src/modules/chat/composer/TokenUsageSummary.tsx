@@ -14,6 +14,11 @@ const formatTokenCount = (value: number) => {
     return '0';
   }
 
+  // A long session's total re-reads its cached context on every request.
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(value >= 10_000_000_000 ? 0 : 1).replace(/\.0$/, '')}B`;
+  }
+
   if (value >= 1_000_000) {
     return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   }
@@ -37,6 +42,9 @@ const readUsageNumber = (value: unknown) => {
 /**
  * ComposerToolbar's quiet secondary row shows usage and keeps the detailed
  * breakdown reachable without a large pill competing with the Send button.
+ *
+ * Two numbers: every token the session's requests consumed, and what the
+ * context window holds now against its size.
  */
 function TokenUsageSummary({ usage, contextWindow, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation('chat');
@@ -53,25 +61,46 @@ function TokenUsageSummary({ usage, contextWindow, onClick }: TokenUsageSummaryP
   const reportedTotal = usedTokens > 0 ? readUsageNumber(usage?.total) : 0;
   const totalTokens = readUsageNumber(contextWindow)
     || (reportedTotal >= usedTokens ? reportedTotal : 0);
+  // No usage yet means nothing spent yet. Usage without a session total comes
+  // from a provider that does not report one, which shows the context alone.
+  const sessionTokens = !usage
+    ? 0
+    : usage.sessionTokens == null ? null : Math.max(0, readUsageNumber(usage.sessionTokens));
+
+  const contextCounts = {
+    tokens: formatTokenCount(usedTokens), total: formatTokenCount(totalTokens),
+  };
+  const contextExactCounts = {
+    tokens: usedTokens.toLocaleString(), total: totalTokens.toLocaleString(),
+  };
+  let label: string;
+  let title: string;
+  if (sessionTokens === null) {
+    label = totalTokens > 0
+      ? t('composer.tokenCountOfTotal', contextCounts)
+      : t('composer.tokenCount', contextCounts);
+    title = totalTokens > 0
+      ? t('composer.tokensUsedOfTotal', contextExactCounts)
+      : t('composer.tokensUsed', contextExactCounts);
+  } else {
+    label = `${t('composer.sessionTokenCount', { tokens: formatTokenCount(sessionTokens) })} · ${totalTokens > 0
+      ? t('composer.contextTokenCountOfTotal', contextCounts)
+      : t('composer.contextTokenCount', contextCounts)}`;
+    title = `${t('composer.sessionTokensUsed', { tokens: sessionTokens.toLocaleString() })}\n${totalTokens > 0
+      ? t('composer.contextTokensUsedOfTotal', contextExactCounts)
+      : t('composer.contextTokensUsed', contextExactCounts)}`;
+  }
 
   return (
     <button
       type="button"
       onClick={onClick}
       className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      title={totalTokens > 0
-        ? t('composer.tokensUsedOfTotal', {
-          tokens: usedTokens.toLocaleString(), total: totalTokens.toLocaleString(),
-        })
-        : t('composer.tokensUsed', { tokens: usedTokens.toLocaleString() })}
+      title={title}
       aria-label={t('composer.tokenUsage')}
     >
       <ActivityIcon className="h-3 w-3" />
-      <span>{totalTokens > 0
-        ? t('composer.tokenCountOfTotal', {
-          tokens: formatTokenCount(usedTokens), total: formatTokenCount(totalTokens),
-        })
-        : t('composer.tokenCount', { tokens: formatTokenCount(usedTokens) })}</span>
+      <span>{label}</span>
     </button>
   );
 }

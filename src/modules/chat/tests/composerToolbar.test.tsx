@@ -23,6 +23,11 @@ vi.mock('react-i18next', () => ({
         'composer.tokenCount': '{{tokens}} tokens', 'composer.tokensUsed': '{{tokens}} tokens used',
         'composer.tokenCountOfTotal': '{{tokens}} / {{total}} tokens',
         'composer.tokensUsedOfTotal': '{{tokens}} of {{total}} tokens used',
+        'composer.sessionTokenCount': 'Total {{tokens}}', 'composer.contextTokenCount': 'Context {{tokens}}',
+        'composer.contextTokenCountOfTotal': 'Context {{tokens}} / {{total}}',
+        'composer.sessionTokensUsed': '{{tokens}} tokens used this session',
+        'composer.contextTokensUsed': '{{tokens}} tokens in context',
+        'composer.contextTokensUsedOfTotal': '{{tokens}} of {{total}} context tokens used',
         'input.showAllCommands': 'Show all commands', 'input.clearInput': 'Clear input',
         'input.attachFiles': 'Attach files', 'schedule.trigger': 'Schedule message',
         'schedule.heading': 'Send later', 'schedule.customLabel': 'Choose time',
@@ -113,7 +118,21 @@ test.each([
   { name: 'usage alone', tokenUsage: { used: 12345 }, text: '12K tokens', title: '12,345 tokens used' },
   {
     name: 'the catalog window before the first turn', tokenUsage: null, contextWindow: 1_000_000,
-    text: '0 / 1M tokens', title: '0 of 1,000,000 tokens used',
+    text: 'Total 0 · Context 0 / 1M',
+    title: '0 tokens used this session\n0 of 1,000,000 context tokens used',
+  },
+  {
+    name: 'the session total beside the context', tokenUsage: { used: 117_727, total: 922_000, sessionTokens: 3_199_875 },
+    text: 'Total 3.2M · Context 118K / 922K',
+    title: '3,199,875 tokens used this session\n117,727 of 922,000 context tokens used',
+  },
+  {
+    name: 'a session total in the billions', tokenUsage: { used: 412_000, total: 1_000_000, sessionTokens: 2_369_406_073 },
+    text: 'Total 2.4B · Context 412K / 1M',
+  },
+  {
+    name: 'the session total without a known window', tokenUsage: { used: 404_009, total: 160_000, sessionTokens: 2_500_000 },
+    text: 'Total 2.5M · Context 404K', title: '2,500,000 tokens used this session\n404,009 tokens in context',
   },
   {
     name: 'the catalog window over a guessed total', tokenUsage: { used: 404_009, total: 160_000 },

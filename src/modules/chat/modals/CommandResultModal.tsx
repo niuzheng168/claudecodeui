@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Server,
+  Sigma,
   Sparkles,
   TerminalSquare,
   Timer,
@@ -421,13 +422,17 @@ function ModelsContent({
 function CostContent({ data }: { data: CostCommandData }) {
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
+  const sessionTokens = data.tokenUsage?.sessionTokens;
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
   const hasBreakdown =
     typeof data.tokenBreakdown?.input === 'number' ||
     typeof data.tokenBreakdown?.output === 'number';
   const usageRows = [
-    { label: 'Total tokens used', value: formatNumber(used), icon: Activity },
+    ...(typeof sessionTokens === 'number'
+      ? [{ label: 'Session tokens', value: formatNumber(sessionTokens), icon: Sigma }]
+      : []),
+    { label: typeof sessionTokens === 'number' ? 'Context tokens' : 'Total tokens used', value: formatNumber(used), icon: Activity },
     ...(hasBreakdown
       ? [
           {
