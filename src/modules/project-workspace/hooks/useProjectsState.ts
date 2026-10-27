@@ -750,6 +750,19 @@ export function useProjectsState({
         return;
       }
 
+      // Archived without this client, as when Claude Desktop's archive
+      // reaches Codey. The row goes; a chat open on it stays open.
+      if (event.kind === 'session_archived') {
+        const archivedSessionId = typeof event.sessionId === 'string' ? event.sessionId : '';
+        if (archivedSessionId) {
+          clearSessionAttention(archivedSessionId);
+          setProjects((previousProjects) =>
+            previousProjects.map((project) => removeSessionFromProject(project, archivedSessionId)),
+          );
+        }
+        return;
+      }
+
       const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
         ? event.sessionId
         : null;
@@ -874,7 +887,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
+  }, [clearSessionAttention, isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {

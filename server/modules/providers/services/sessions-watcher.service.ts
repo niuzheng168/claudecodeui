@@ -5,6 +5,10 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
+import {
+  passOnClaudeDesktopArchive,
+  synchronizeClaudeDesktopArchive,
+} from '@/modules/providers/list/claude/claude-desktop-archive.service.js';
 import { retireClaudeProcessesOpenedElsewhere } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { readForeignRegistrationSessionId } from '@/modules/providers/list/claude/claude-session-owner.service.js';
 import { synchronizeCodexDaemonSessions, synchronizeCodexSessionIndex } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
@@ -47,9 +51,13 @@ const WATCHER_IGNORED_PATTERNS = [
 
 const PROJECTS_UPDATE_DEBOUNCE_MS = 500;
 const PROJECTS_UPDATE_MAX_WAIT_MS = 2_000;
+// How often Claude Desktop's session records on this computer are checked for archives.
+const CLAUDE_DESKTOP_ARCHIVE_POLL_MS = 10_000;
 
 const watchers: FSWatcher[] = [];
 let codexIndexPoll: ReturnType<typeof setInterval> | null = null;
+let claudeDesktopArchivePoll: ReturnType<typeof setInterval> | null = null;
+let claudeDesktopArchivePass: Promise<void> | null = null;
 
 type PendingWatcherUpdate = {
   providers: Set<LLMProvider>;
@@ -221,6 +229,27 @@ async function onClaudeRegistration(filePath: string): Promise<void> {
 }
 
 /**
+ * One pass of the Claude Desktop archive sync: carries what Desktop archived
+ * or restored since the last pass into this computer's index, then passes on
+ * the changes to sessions Desktop runs on other machines. A pass still under
+ * way when the next is due is not started again.
+ */
+function synchronizeClaudeDesktopArchiveOnce(): Promise<void> {
+  claudeDesktopArchivePass ??= (async () => {
+    try {
+      const { passOn } = await synchronizeClaudeDesktopArchive();
+      await passOnClaudeDesktopArchive({ immediately: passOn });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[Claude] Claude Desktop archive sync failed:', message);
+    }
+  })().finally(() => {
+    claudeDesktopArchivePass = null;
+  });
+  return claudeDesktopArchivePass;
+}
+
+/**
  * Watches the registrations Claude Code processes keep in
  * `~/.claude/sessions/<pid>.json`. The directory holds one small file per
  * running process, so it is watched through file system events, not polled.
@@ -270,6 +299,15 @@ export async function initializeSessionsWatcher(): Promise<void> {
         .catch((error: unknown) => console.warn('[Codex] Desktop index refresh failed:', error instanceof Error ? error.message : String(error)));
     }, 6_000);
     codexIndexPoll.unref();
+  }
+
+  // Claude Desktop's archive lives in its own files on the computer it runs on.
+  if (!claudeDesktopArchivePoll) {
+    void synchronizeClaudeDesktopArchiveOnce();
+    claudeDesktopArchivePoll = setInterval(() => {
+      void synchronizeClaudeDesktopArchiveOnce();
+    }, CLAUDE_DESKTOP_ARCHIVE_POLL_MS);
+    claudeDesktopArchivePoll.unref();
   }
 
   for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
@@ -322,6 +360,8 @@ export async function closeSessionsWatcher(): Promise<void> {
   clearPendingWatcherFlushTimer();
   if (codexIndexPoll) clearInterval(codexIndexPoll);
   codexIndexPoll = null;
+  if (claudeDesktopArchivePoll) clearInterval(claudeDesktopArchivePoll);
+  claudeDesktopArchivePoll = null;
 
   await Promise.all(
     watchers.map(async (watcher) => {

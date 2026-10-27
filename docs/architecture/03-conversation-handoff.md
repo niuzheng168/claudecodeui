@@ -442,6 +442,17 @@ transcript's last megabyte holds no message, the modification time stands in. Ro
 earlier versions dated by the file are moved back to their last message once, on the first full
 scan (`redateIndexedSessions`, `app_config` key `claude_sessions_redated_by_last_message`).
 
+Claude Desktop keeps its own archive in records on the computer it runs on
+(`claude-code-sessions/<account>/<org>/local_<id>.json`, `isArchived`). The sessions watcher
+polls them every 10 s (`claude-desktop-archive.service.ts`). It carries only changes into Codey,
+remembered per Claude Code session in `claude_desktop_archive`, so a session brought back in
+Codey stays until Desktop changes it again. Here that covers sessions Desktop runs on this computer
+and the copies it keeps of ones it runs elsewhere over SSH. For the latter, the change goes through
+the Portal (`POST /api/v1/sessions/archive`) to whichever of the owner's machines lists the
+session, which applies it at `/api/codey/v1/sessions/archive`. A session with messages from after
+Desktop's last activity in it is not archived: it went on outside Desktop. Open sidebars drop
+archived rows on `session_archived`. Nothing is written back to Desktop.
+
 `session-synchronizer.service.ts` adds two guarantees beyond indexing. Concurrent callers
 share one scan (opening the UI fires `/api/projects` and `/api/projects/archived` at once),
 and `pruneOrphanedSessions` deletes rows whose transcript is gone — but only when the

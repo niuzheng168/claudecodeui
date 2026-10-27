@@ -193,7 +193,14 @@ test('another user\'s message says who sent it, whether the owner approved it, a
     .includes('Your user sent this through the Codey API'));
 });
 
-async function withRoutes(runTest: (context: { userId: number; root: string; post: (body: unknown) => Promise<{ status: number; body: any }>; get: (path: string) => Promise<{ status: number; body: any }> }) => Promise<void>, runs: RunCall[]) {
+type RouteResponse = { status: number; body: any };
+
+async function withRoutes(runTest: (context: {
+  userId: number; root: string;
+  post: (body: unknown) => Promise<RouteResponse>;
+  postTo: (path: string, body: unknown) => Promise<RouteResponse>;
+  get: (path: string) => Promise<RouteResponse>;
+}) => Promise<void>, runs: RunCall[]) {
   await withNode(async ({ userId, root }) => {
     const app = express();
     app.use(express.json());
@@ -207,10 +214,13 @@ async function withRoutes(runTest: (context: { userId: number; root: string; pos
     await once(server, 'listening');
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/codey/v1`;
     const parse = async (response: Response) => ({ status: response.status, body: await response.json() });
+    const postTo = async (pathname: string, body: unknown) => parse(await fetch(`${base}${pathname}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }));
     try {
       await runTest({
-        userId, root,
-        post: async (body) => parse(await fetch(`${base}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })),
+        userId, root, postTo,
+        post: (body) => postTo('/messages', body),
         get: async (path) => parse(await fetch(`${base}${path}`)),
       });
     } finally {
@@ -224,7 +234,7 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
   await withRoutes(async ({ root, post, get }) => {
     sessionsDb.createAppSession('app-1', 'codex', root, 'Review');
     sessionsDb.assignProviderSessionId('app-1', 'thread-1');
-    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions'] });
+    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive'] });
     const session = (await get('/sessions/thread-1')).body.data;
     assert.equal(session.sessionId, 'app-1');
     assert.equal(session.providerSessionId, 'thread-1');
@@ -254,4 +264,35 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
       assert.equal((await post(bad)).status, 400, JSON.stringify(bad).slice(0, 80));
     }
   }, runs);
+});
+
+test('the Portal\'s node API archives and restores Claude sessions that Claude Desktop on another machine put away', async () => {
+  await withRoutes(async ({ root, postTo }) => {
+    // Desktop's last activity, and last messages from before and long after it.
+    const desktopActivity = '2026-10-23T10:51:19.345Z';
+    sessionsDb.createSession('claude-1', 'claude', root, 'Desktop session', undefined, '2026-10-23T10:51:18.940Z');
+    sessionsDb.createAppSession('app-2', 'claude', root, 'Started in Codey');
+    sessionsDb.assignProviderSessionId('app-2', 'claude-2');
+    sessionsDb.createSession('claude-2', 'claude', root, 'Started in Codey', undefined, '2026-10-23T10:00:00.000Z');
+    sessionsDb.createSession('claude-3', 'claude', root, 'Continued in Codey', undefined, '2026-10-24T09:00:00.000Z');
+    const archive = (sessions: unknown) => postTo('/sessions/archive', { sessions });
+
+    const result = await archive(['claude-1', 'claude-2', 'claude-3', 'elsewhere'].map((sessionId) => ({
+      provider: 'claude', sessionId, archived: true, lastActivityAt: desktopActivity,
+    })));
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.data.sessions.map((entry: { sessionId: string; listed: boolean }) => [entry.sessionId, entry.listed]),
+      [['claude-1', true], ['claude-2', true], ['claude-3', true], ['elsewhere', false]]);
+    assert.equal(sessionsDb.getSessionById('claude-1')?.isArchived, 1);
+    assert.equal(sessionsDb.getSessionById('app-2')?.isArchived, 1);
+    assert.equal(sessionsDb.getSessionById('claude-3')?.isArchived, 0, 'went on in Codey after Desktop last used it');
+
+    assert.equal((await archive([{ provider: 'claude', sessionId: 'claude-2', archived: false }])).status, 200);
+    assert.equal(sessionsDb.getSessionById('app-2')?.isArchived, 0);
+    for (const bad of [[], [{ provider: 'codex', sessionId: 'thread', archived: true }],
+      [{ provider: 'claude', sessionId: 'not an id', archived: true }], [{ provider: 'claude', sessionId: 'claude-1', archived: 'yes' }],
+      [{ provider: 'claude', sessionId: 'claude-1', archived: true, lastActivityAt: 'soon' }]]) {
+      assert.equal((await archive(bad)).status, 400, JSON.stringify(bad));
+    }
+  }, []);
 });

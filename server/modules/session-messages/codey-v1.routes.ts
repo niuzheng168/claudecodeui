@@ -2,6 +2,7 @@ import express from 'express';
 import type { Request, Response } from 'express';
 
 import { codeyInboundMessagesDb, sessionsDb } from '@/modules/database/index.js';
+import { applyClaudeArchiveChanges } from '@/modules/providers/index.js';
 import { deliverSessionMessage } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import type { SessionMessageResult } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
@@ -12,6 +13,7 @@ type AuthenticatedRequest = Request & { user?: { id?: number | string } };
 /** The internal API version the Portal checks before using these routes. */
 export const CODEY_NODE_CONTRACT = 1;
 const MAX_TEXT_CHARS = 32_000;
+const MAX_ARCHIVE_SESSIONS = 100;
 const SESSION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^codey:\/\/n-[a-f0-9]{24}\/[A-Za-z0-9._:-]{1,160}$/;
 const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
@@ -41,8 +43,40 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
   const router = express.Router();
 
   router.get('/info', (_req: Request, res: Response) => {
-    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions'] }));
+    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive'] }));
   });
+
+  /**
+   * Archives or restores Claude sessions by Claude Code's session ID, for an
+   * archive Claude Desktop made on another of the owner's machines that runs
+   * them here over SSH. Says which ones this machine lists, which tells the
+   * Portal the change has reached the session.
+   */
+  router.post(
+    '/sessions/archive',
+    asyncHandler(async (req: Request, res: Response) => {
+      const invalidArchive = (message: string) => new AppError(message, { code: 'SESSION_ARCHIVE_INVALID', statusCode: 400 });
+      const sessions = ((req.body ?? {}) as Record<string, unknown>).sessions;
+      if (!Array.isArray(sessions) || !sessions.length || sessions.length > MAX_ARCHIVE_SESSIONS) {
+        throw invalidArchive(`sessions must list 1–${MAX_ARCHIVE_SESSIONS} sessions.`);
+      }
+      const changes = sessions.map((value) => {
+        const entry = (value ?? {}) as Record<string, unknown>;
+        if (entry.provider !== 'claude') throw invalidArchive('Only Claude sessions can be archived this way.');
+        if (typeof entry.sessionId !== 'string' || !SESSION_ID.test(entry.sessionId)) throw invalidArchive('sessionId is invalid.');
+        if (typeof entry.archived !== 'boolean') throw invalidArchive('archived must be true or false.');
+        const lastActivityAt = entry.lastActivityAt === undefined ? null : Date.parse(String(entry.lastActivityAt));
+        if (lastActivityAt !== null && !Number.isFinite(lastActivityAt)) throw invalidArchive('lastActivityAt is invalid.');
+        return { providerSessionId: entry.sessionId, archived: entry.archived, lastActivityAt };
+      });
+      const result = await applyClaudeArchiveChanges(changes);
+      res.json(createApiSuccessResponse({
+        sessions: result.sessions.map(({ providerSessionId, sessionId }) => ({
+          provider: 'claude', sessionId: providerSessionId, listed: sessionId !== null,
+        })),
+      }));
+    }),
+  );
 
   /** A session by its CloudCLI or provider session ID, as the Portal records it for a grant. */
   router.get('/sessions/:sessionId', (req: Request, res: Response) => {

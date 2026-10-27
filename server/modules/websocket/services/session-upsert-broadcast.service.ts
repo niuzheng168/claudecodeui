@@ -104,5 +104,15 @@ export async function broadcastSessionUpsertedBatch(
   sendToConnectedClients(payloads);
 }
 
+/**
+ * Tells open sidebars that sessions were archived without them: the archive
+ * API's own caller drops the row itself, but no other client learns of it.
+ * Used by the providers module when Claude Desktop's archive reaches Codey.
+ */
+export function broadcastSessionsArchived(sessionIds: Iterable<string>): void {
+  const timestamp = new Date().toISOString();
+  sendToConnectedClients([...sessionIds].map((sessionId) => JSON.stringify({ kind: 'session_archived', sessionId, timestamp })));
+}
+
 /** @internal Exported for the broadcast tests, which assert the payload shape directly. */
 export { buildSessionUpsertedEvent };

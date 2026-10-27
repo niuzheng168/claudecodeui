@@ -277,6 +277,25 @@ CREATE TABLE IF NOT EXISTS codey_inbound_messages (
 );
 `;
 
+/**
+ * Whether Claude Desktop on this computer had each Claude Code session
+ * archived when it was last looked at, so only a change is carried into
+ * Codey: a session the user brings back in Codey is not archived again for an
+ * archive made in Desktop before. `pending` stays set until a change to a
+ * session Desktop runs on another machine over SSH has reached that machine.
+ * `desktop_activity_at` is Desktop's own last activity in the session (ms);
+ * a session with newer messages in Codey was continued here and stays.
+ */
+export const CLAUDE_DESKTOP_ARCHIVE_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS claude_desktop_archive (
+    provider_session_id TEXT PRIMARY KEY,
+    archived INTEGER NOT NULL,
+    pending INTEGER NOT NULL DEFAULT 0,
+    desktop_activity_at INTEGER,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -332,4 +351,6 @@ ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
 
 ${CODEY_INBOUND_MESSAGES_TABLE_SCHEMA_SQL}
+
+${CLAUDE_DESKTOP_ARCHIVE_TABLE_SCHEMA_SQL}
 `;

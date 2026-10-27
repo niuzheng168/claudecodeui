@@ -34,8 +34,10 @@ const REDATED_BY_LAST_MESSAGE_KEY = 'claude_sessions_redated_by_last_message';
  * an archive made in Codey (`sessionsDb.createSession`).
  * Undefined when the tail holds no message, such as a transcript with only
  * metadata so far; the file's modification time stands in then.
+ * Also used by the Claude Desktop archive sync (claude-desktop-archive.service.ts)
+ * to tell whether a session went on after Desktop last used it.
  */
-async function readLastMessageTime(filePath: string): Promise<string | undefined> {
+export async function readLastMessageTime(filePath: string): Promise<string | undefined> {
   let tail: string;
   let partialFirstLine: boolean;
   try {

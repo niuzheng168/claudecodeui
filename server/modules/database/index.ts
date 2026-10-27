@@ -2,6 +2,9 @@ export { initializeDatabase } from '@/modules/database/init-db.js';
 export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
+// claudeDesktopArchiveDb: used by Providers to carry Claude Desktop's archive into Codey once per change.
+export { claudeDesktopArchiveDb } from '@/modules/database/repositories/claude-desktop-archive.db.js';
+export type { PendingClaudeDesktopArchive } from '@/modules/database/repositories/claude-desktop-archive.db.js';
 export { codeyInboundMessagesDb } from '@/modules/database/repositories/codey-inbound-messages.db.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
