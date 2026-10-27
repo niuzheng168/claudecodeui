@@ -62,6 +62,10 @@ type ChatComposerProps = {
   onAbortSession: () => void;
   /** Promotes the queued card, never the textarea; the run must advertise queued steering. */
   onSteerQueued?: (messageId?: string) => void;
+  /** A message sent while a turn runs joins that turn (Claude); otherwise it waits for the turn to end. */
+  sendJoinsRunningTurn?: boolean;
+  /** Queues the draft for after the running turn, where it would join that turn. */
+  onQueueUntilTurnEnds?: () => void;
   canSteer?: boolean;
   steerUnavailableReason?: string | null;
   isSteering?: boolean;
@@ -160,6 +164,8 @@ export default function ChatComposer({
   isLoading,
   onAbortSession,
   onSteerQueued,
+  sendJoinsRunningTurn = false,
+  onQueueUntilTurnEnds,
   canSteer = false,
   steerUnavailableReason = null,
   isSteering = false,
@@ -396,16 +402,25 @@ export default function ChatComposer({
   const queue = queuedDrafts ?? (queuedDraft ? [queuedDraft] : []);
   const hasQueuedDraft = queue.length > 0;
   const canQueueDraft = (isLoading || hasQueuedDraft) && Boolean(input.trim() || attachedFiles.length > 0);
-  const submitHint = canQueueDraft
-    ? t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
-    : sendByCtrlEnter
-      ? t('input.hintText.ctrlEnter')
-      : t('input.hintText.enter');
-  const submitAriaLabel = canQueueDraft
-    ? t('input.queue.sendNext', { defaultValue: 'Queue next message' })
-    : isLoading
-      ? t('input.stop')
-      : isRecording && rewriteConfigured ? t('voice.rewrite.stopPreview') : t('input.send');
+  // Sending now joins the running turn when it takes messages; Alt with the
+  // send key, or the tools menu, keeps the message for after the turn instead.
+  const joinsRunningTurn = canQueueDraft && isLoading && sendJoinsRunningTurn && canSteer;
+  const submitHint = joinsRunningTurn
+    ? sendByCtrlEnter
+      ? t('input.hintText.joinTurnCtrlEnter', { defaultValue: 'Ctrl+Enter to add to the running turn • Ctrl+Alt+Enter to queue it for after' })
+      : t('input.hintText.joinTurn', { defaultValue: 'Enter to add to the running turn • Alt+Enter to queue it for after' })
+    : canQueueDraft
+      ? t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
+      : sendByCtrlEnter
+        ? t('input.hintText.ctrlEnter')
+        : t('input.hintText.enter');
+  const submitAriaLabel = joinsRunningTurn
+    ? t('input.steer.send', { defaultValue: 'Send now' })
+    : canQueueDraft
+      ? t('input.queue.sendNext', { defaultValue: 'Queue next message' })
+      : isLoading
+        ? t('input.stop')
+        : isRecording && rewriteConfigured ? t('voice.rewrite.stopPreview') : t('input.send');
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
@@ -760,6 +775,7 @@ export default function ChatComposer({
           onClearInput={onClearInput}
           canSchedule={Boolean(input.trim())}
           onSchedule={onScheduleMessage}
+          onQueueUntilTurnEnds={joinsRunningTurn && !isSteering ? onQueueUntilTurnEnds : undefined}
           submitHint={submitHint}
           hideHint={Boolean(input.trim() && !canQueueDraft)}
           voiceStatus={voiceState === 'idle' ? undefined : t(`voice.${voiceState}`)}

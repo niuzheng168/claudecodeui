@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronRight, Clock, Ellipsis, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Clock, Ellipsis, ListEnd, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
@@ -15,10 +15,14 @@ type Props = {
   onClearInput: () => void;
   canSchedule: boolean;
   onSchedule: (date: Date) => void;
+  /** Present while sending would add the draft to the running turn: keeps it for after that turn instead. */
+  onQueueUntilTurnEnds?: () => void;
 };
 
 /** Chat's ComposerToolbar groups less frequent draft actions here, without hiding send or permissions. */
-export function ComposerToolsMenu({ commandsCount, onShowCommands, hasInput, onClearInput, canSchedule, onSchedule }: Props) {
+export function ComposerToolsMenu({
+  commandsCount, onShowCommands, hasInput, onClearInput, canSchedule, onSchedule, onQueueUntilTurnEnds,
+}: Props) {
   const { t } = useTranslation('chat');
   // Secondary actions are disclosed only when requested, not on every keystroke.
   const [isOpen, setIsOpen] = useState(false);
@@ -52,6 +56,13 @@ export function ComposerToolsMenu({ commandsCount, onShowCommands, hasInput, onC
                 icon={<span aria-hidden="true" className="font-mono font-medium">/</span>}
                 trailing={commandsCount > 0 ? <span className="text-xs text-muted-foreground">{commandsCount}</span> : undefined}
                 onSelect={() => select(onShowCommands)} />
+              {onQueueUntilTurnEnds && (
+                <ComposerMenuItem role="menuitem" isSelected={false}
+                  label={t('input.queue.untilTurnEnds', { defaultValue: 'Queue for after this turn' })}
+                  description={t('input.queue.untilTurnEndsHint', { defaultValue: 'Sent as a turn of its own once this one ends' })}
+                  icon={<ListEnd className="h-4 w-4" />}
+                  onSelect={() => select(onQueueUntilTurnEnds)} />
+              )}
               <ComposerMenuItem role="menuitem" label={t('schedule.trigger')} isSelected={false}
                 icon={<Clock className="h-4 w-4" />} trailing={<ChevronRight className="h-3 w-3" />}
                 disabled={!canSchedule} description={!canSchedule ? t('composer.writeFirst') : undefined}

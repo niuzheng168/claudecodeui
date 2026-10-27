@@ -185,9 +185,33 @@ test.each([320, 390, 1024])('queued steering sits beside Edit/Delete outside the
 });
 
 test('even supported runs have no immediate action before a message is queued', () => {
-  fixture({ isLoading: true, onSteerQueued: vi.fn(), canSteer: true });
+  fixture({ isLoading: true, onSteerQueued: vi.fn(), canSteer: true, onQueueUntilTurnEnds: vi.fn() });
   expect(screen.queryByRole('button', { name: 'Steer now' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'More tools' }));
+  expect(screen.queryByRole('menuitem', { name: /Queue for after this turn/ })).toBeNull();
+});
+
+test('during a Claude turn, send adds the draft to the turn and the tools menu keeps it for after', () => {
+  const onQueueUntilTurnEnds = vi.fn();
+  const f = fixture({
+    isLoading: true, onSteerQueued: vi.fn(), canSteer: true, sendJoinsRunningTurn: true, onQueueUntilTurnEnds,
+  });
+  expect(screen.getByText('Enter to add to the running turn • Alt+Enter to queue it for after')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Steer now' }));
+  expect(f.props.onSubmit).toHaveBeenCalledTimes(1);
+  expect(f.props.onAbortSession).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'More tools' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Queue for after this turn/ }));
+  expect(onQueueUntilTurnEnds).toHaveBeenCalledTimes(1);
+  expect(f.props.onSubmit).toHaveBeenCalledTimes(1);
+});
+
+test('a Claude turn that takes no messages, such as one Claude Desktop runs, offers to queue', () => {
+  fixture({ isLoading: true, onSteerQueued: vi.fn(), canSteer: false, sendJoinsRunningTurn: true, onQueueUntilTurnEnds: vi.fn() });
+  expect(screen.getByRole('button', { name: 'Queue next message' })).toBeTruthy();
+  expect(screen.getByText('Enter to queue your next message')).toBeTruthy();
 });
 
 test.each([320, 1024])('each FIFO card at %ipx has independent actions targeting its own receipt', (width) => {

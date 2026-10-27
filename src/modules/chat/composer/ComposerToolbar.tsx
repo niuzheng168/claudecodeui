@@ -24,6 +24,8 @@ type Props = {
   onClearInput: () => void;
   canSchedule: boolean;
   onSchedule: (date: Date) => void;
+  /** Offered while a sent message would join the running turn instead. */
+  onQueueUntilTurnEnds?: () => void;
   submitHint: string;
   hideHint: boolean;
   voiceStatus?: string;
@@ -46,7 +48,7 @@ function revealFocusedTool({ currentTarget, target }: FocusEvent<HTMLDivElement>
 export function ComposerToolbar({
   onAttachFiles, completionControl, voiceControl, rewriteControl, modelControl, permissionControl, submitControl,
   tokenUsage, contextWindow, onShowTokenUsage, commandsCount, onShowCommands, hasInput, onClearInput,
-  canSchedule, onSchedule, submitHint, hideHint, voiceStatus, voiceError, collapseControl,
+  canSchedule, onSchedule, onQueueUntilTurnEnds, submitHint, hideHint, voiceStatus, voiceError, collapseControl,
 }: Props) {
   const { t } = useTranslation('chat');
   return (
@@ -68,7 +70,8 @@ export function ComposerToolbar({
           {voiceControl}
           {rewriteControl}
           <ComposerToolsMenu commandsCount={commandsCount} onShowCommands={onShowCommands}
-            hasInput={hasInput} onClearInput={onClearInput} canSchedule={canSchedule} onSchedule={onSchedule} />
+            hasInput={hasInput} onClearInput={onClearInput} canSchedule={canSchedule} onSchedule={onSchedule}
+            onQueueUntilTurnEnds={onQueueUntilTurnEnds} />
         </PromptInputTools>
         {modelControl}
         {permissionControl}

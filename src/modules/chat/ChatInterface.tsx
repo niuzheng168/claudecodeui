@@ -248,6 +248,7 @@ function ChatInterface({
     isDragActive,
     openAttachmentPicker,
     handleSubmit,
+    handleQueueUntilTurnEnds,
     handleSteerQueued,
     isSteering,
     steerError,
@@ -299,6 +300,7 @@ function ChatInterface({
     tokenBudget,
     sendMessage,
     steerMessage: supportsSteering ? steering.steerMessage : undefined,
+    canSteerQueued: steering.canSteerQueued,
     sendByCtrlEnter,
     onSessionProcessing: markOwnSendProcessing,
     onSessionEstablished: handleSessionEstablished,
@@ -577,6 +579,8 @@ function ChatInterface({
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
           onSteerQueued={supportsSteering ? handleSteerQueued : undefined}
+          sendJoinsRunningTurn={provider === 'claude' && supportsSteering}
+          onQueueUntilTurnEnds={handleQueueUntilTurnEnds}
           canSteer={steering.canSteerQueued}
           steerUnavailableReason={steering.queuedUnavailableReason}
           isSteering={isSteering}

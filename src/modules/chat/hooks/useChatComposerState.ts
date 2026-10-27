@@ -58,6 +58,8 @@ type UseChatComposerStateArgs = {
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
   steerMessage?: SteerChatMessage;
+  /** The running turn takes queued messages now (useChatSteering's `canSteerQueued`). */
+  canSteerQueued?: boolean;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -103,7 +105,16 @@ type SubmitOptions = {
    * run that command instead of being sent.
    */
   skipCommandInterception?: boolean;
+  /**
+   * Keep the message queued until the running turn ends, where a Claude turn
+   * would take it at once (Alt+Enter, or the tools menu).
+   */
+  queueUntilTurnEnds?: boolean;
 };
+
+// Claude Code runs a slash command as a turn of its own, so the node never
+// steers one into a running turn (claude-runtime's steering); it stays queued.
+const CLAUDE_SLASH_COMMAND = /^\/[\w:.-]+(?:\s|$)/;
 
 const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
@@ -217,6 +228,7 @@ export function useChatComposerState({
   tokenBudget,
   sendMessage,
   steerMessage,
+  canSteerQueued = false,
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
@@ -365,6 +377,9 @@ export function useChatComposerState({
   } | null>(null);
   // Synchronous lock prevents two clicks/Enter from sending or queueing the same draft before React commits.
   const steeringInFlightRef = useRef<string | null>(null);
+  // Queued messages sent while a Claude turn runs, by receipt id, that join
+  // that turn as soon as it takes them (see the effect after handleSteerQueued).
+  const joiningTurnIdsRef = useRef(new Set<string>());
   // Reserve native submissions per draft/session while a control or new-session request is awaiting acknowledgement.
   const nativeCommandsInFlightRef = useRef(new Set<string>());
 
@@ -1010,13 +1025,21 @@ export function useChatComposerState({
           return;
         }
 
+        const receiptId = crypto.randomUUID();
         queueMessage({
-          id: crypto.randomUUID(),
+          id: receiptId,
           content: currentInput,
           attachments: currentAttachments,
           uploadedAttachments,
           options: queuedOptions,
         }, queuedSessionKey);
+        // Like Claude Desktop, a Claude turn takes what is sent while it runs.
+        // A card left behind by a session switch during the upload just waits.
+        if (provider === 'claude' && isLoading && steerMessage && !submitOptions?.queueUntilTurnEnds
+          && !CLAUDE_SLASH_COMMAND.test(currentInput.trimStart())
+          && queuedSessionKey && queuedSessionKey === sessionKeyRef.current) {
+          joiningTurnIdsRef.current.add(receiptId);
+        }
         return;
       }
 
@@ -1289,6 +1312,7 @@ export function useChatComposerState({
       addMessage,
       setIsUserScrolledUp,
       slashCommands,
+      steerMessage,
       t,
     ],
   );
@@ -1341,6 +1365,31 @@ export function useChatComposerState({
     scrollToBottom, sessionKey, setIsUserScrolledUp, steerMessage,
   ]);
 
+  // A message sent while a Claude turn runs joins that turn, as in Claude
+  // Desktop: it is queued first, so nothing is lost, then appended like
+  // 立即追加 once the run takes queued messages, one at a time and in order.
+  // Claude Code reads it at its next tool boundary. One the turn did not take
+  // stays queued and is sent after the turn, like any other.
+  useEffect(() => {
+    const joining = joiningTurnIdsRef.current;
+    if (!isLoading) {
+      joining.clear();
+      return;
+    }
+    if (joining.size === 0 || !sessionKey || !canSteerQueued || editingAnchorId || steeringInFlightRef.current) {
+      return;
+    }
+    const nextId = readQueuedMessages(sessionKey).find((message) => message.id && joining.has(message.id))?.id;
+    if (!nextId) {
+      return;
+    }
+    joining.delete(nextId);
+    void handleSteerQueued(nextId);
+  }, [canSteerQueued, editingAnchorId, handleSteerQueued, isLoading, sessionKey, steeringState]);
+
+  // Another session's composer does not carry this one's messages into its turn.
+  useEffect(() => () => joiningTurnIdsRef.current.clear(), [sessionKey]);
+
   // Chat scopes with a submit still awaiting its upload or, for a brand-new
   // chat, its session id. The composer does not change until that returns (the
   // text stays, send stays enabled), so on a slow server the user submits
@@ -1372,6 +1421,11 @@ export function useChatComposerState({
 
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
+
+  // The tools menu's way to keep a message for after the running Claude turn.
+  const handleQueueUntilTurnEnds = useCallback(() => {
+    void handleSubmit(createFakeSubmitEvent(), undefined, { queueUntilTurnEnds: true });
   }, [handleSubmit]);
 
   // The VPS dispatcher owns sending. While the card is visible, periodically
@@ -1587,12 +1641,14 @@ export function useChatComposerState({
           return;
         }
 
+        // Alt with the send key keeps the message for after the running turn.
+        const submitOptions = event.altKey ? { queueUntilTurnEnds: true } : undefined;
         if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
           event.preventDefault();
-          handleSubmit(event);
+          handleSubmit(event, undefined, submitOptions);
         } else if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !sendByCtrlEnter) {
           event.preventDefault();
-          handleSubmit(event);
+          handleSubmit(event, undefined, submitOptions);
         }
       }
     },
@@ -1750,6 +1806,7 @@ export function useChatComposerState({
     isDragActive,
     openAttachmentPicker: open,
     handleSubmit,
+    handleQueueUntilTurnEnds,
     handleSteerQueued,
     isSteering: steeringState?.scope === sessionKey && steeringState.pending,
     steeringMessageId: steeringState?.scope === sessionKey ? steeringState.message.id : undefined,

@@ -246,7 +246,9 @@
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Ctrl+Alt+M 切换模式 • / 斜杠命令",
-      "queue": "Enter 排队发送下一条消息"
+      "queue": "Enter 排队发送下一条消息",
+      "joinTurn": "Enter 立即追加到当前轮次 • Alt+Enter 排到本轮结束后",
+      "joinTurnCtrlEnter": "Ctrl+Enter 立即追加到当前轮次 • Ctrl+Alt+Enter 排到本轮结束后"
     },
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Ctrl+Alt+M）",
     "showAllCommands": "显示所有命令",
@@ -277,6 +279,8 @@
     },
     "queue": {
       "sendNext": "排队发送下一条消息",
+      "untilTurnEnds": "排到本轮结束后发送",
+      "untilTurnEndsHint": "这一轮结束后，作为新的一轮发送",
       "label": "已排队",
       "willSend": "将在当前完成后发送",
       "review": "待确认",

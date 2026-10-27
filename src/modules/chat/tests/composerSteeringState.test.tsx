@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
@@ -52,23 +52,26 @@ function consumeQueue(scope = 'a') {
   if (draft) mocks.drafts.set(scope, { ...draft, queuedMessage: null });
 }
 
+// `canSteer` is whether the running turn takes queued messages (useChatSteering's canSteerQueued).
+type FixtureProps = { sessionId: string; provider: LLMProvider; busy: boolean; canSteer?: boolean };
+
 function fixture(steerMessage: SteerChatMessage | null = vi.fn(async (scope) => consumeQueue(scope))) {
   const send = vi.fn();
   const echo = vi.fn();
   const processing = vi.fn();
   const view = renderHook(
-    ({ sessionId, provider, busy }: { sessionId: string; provider: LLMProvider; busy: boolean }) => useChatComposerState({
+    ({ sessionId, provider, busy, canSteer = false }: FixtureProps) => useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: SESSIONS[sessionId as keyof typeof SESSIONS], currentSessionId: sessionId,
       provider, permissionMode: 'default', cyclePermissionMode: noop,
       resolvePermissionModeForProvider: resolvePermissionMode, currentProviderModel: 'test-model',
       currentProviderEffort: 'high', isLoading: busy, canAbortSession: busy, tokenBudget: null,
       activeRunId: busy ? `run-${sessionId}` : null,
-      sendMessage: send, steerMessage: steerMessage ?? undefined, onSessionProcessing: processing,
+      sendMessage: send, steerMessage: steerMessage ?? undefined, canSteerQueued: canSteer, onSessionProcessing: processing,
       scrollToBottom: noop, addMessage: echo, setIsUserScrolledUp: noop,
       setPendingPermissionRequests: noop,
     }),
-    { initialProps: { sessionId: 'a', provider: 'codex' as LLMProvider, busy: true } },
+    { initialProps: { sessionId: 'a', provider: 'codex', busy: true } as FixtureProps },
   );
   return { ...view, send, echo, processing, steerMessage };
 }
@@ -360,6 +363,93 @@ test('a queued message stays queued when the node cannot steer the provider', as
   const waiting = await queue(view, 'Stays queued');
   await act(async () => { await view.result.current.handleSteerQueued(); });
   expect(readQueuedMessages('a')).toEqual([waiting]);
+});
+
+// A node that accepted the steer takes exactly that receipt off the stored FIFO.
+const steerFromQueue = () => vi.fn(async (scope: string, _content: string, _attachments: unknown[], message?: StoredQueuedMessage) => {
+  const draft = mocks.drafts.get(scope)!;
+  const stored = draft.queuedMessage as StoredQueuedMessage | StoredQueuedMessage[] | null;
+  const remaining = (Array.isArray(stored) ? stored : stored ? [stored] : []).filter(entry => entry.id !== message?.id);
+  mocks.drafts.set(scope, { ...draft, queuedMessage: remaining as unknown as StoredQueuedMessage });
+});
+
+async function send(view: ReturnType<typeof fixture>, content: string, submitOptions?: { queueUntilTurnEnds: boolean }) {
+  act(() => { view.result.current.setInput(content); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never, undefined, submitOptions); });
+}
+
+test('a message sent while a Claude turn runs joins that turn, as in Claude Desktop', async () => {
+  const steer = steerFromQueue();
+  const view = fixture(steer);
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: true });
+  await send(view, 'Also check X');
+
+  await waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+  expect(steer).toHaveBeenCalledWith('a', 'Also check X', [], expect.objectContaining({ content: 'Also check X' }));
+  await waitFor(() => expect(view.result.current.queuedDrafts).toEqual([]));
+  expect(readQueuedMessages('a')).toEqual([]);
+  expect(view.result.current.input).toBe('');
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('a Claude message waits until the turn takes queued messages, then joins in order', async () => {
+  const steer = steerFromQueue();
+  const view = fixture(steer);
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: false });
+  await send(view, 'First');
+  await send(view, 'Second');
+  expect(steer).not.toHaveBeenCalled();
+  expect(view.result.current.queuedDrafts.map(draft => draft.content)).toEqual(['First', 'Second']);
+
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: true });
+  await waitFor(() => expect(steer).toHaveBeenCalledTimes(2));
+  expect(steer.mock.calls.map(([, content]) => content)).toEqual(['First', 'Second']);
+  await waitFor(() => expect(view.result.current.queuedDrafts).toEqual([]));
+});
+
+test('Alt+Enter, the tools menu and slash commands keep a Claude message for after the turn', async () => {
+  const steer = steerFromQueue();
+  const view = fixture(steer);
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: true });
+
+  act(() => { view.result.current.setInput('After this turn'); });
+  await act(async () => view.result.current.handleKeyDown({
+    key: 'Enter', nativeEvent: { isComposing: false }, preventDefault() {},
+    ctrlKey: false, altKey: true, metaKey: false, shiftKey: false,
+  } as never));
+  await waitFor(() => expect(readQueuedMessages('a')).toHaveLength(1));
+  act(() => { view.result.current.setInput('Also after it'); });
+  await act(async () => { view.result.current.handleQueueUntilTurnEnds(); });
+  await waitFor(() => expect(readQueuedMessages('a')).toHaveLength(2));
+  await send(view, '/compact');
+
+  expect(readQueuedMessages('a').map(message => message.content)).toEqual(['After this turn', 'Also after it', '/compact']);
+  expect(steer).not.toHaveBeenCalled();
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('a Claude message its turn never took is not carried into a later turn', async () => {
+  const steer = steerFromQueue();
+  const view = fixture(steer);
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: false });
+  await send(view, 'Waits for its own turn');
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: false, canSteer: false });
+  view.rerender({ sessionId: 'a', provider: 'claude', busy: true, canSteer: true });
+  await act(async () => { await Promise.resolve(); });
+
+  expect(steer).not.toHaveBeenCalled();
+  expect(readQueuedMessages('a').map(message => message.content)).toEqual(['Waits for its own turn']);
+});
+
+test('a Codex turn keeps a message sent meanwhile queued until it ends', async () => {
+  const steer = steerFromQueue();
+  const view = fixture(steer);
+  view.rerender({ sessionId: 'a', provider: 'codex', busy: true, canSteer: true });
+  await send(view, 'Queued for Codex');
+  await act(async () => { await Promise.resolve(); });
+
+  expect(steer).not.toHaveBeenCalled();
+  expect(readQueuedMessages('a').map(message => message.content)).toEqual(['Queued for Codex']);
 });
 
 test('restoring or hydrating consumed/remote queues never writes them back to the server', async () => {

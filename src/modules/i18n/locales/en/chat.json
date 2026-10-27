@@ -262,7 +262,9 @@
     "hintText": {
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Ctrl+Alt+M to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Ctrl+Alt+M to change modes • / for slash commands",
-      "queue": "Enter to queue your next message"
+      "queue": "Enter to queue your next message",
+      "joinTurn": "Enter to add to the running turn • Alt+Enter to queue it for after",
+      "joinTurnCtrlEnter": "Ctrl+Enter to add to the running turn • Ctrl+Alt+Enter to queue it for after"
     },
     "clickToChangeMode": "Click to change permission mode (or press Ctrl+Alt+M in input)",
     "showAllCommands": "Show all commands",
@@ -293,6 +295,8 @@
     },
     "queue": {
       "sendNext": "Queue next message",
+      "untilTurnEnds": "Queue for after this turn",
+      "untilTurnEndsHint": "Sent as a turn of its own once this one ends",
       "label": "Queued",
       "willSend": "Will send when this finishes",
       "review": "Check delivery",

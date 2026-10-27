@@ -166,7 +166,9 @@
     "stop": "停止",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Ctrl+Alt+M 切換模式 • / 斜線指令",
-      "enter": "Enter 傳送 • Shift+Enter 換行 • Ctrl+Alt+M 切換模式 • / 斜線指令"
+      "enter": "Enter 傳送 • Shift+Enter 換行 • Ctrl+Alt+M 切換模式 • / 斜線指令",
+      "joinTurn": "Enter 立即追加到目前輪次 • Alt+Enter 排到本輪結束後",
+      "joinTurnCtrlEnter": "Ctrl+Enter 立即追加到目前輪次 • Ctrl+Alt+Enter 排到本輪結束後"
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Ctrl+Alt+M）",
     "showAllCommands": "顯示所有指令",
@@ -197,6 +199,8 @@
     },
     "queue": {
       "sendNext": "排隊傳送下一條訊息",
+      "untilTurnEnds": "排到本輪結束後傳送",
+      "untilTurnEndsHint": "這一輪結束後，作為新的一輪傳送",
       "update": "更新排隊訊息",
       "label": "已排隊",
       "willSend": "將在目前完成後傳送",
