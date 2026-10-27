@@ -749,6 +749,21 @@ export const sessionsDb = {
     ).run(isArchived ? 1 : 0, sessionId);
   },
 
+  /**
+   * Moves a session's `updated_at` back to `updatedAt`; a later date is left
+   * alone, and so is every other column, the archive flag included.
+   * Used by the Claude session synchronizer to re-date sessions that were
+   * indexed by their transcript's modification time.
+   */
+  moveSessionUpdatedAtBack(sessionId: string, updatedAt: string): boolean {
+    const db = getConnection();
+    return db.prepare(
+      `UPDATE sessions
+       SET updated_at = ?
+       WHERE session_id = ? AND julianday(?) < julianday(updated_at)`
+    ).run(updatedAt, sessionId, updatedAt).changes > 0;
+  },
+
   deleteSessionById(sessionId: string): boolean {
     const db = getConnection();
     return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;
@@ -769,16 +784,17 @@ export const sessionsDb = {
    * app-created sessions still waiting for their first provider write and
    * OpenCode rows (whose transcripts all live inside one shared sqlite file).
    * Used by the session synchronizer to find rows whose transcript has been
-   * deleted underneath the index.
+   * deleted underneath the index, and by the Claude session synchronizer to
+   * re-date its sessions from their transcripts.
    */
-  getSessionsWithTranscriptPath(): Array<{ session_id: string; jsonl_path: string }> {
+  getSessionsWithTranscriptPath(): Array<{ session_id: string; provider: string; jsonl_path: string }> {
     const db = getConnection();
     return db
       .prepare(
-        `SELECT session_id, jsonl_path
+        `SELECT session_id, provider, jsonl_path
          FROM sessions
          WHERE jsonl_path IS NOT NULL AND jsonl_path <> ''`
       )
-      .all() as Array<{ session_id: string; jsonl_path: string }>;
+      .all() as Array<{ session_id: string; provider: string; jsonl_path: string }>;
   },
 };

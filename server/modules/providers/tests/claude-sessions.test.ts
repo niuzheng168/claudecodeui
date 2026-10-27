@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { ClaudeSessionSynchronizer } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { buildLookupMap } from '@/shared/utils.js';
@@ -2304,5 +2304,133 @@ test('synchronizeFile skips non-jsonl files', { concurrency: false }, async () =
     const synchronizer = new ClaudeSessionSynchronizer();
     const result = await synchronizer.synchronizeFile('/tmp/not-a-jsonl.txt');
     assert.equal(result, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session dates: the last message, not the transcript file
+// ---------------------------------------------------------------------------
+
+const messageRow = (type: 'user' | 'assistant', uuid: string, timestamp: string): string => JSON.stringify({
+  type,
+  message: { role: type, content: [{ type: 'text', text: `${type} ${uuid}` }] },
+  uuid,
+  timestamp,
+  sessionId: 'test-session-1',
+});
+
+// What Claude Code appends as its process exits; Claude Desktop ends the
+// process when its user archives the session there.
+const exitRows = (): string[] => [
+  JSON.stringify({ type: 'cost-state', totalCostUSD: 1.5, sessionId: 'test-session-1' }),
+  JSON.stringify({ type: 'mode', mode: 'normal', sessionId: 'test-session-1' }),
+];
+
+async function withClaudeHome(prefix: string, runTest: (home: string) => Promise<void>): Promise<void> {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), prefix));
+  await mkdir(path.join(tmp, '.claude'), { recursive: true });
+  await writeFile(path.join(tmp, '.claude', 'history.jsonl'), '', 'utf8');
+  const restoreHomeDir = patchHomeDir(tmp);
+  try {
+    await runTest(tmp);
+  } finally {
+    restoreHomeDir();
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+test('synchronizeFile dates a session by its last message, not by rows appended after it', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-dates-', async (home) => {
+    const filePath = await writeSessionJsonl(home, 'test-session-1.jsonl', [
+      messageRow('assistant', 'msg-2', '2026-07-10T00:05:00.000Z'),
+      JSON.stringify({ type: 'system', subtype: 'stop_hook_summary', timestamp: '2026-07-10T00:05:00.200Z', sessionId: 'test-session-1' }),
+      JSON.stringify({ type: 'last-prompt', lastPrompt: 'first prompt', sessionId: 'test-session-1' }),
+      ...exitRows(),
+      // A background task the exit stopped queues its notification, and no turn takes it.
+      JSON.stringify({
+        type: 'queue-operation', operation: 'enqueue', timestamp: '2026-07-14T09:46:08.848Z',
+        sessionId: 'test-session-1', content: '<task-notification></task-notification>',
+      }),
+    ]);
+
+    await withIsolatedDatabase(async () => {
+      const sessionId = await new ClaudeSessionSynchronizer().synchronizeFile(filePath);
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.updated_at, '2026-07-10T00:05:00.000Z');
+    });
+  });
+});
+
+test('a session archived in Codey stays archived when its process exits, and a new message brings it back', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-archive-', async (home) => {
+    const filePath = await writeSessionJsonl(home, 'test-session-1.jsonl', [
+      messageRow('assistant', 'msg-2', '2026-07-10T00:05:00.000Z'),
+    ]);
+
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new ClaudeSessionSynchronizer();
+      const sessionId = (await synchronizer.synchronizeFile(filePath))!;
+      sessionsDb.updateSessionIsArchived(sessionId, true);
+
+      await appendFile(filePath, `${exitRows().join('\n')}\n`, 'utf8');
+      await synchronizer.synchronizeFile(filePath);
+      assert.equal(sessionsDb.getSessionById(sessionId)?.isArchived, 1);
+      assert.equal(sessionsDb.getSessionById(sessionId)?.updated_at, '2026-07-10T00:05:00.000Z');
+
+      await appendFile(filePath, `${messageRow('user', 'msg-3', '2026-07-11T08:00:00.000Z')}\n`, 'utf8');
+      await synchronizer.synchronizeFile(filePath);
+      assert.equal(sessionsDb.getSessionById(sessionId)?.isArchived, 0);
+      assert.equal(sessionsDb.getSessionById(sessionId)?.updated_at, '2026-07-11T08:00:00.000Z');
+    });
+  });
+});
+
+test('a transcript whose tail holds no message dates its session by the file', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-file-date-', async (home) => {
+    // A last reply longer than the tail that is read.
+    const reply = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(1024 * 1024) }] },
+      uuid: 'msg-2',
+      timestamp: '2026-07-10T00:05:00.000Z',
+      sessionId: 'test-session-1',
+    });
+    const filePath = await writeSessionJsonl(home, 'test-session-1.jsonl', [reply, ...exitRows()]);
+    const modifiedAt = new Date('2026-07-12T00:00:00.000Z');
+    await utimes(filePath, modifiedAt, modifiedAt);
+
+    await withIsolatedDatabase(async () => {
+      const sessionId = await new ClaudeSessionSynchronizer().synchronizeFile(filePath);
+      assert.equal(sessionsDb.getSessionById(sessionId!)?.updated_at, modifiedAt.toISOString());
+    });
+  });
+});
+
+test('the first scan moves sessions dated by their file back to their last message, once', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-redate-', async (home) => {
+    const transcripts = path.join(home, '.claude', 'projects', '-workspace-demo');
+    await mkdir(transcripts, { recursive: true });
+    const filePath = await writeSessionJsonl(transcripts, 'test-session-1.jsonl', [
+      messageRow('assistant', 'msg-2', '2026-07-10T00:05:00.000Z'),
+      ...exitRows(),
+    ]);
+
+    await withIsolatedDatabase(async () => {
+      // As an earlier version indexed it: dated by the file, which the exit moved.
+      sessionsDb.createSession('test-session-1', 'claude', '/workspace/demo', 'Demo', undefined, '2026-07-14T09:46:16.300Z', filePath);
+      sessionsDb.updateSessionIsArchived('test-session-1', true);
+      projectsDb.updateProjectIsArchived('/workspace/demo', true);
+      const synchronizer = new ClaudeSessionSynchronizer();
+
+      // No transcript is new since this scan's cursor, so only the re-dating has work.
+      await synchronizer.synchronize(new Date());
+      const session = sessionsDb.getSessionById('test-session-1');
+      assert.equal(session?.updated_at, '2026-07-10T00:05:00.000Z');
+      assert.equal(session?.isArchived, 1);
+      assert.equal(projectsDb.getProjectPath('/workspace/demo')?.isArchived, 1);
+
+      sessionsDb.createSession('test-session-1', 'claude', '/workspace/demo', 'Demo', undefined, '2026-07-15T00:00:00.000Z', filePath);
+      await synchronizer.synchronize(new Date());
+      assert.equal(sessionsDb.getSessionById('test-session-1')?.updated_at, '2026-07-15T00:00:00.000Z');
+    });
   });
 });

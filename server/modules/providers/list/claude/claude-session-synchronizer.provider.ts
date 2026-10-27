@@ -1,8 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { appConfigDb, sessionsDb } from '@/modules/database/index.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
@@ -17,6 +17,63 @@ type ParsedSession = {
   projectPath: string;
   sessionName?: string;
 };
+
+// The longest transcript tail read to find the session's last message.
+const LAST_MESSAGE_TAIL_BYTES = 1024 * 1024;
+// `app_config` key set once the sessions indexed before dates came from
+// messages have been re-dated (see redateIndexedSessions).
+const REDATED_BY_LAST_MESSAGE_KEY = 'claude_sessions_redated_by_last_message';
+
+/**
+ * When the session last had a message: the `timestamp` of the transcript's
+ * newest user or assistant row, as an ISO string. Claude Code also appends
+ * rows when nothing is said: titles, the last prompt, the mode, and the cost
+ * so far as its process exits. Claude Desktop ends that process when its user
+ * archives the session there. Dated by the file instead, a session archived
+ * days after its last message would turn recent, and the newer date would undo
+ * an archive made in Codey (`sessionsDb.createSession`).
+ * Undefined when the tail holds no message, such as a transcript with only
+ * metadata so far; the file's modification time stands in then.
+ */
+async function readLastMessageTime(filePath: string): Promise<string | undefined> {
+  let tail: string;
+  let partialFirstLine: boolean;
+  try {
+    const file = await open(filePath, 'r');
+    try {
+      const { size } = await file.stat();
+      const length = Math.min(size, LAST_MESSAGE_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await file.read(buffer, 0, length, size - length);
+      tail = buffer.subarray(0, bytesRead).toString('utf8');
+      partialFirstLine = length < size;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return undefined;
+  }
+
+  const lines = tail.split('\n');
+  for (let index = lines.length - 1; index >= (partialFirstLine ? 1 : 0); index -= 1) {
+    let row: unknown;
+    try {
+      row = JSON.parse(lines[index]);
+    } catch {
+      // A line still being written, or not JSON.
+      continue;
+    }
+    const data = row && typeof row === 'object' ? row as Record<string, unknown> : undefined;
+    if (data?.type !== 'user' && data?.type !== 'assistant') {
+      continue;
+    }
+    const time = typeof data.timestamp === 'string' ? Date.parse(data.timestamp) : Number.NaN;
+    if (Number.isFinite(time)) {
+      return new Date(time).toISOString();
+    }
+  }
+  return undefined;
+}
 
 /**
  * Returns the newest non-empty `field` of this session's `type` metadata rows.
@@ -95,7 +152,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
-      const timestamps = await readFileTimestamps(filePath);
+      const timestamps = await this.readSessionTimestamps(filePath);
       sessionsDb.createSession(
         parsed.sessionId,
         this.provider,
@@ -106,6 +163,11 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         filePath
       );
       processed += 1;
+    }
+
+    if (!appConfigDb.get(REDATED_BY_LAST_MESSAGE_KEY)) {
+      await this.redateIndexedSessions();
+      appConfigDb.set(REDATED_BY_LAST_MESSAGE_KEY, new Date().toISOString());
     }
 
     return processed;
@@ -128,7 +190,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    const timestamps = await readFileTimestamps(filePath);
+    const timestamps = await this.readSessionTimestamps(filePath);
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
@@ -138,6 +200,39 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       timestamps.updatedAt,
       filePath
     );
+  }
+
+  /**
+   * A session is created with its transcript file and updated at its last
+   * message (see readLastMessageTime).
+   */
+  private async readSessionTimestamps(filePath: string): Promise<{ createdAt?: string; updatedAt?: string }> {
+    const timestamps = await readFileTimestamps(filePath);
+    return {
+      createdAt: timestamps.createdAt,
+      updatedAt: (await readLastMessageTime(filePath)) ?? timestamps.updatedAt,
+    };
+  }
+
+  /**
+   * Sessions indexed before dates came from messages carry their transcript's
+   * modification time, which an exiting process can move days past the last
+   * message. Scans index only transcripts created since the previous scan, and
+   * the watcher only those that change, so a transcript that stays as it is
+   * would keep that date; each session is moved back to its last message once
+   * here. Only the date changes: indexing the transcript again would also
+   * restore an archived project (`projectsDb.createProjectPath`).
+   */
+  private async redateIndexedSessions(): Promise<void> {
+    for (const session of sessionsDb.getSessionsWithTranscriptPath()) {
+      if (session.provider !== this.provider) {
+        continue;
+      }
+      const lastMessageAt = await readLastMessageTime(session.jsonl_path);
+      if (lastMessageAt) {
+        sessionsDb.moveSessionUpdatedAtBack(session.session_id, lastMessageAt);
+      }
+    }
   }
 
   /**

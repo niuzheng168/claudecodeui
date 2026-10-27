@@ -432,6 +432,16 @@ How rows are claimed:
   `findLatestPendingAppSession` to claim the newest app row for that project still missing a
   provider id.
 
+A Claude session's `updated_at`, which the sidebars show as its last activity, is the
+`timestamp` of the transcript's last user or assistant row, not the file's modification time.
+Claude Code also appends rows when nothing is said: titles, the last prompt, the mode, and the
+cost so far as its process exits. Claude Desktop ends that process when its user archives the
+session there. A newer `updated_at` also un-archives a session (`sessionsDb.createSession`),
+so dating by the file would make the session recent and undo an archive made in Codey. When the
+transcript's last megabyte holds no message, the modification time stands in. Rows that
+earlier versions dated by the file are moved back to their last message once, on the first full
+scan (`redateIndexedSessions`, `app_config` key `claude_sessions_redated_by_last_message`).
+
 `session-synchronizer.service.ts` adds two guarantees beyond indexing. Concurrent callers
 share one scan (opening the UI fires `/api/projects` and `/api/projects/archived` at once),
 and `pruneOrphanedSessions` deletes rows whose transcript is gone — but only when the
