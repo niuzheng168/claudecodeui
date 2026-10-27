@@ -24,6 +24,22 @@ const MENTION_SEARCH_DELAY_MS = 120;
 
 const NO_FILES: MentionableFile[] = [];
 
+type ProjectFileNode = {
+  name: string;
+  type: 'file' | 'directory';
+  children?: ProjectFileNode[];
+};
+
+// The files of a project's file tree (`api.getFiles`), with their relative paths.
+const flattenFileTree = (nodes: ProjectFileNode[], basePath = ''): MentionableFile[] =>
+  nodes.flatMap((node) => {
+    const nodePath = basePath ? `${basePath}/${node.name}` : node.name;
+    if (node.type === 'directory') {
+      return node.children ? flattenFileTree(node.children, nodePath) : [];
+    }
+    return [{ name: node.name, path: nodePath }];
+  });
+
 export function useFileMentions({ selectedProject, input, setInput, textareaRef }: UseFileMentionsOptions) {
   const projectId = selectedProject?.projectId;
   // What the server found for the latest search, and in which project.
@@ -41,9 +57,59 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
   const searchRequestRef = useRef<AbortController | null>(null);
   // The project the open dropdown has listed again; null while it is closed.
   const listedProjectRef = useRef<string | null>(null);
+  // Projects on a node from before file search (Codey 0.3.8 and older), and
+  // the file tree last loaded for one of them.
+  const treeOnlyProjectsRef = useRef(new Set<string>());
+  const loadedTreeRef = useRef<{ projectId: string; files: MentionableFile[] } | null>(null);
 
   // A project switch, or the composer going away, drops a search on its way.
   useEffect(() => () => searchRequestRef.current?.abort(), [projectId]);
+
+  // A node from before file search serves its app page for the search route.
+  // The shared UI also runs against such nodes, so `@` then filters the
+  // project's whole file tree here, as it did before, loaded again with each
+  // `@`. That still stops at the file tree's 10,000 entries.
+  const searchProjectFiles = useCallback(async (
+    targetProjectId: string,
+    query: string,
+    refresh: boolean,
+    signal: AbortSignal,
+  ): Promise<MentionableFile[] | null> => {
+    if (!treeOnlyProjectsRef.current.has(targetProjectId)) {
+      const response = await api.searchFiles(
+        targetProjectId,
+        { query, limit: MENTION_SEARCH_LIMIT, refresh },
+        { signal },
+      );
+      if (!response.ok && response.status !== 404) {
+        console.error('Error searching files:', response.status);
+        return null;
+      }
+      const body = response.ok
+        ? (await response.json().catch(() => null)) as { files?: MentionableFile[] } | null
+        : null;
+      if (signal.aborted) {
+        return null;
+      }
+      if (Array.isArray(body?.files)) {
+        return body.files;
+      }
+      treeOnlyProjectsRef.current.add(targetProjectId);
+    }
+
+    let tree = loadedTreeRef.current;
+    if (refresh || !tree || tree.projectId !== targetProjectId) {
+      const response = await api.getFiles(targetProjectId, { signal });
+      if (!response.ok) {
+        console.error('Error fetching files:', response.status);
+        return null;
+      }
+      tree = { projectId: targetProjectId, files: flattenFileTree((await response.json()) as ProjectFileNode[]) };
+      loadedTreeRef.current = tree;
+    }
+    const lowerQuery = query.toLowerCase().replace(/\\/g, '/');
+    return tree.files.filter((file) => file.path.toLowerCase().includes(lowerQuery)).slice(0, MENTION_SEARCH_LIMIT);
+  }, []);
 
   useEffect(() => {
     const textBeforeCursor = input.slice(0, cursorPosition);
@@ -86,18 +152,8 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
       listedProjectRef.current = projectId;
 
       try {
-        const response = await api.searchFiles(
-          projectId,
-          { query: mentionQuery, limit: MENTION_SEARCH_LIMIT, refresh },
-          { signal: abortController.signal },
-        );
-        if (!response.ok) {
-          console.error('Error searching files:', response.status);
-          return;
-        }
-
-        const { files } = (await response.json()) as { files: MentionableFile[] };
-        if (abortController.signal.aborted) {
+        const files = await searchProjectFiles(projectId, mentionQuery, refresh, abortController.signal);
+        if (!files || abortController.signal.aborted) {
           return;
         }
         setFound({ projectId, files });
@@ -111,7 +167,7 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
     }, refresh ? 0 : MENTION_SEARCH_DELAY_MS);
 
     return () => clearTimeout(timer);
-  }, [showFileDropdown, mentionQuery, projectId]);
+  }, [showFileDropdown, mentionQuery, projectId, searchProjectFiles]);
 
   // The files found, narrowed to what has been typed since: while the next
   // search is on its way the list follows typing at once, and it never offers

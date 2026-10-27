@@ -14,9 +14,13 @@ import type { Project } from '@/shared/types';
  */
 
 const searchFiles = vi.fn();
+const getFiles = vi.fn();
 
 vi.mock('@/shared/api', () => ({
-  api: { searchFiles: (...args: unknown[]) => searchFiles(...args) },
+  api: {
+    searchFiles: (...args: unknown[]) => searchFiles(...args),
+    getFiles: (...args: unknown[]) => getFiles(...args),
+  },
 }));
 
 const { useFileMentions } = await import('@/modules/chat/hooks/useFileMentions');
@@ -83,7 +87,36 @@ const renderMentions = () => {
 beforeEach(() => {
   searchFiles.mockReset();
   searchFiles.mockImplementation(searchProject);
+  getFiles.mockReset();
   projectFiles = [];
+});
+
+test('a node from before file search gets its whole tree filtered here, loaded again with each `@`', async () => {
+  // Such a node serves its app page for a route it does not have.
+  searchFiles.mockResolvedValue({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } });
+  const tree = (names: string[]) => ({
+    ok: true,
+    json: async () => [
+      { type: 'directory', name: 'src', children: names.map((name) => ({ type: 'file', name })) },
+      { type: 'file', name: 'README.md' },
+    ],
+  });
+  getFiles.mockResolvedValueOnce(tree(['app.ts'])).mockResolvedValue(tree(['app.ts', 'added.ts']));
+  const { type, shownPaths } = renderMentions();
+
+  type('@');
+  await waitFor(() => assert.deepEqual(shownPaths(), ['src/app.ts', 'README.md']));
+  type('@ap');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(shownPaths(), ['src/app.ts']);
+  assert.equal(getFiles.mock.calls.length, 1);
+  assert.equal(searchFiles.mock.calls.length, 1);
+
+  type('@ap ');
+  type('@ap @add');
+  await waitFor(() => assert.deepEqual(shownPaths(), ['src/added.ts']));
+  assert.equal(getFiles.mock.calls.length, 2);
+  assert.equal(searchFiles.mock.calls.length, 1);
 });
 
 test('nothing is searched before `@`, and each `@` lists the project again', async () => {
