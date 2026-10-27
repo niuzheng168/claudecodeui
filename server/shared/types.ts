@@ -1623,6 +1623,18 @@ export type FileTreeWorktreeGateway = {
 };
 
 /**
+ * Git-backed file listing used by File Tree's project file search.
+ *
+ * Lists the files git shows in a project: tracked ones, including those of
+ * checked-out submodules, and untracked ones it does not ignore, as
+ * `/`-separated paths relative to the project root, at most `maximumFiles`.
+ * Null when the project is not in a Git work tree or git cannot run there.
+ */
+export type FileTreeGitGateway = {
+  listFiles(projectRoot: string, maximumFiles: number): Promise<{ paths: string[]; truncated: boolean } | null>;
+};
+
+/**
  * Read-only transcript image capability used by File Tree's raw-content path.
  *
  * Implementations must verify the native session's ownership of the selected
@@ -1682,14 +1694,16 @@ export type FileTreeLogger = {
 /**
  * Required production dependencies for the File Tree application service.
  *
- * Filesystem, project lookup, related-worktree lookup, transcript images,
- * workspace policy, MIME detection, concurrency, and logging are all explicit
+ * Filesystem, project lookup, related-worktree lookup, git file listing,
+ * transcript images, workspace policy, MIME detection, concurrency, and
+ * logging are all explicit
  * so service construction has no hidden process or machine-wide defaults.
  */
 export type FileTreeServiceDependencies = {
   fileSystem: FileTreeFileSystem;
   projects: FileTreeProjectGateway;
   worktrees: FileTreeWorktreeGateway;
+  git: FileTreeGitGateway;
   transcriptImages: FileTreeTranscriptImageGateway;
   workspace: FileTreeWorkspaceGateway;
   resolveMimeType(filePath: string): string;
@@ -1721,6 +1735,17 @@ export type FileTreeServices = {
     projectId: string,
     options?: { respectGitignore: boolean },
   ): Promise<FileTreeNode[]>;
+  /**
+   * Files whose path relative to the project contains `query`, ignoring case,
+   * best matches first, for the chat composer's `@` list. Unlike
+   * `listProjectFiles` it has no 10,000 entry limit. `refresh` lists the
+   * project again instead of reusing the list from its last search.
+   */
+  searchProjectFiles(projectId: string, options: { query: string; limit: number; refresh: boolean }): Promise<{
+    files: Array<{ name: string; path: string }>;
+    /** The project had more files than are searched, so a match may be missing. */
+    truncated: boolean;
+  }>;
   createEntry(input: {
     projectId: string;
     parentPath: string;

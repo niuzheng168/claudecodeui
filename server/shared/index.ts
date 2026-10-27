@@ -48,7 +48,7 @@ export {
   FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, isPathInsideDirectory, resolveReadOnlyRootPath,
 } from './utils.js';
 export type {
-  FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeLogger, FileTreeNode,
+  FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeGitGateway, FileTreeLogger, FileTreeNode,
   FileTreeProjectGateway, FileTreeServiceDependencies, FileTreeServices, FileTreeTranscriptImageGateway,
   FileTreeStats, FileTreeUploadedFile, FileTreeWorkspaceGateway, FileTreeWorktreeGateway,
   GitCommandResult, GitCommandRunner, WorktreeFileSystem, WorktreePorcelainEntry,

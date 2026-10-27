@@ -40,7 +40,7 @@ vi.mock('@/shared/api', () => {
       },
       commands: { list: () => okJson({ success: true, commands: [] }) },
       providers: { skills: () => okJson({ data: { skills: [] } }) },
-      getFiles: () => okJson([]),
+      searchFiles: () => okJson({ files: [], truncated: false }),
       files: { search: () => okJson({ success: true, files: [] }) },
     },
   };

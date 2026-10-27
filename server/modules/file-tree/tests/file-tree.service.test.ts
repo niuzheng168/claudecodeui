@@ -8,6 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
+import { listGitFiles } from '@/modules/file-tree/git-file-listing.service.js';
 import type {
   FileTreeDirectoryEntry,
   FileTreeFileSystem,
@@ -86,6 +87,9 @@ function createDependencies(
     },
     worktrees: {
       resolveRoot: async () => null,
+    },
+    git: {
+      listFiles: async () => null,
     },
     transcriptImages: {
       openImage: async () => null,
@@ -335,6 +339,183 @@ test('listProjectFiles shares the entry limit across nested directories', async 
       && error.code === 'FILE_TREE_TOO_LARGE'
       && error.statusCode === 413,
   );
+});
+
+/** A service whose git lists `paths` (read on every listing), counting the listings. */
+function createGitListedService(paths: string[], truncated = false) {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const listings: string[] = [];
+  const dependencies = createDependencies(createFakeFileSystem({ access: async () => undefined }), projectRoot);
+  const service = createFileTreeService({
+    ...dependencies,
+    git: {
+      listFiles: async (root) => {
+        listings.push(root);
+        return { paths: [...paths], truncated };
+      },
+    },
+  });
+  const search = async (query: string, options: { limit?: number; refresh?: boolean } = {}) =>
+    service.searchProjectFiles('project-1', { query, limit: options.limit ?? 20, refresh: options.refresh ?? false });
+  return { search, listings, projectRoot };
+}
+
+test('searchProjectFiles puts file names before folders, then shallower and shorter paths', async () => {
+  const { search } = createGitListedService([
+    'README.md',
+    'src/components/button/index.ts',
+    'src/BigButton.tsx',
+    'docs/buttons/guide.md',
+    'src/components/Button.tsx',
+    'Button.md',
+    'lib/button',
+    'button',
+  ]);
+
+  const result = await search('Button');
+  assert.deepEqual(result.files.map((file) => file.path), [
+    // The file name starts with the query,
+    'button',
+    'Button.md',
+    'lib/button',
+    'src/components/Button.tsx',
+    // contains it,
+    'src/BigButton.tsx',
+    // or only a folder does.
+    'docs/buttons/guide.md',
+    'src/components/button/index.ts',
+  ]);
+  assert.deepEqual(result.files[3], { name: 'Button.tsx', path: 'src/components/Button.tsx' });
+  assert.equal(result.truncated, false);
+
+  assert.deepEqual((await search('button', { limit: 3 })).files.map((file) => file.path), ['button', 'Button.md', 'lib/button']);
+  // A query may name folders, with either slash.
+  assert.deepEqual((await search('components\\button')).files.map((file) => file.path), [
+    'src/components/Button.tsx',
+    'src/components/button/index.ts',
+  ]);
+  // A bare `@` offers the shallowest files.
+  assert.deepEqual((await search('', { limit: 2 })).files.map((file) => file.path), ['button', 'Button.md']);
+  assert.deepEqual((await search('nothing-like-it')).files, []);
+});
+
+test('searchProjectFiles has no file tree entry limit and says when git stopped listing', async () => {
+  const paths = Array.from({ length: 20_000 }, (_, index) => `src/module-${index}/file-${index}.ts`);
+  const { search } = createGitListedService(paths, true);
+
+  const result = await search('file-19999');
+  assert.deepEqual(result.files.map((file) => file.path), ['src/module-19999/file-19999.ts']);
+  assert.equal(result.truncated, true);
+});
+
+test('searchProjectFiles lists the project once while a query is typed, and again on refresh', async () => {
+  const paths = ['a.txt'];
+  const { search, listings, projectRoot } = createGitListedService(paths);
+
+  await search('', { refresh: true });
+  await search('a');
+  await search('a.');
+  assert.deepEqual(listings, [projectRoot]);
+
+  // A file added since then is found once the next `@` refreshes the list.
+  paths.push('added.txt');
+  assert.deepEqual((await search('added')).files, []);
+  assert.deepEqual((await search('added', { refresh: true })).files.map((file) => file.path), ['added.txt']);
+  assert.equal(listings.length, 2);
+});
+
+test('searchProjectFiles shares a listing under way with searches made meanwhile', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  let finishListing: (paths: string[]) => void = () => undefined;
+  let listingCount = 0;
+  const service = createFileTreeService({
+    ...createDependencies(createFakeFileSystem({ access: async () => undefined }), projectRoot),
+    git: {
+      listFiles: () => {
+        listingCount += 1;
+        return new Promise((resolve) => {
+          finishListing = (paths) => resolve({ paths, truncated: false });
+        });
+      },
+    },
+  });
+
+  const searches = [
+    service.searchProjectFiles('project-1', { query: '', limit: 20, refresh: true }),
+    service.searchProjectFiles('project-1', { query: 'n', limit: 20, refresh: true }),
+    service.searchProjectFiles('project-1', { query: 'ne', limit: 20, refresh: false }),
+  ];
+  await new Promise((resolve) => setImmediate(resolve));
+  finishListing(['new.txt']);
+
+  const results = await Promise.all(searches);
+  assert.equal(listingCount, 1);
+  assert.deepEqual(results.map((result) => result.files.map((file) => file.path)), [['new.txt'], ['new.txt'], ['new.txt']]);
+});
+
+test('searchProjectFiles walks a project git lists nothing in, as the file tree shows it', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const sourceDirectory = path.join(projectRoot, 'src');
+  const readDirectories: string[] = [];
+  for (const listed of [null, { paths: [], truncated: false }]) {
+    readDirectories.length = 0;
+    const service = createFileTreeService({
+      ...createDependencies(createFakeFileSystem({
+        access: async () => undefined,
+        readTextFile: async () => {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        },
+        openDirectory: createDirectoryReader((directoryPath) => {
+          readDirectories.push(directoryPath);
+          if (directoryPath === projectRoot) {
+            return [
+              createDirectoryEntry('.git', true),
+              createDirectoryEntry('node_modules', true),
+              createDirectoryEntry('notes.md', false),
+              createDirectoryEntry('src', true),
+            ];
+          }
+          if (directoryPath === sourceDirectory) {
+            return [createDirectoryEntry('notes.ts', false)];
+          }
+          return [];
+        }),
+      }), projectRoot),
+      git: { listFiles: async () => listed },
+    });
+
+    const result = await service.searchProjectFiles('project-1', { query: 'NOTES', limit: 20, refresh: true });
+    assert.deepEqual(result, {
+      files: [{ name: 'notes.md', path: 'notes.md' }, { name: 'notes.ts', path: 'src/notes.ts' }],
+      truncated: false,
+    });
+    assert.deepEqual(readDirectories, [projectRoot, sourceDirectory]);
+  }
+});
+
+test('searchProjectFiles stops walking at its own limit and searches what it listed', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  let streamedEntries = 0;
+  const service = createFileTreeService({
+    ...createDependencies(createFakeFileSystem({
+      access: async () => undefined,
+      readTextFile: async () => {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      },
+      // Endless on purpose, like a home folder that is not a repository.
+      openDirectory: async function* (directoryPath) {
+        if (directoryPath !== projectRoot) return;
+        for (let index = 0; ; index += 1) {
+          streamedEntries += 1;
+          yield createDirectoryEntry(`file-${index}.txt`, false);
+        }
+      },
+    }), projectRoot),
+  });
+
+  const result = await service.searchProjectFiles('project-1', { query: 'file-249999.', limit: 20, refresh: true });
+  assert.deepEqual(result, { files: [{ name: 'file-249999.txt', path: 'file-249999.txt' }], truncated: true });
+  assert.equal(streamedEntries, 250_001);
 });
 
 test('readTextFile rejects traversal before invoking the filesystem adapter', async () => {
@@ -723,6 +904,7 @@ function createRealFileSystemService(projectRoot: string): FileTreeServices {
     },
     projects: { getProjectPathById: async () => projectRoot },
     worktrees: { resolveRoot: async () => null },
+    git: { listFiles: (root, maximumFiles) => listGitFiles(root, maximumFiles) },
     transcriptImages: { openImage: async () => null },
     workspace: {
       rootPath: projectRoot,

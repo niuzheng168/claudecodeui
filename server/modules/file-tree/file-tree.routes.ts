@@ -66,6 +66,15 @@ function readRelativePaths(value: unknown): string[] {
   }
 }
 
+// How many files a search returns when the request does not say, and at most.
+const DEFAULT_SEARCH_LIMIT = 20;
+const MAXIMUM_SEARCH_LIMIT = 100;
+
+function readSearchLimit(value: unknown): number {
+  const limit = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(limit) && limit > 0 ? Math.min(limit, MAXIMUM_SEARCH_LIMIT) : DEFAULT_SEARCH_LIMIT;
+}
+
 function readRequestedFileCount(value: unknown, fallbackCount: number): number {
   const parsedCount = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
   return Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : fallbackCount;
@@ -171,6 +180,14 @@ export function createFileTreeRouter(
   router.get('/projects/:projectId/files', createRouteHandler(async (request, response) => {
     response.json(await services.listProjectFiles(readProjectId(request), {
       respectGitignore: request.query.respectGitignore === 'true',
+    }));
+  }, logger));
+
+  router.get('/projects/:projectId/files/search', createRouteHandler(async (request, response) => {
+    response.json(await services.searchProjectFiles(readProjectId(request), {
+      query: readOptionalString(request.query.q) ?? '',
+      limit: readSearchLimit(request.query.limit),
+      refresh: request.query.refresh === 'true',
     }));
   }, logger));
 

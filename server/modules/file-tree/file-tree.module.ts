@@ -9,9 +9,11 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { createCodexVisualizationImageService } from '@/modules/file-tree/codex-visualization-image.service.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
+import { listGitFiles } from '@/modules/file-tree/git-file-listing.service.js';
 import { resolveRelatedWorktreeRoot } from '@/modules/worktrees/index.js';
 import type {
   FileTreeFileSystem,
+  FileTreeGitGateway,
   FileTreeLogger,
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
@@ -75,6 +77,11 @@ const fileTreeWorktrees: FileTreeWorktreeGateway = {
   resolveRoot: (projectPath, filePath) => resolveRelatedWorktreeRoot(projectPath, filePath),
 };
 
+/** Git lists a project's files for file search, read-only. */
+const fileTreeGit: FileTreeGitGateway = {
+  listFiles: (projectRoot, maximumFiles) => listGitFiles(projectRoot, maximumFiles),
+};
+
 /**
  * Workspace-policy boundary used only by File Tree production composition.
  * Keeping both the configured root and symlink-aware validator together makes
@@ -94,6 +101,7 @@ const fileTreeServices = createFileTreeService({
   fileSystem: fileTreeFileSystem,
   projects: fileTreeProjects,
   worktrees: fileTreeWorktrees,
+  git: fileTreeGit,
   transcriptImages: createCodexVisualizationImageService({
     resolveHomeDirectory: resolveCodexHomeDirectory,
     findSession: (nativeSessionId) => {

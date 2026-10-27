@@ -323,6 +323,14 @@ export const api = {
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
   getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
+  // `{ files: [{ name, path }], truncated }`: files whose relative path contains
+  // the query, best first, from a project of any size. `refresh` lists the
+  // project again rather than reusing the list of its last search.
+  searchFiles: (
+    projectId: string,
+    { query: searchQuery, limit, refresh }: { query: string; limit: number; refresh: boolean },
+    options: ApiRequestOptions = {},
+  ) => get(`/api/file-tree/projects/${projectId}/files/search${query({ q: searchQuery, limit, refresh })}`, options),
 
   // File operations
   createFile: (

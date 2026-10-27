@@ -5,17 +5,9 @@ import { api } from '@/shared/api';
 import { escapeRegExp } from '@/modules/chat/utils/chatFormatting';
 import type { Project } from '@/shared/types';
 
-type ProjectFileNode = {
-  name: string;
-  type: 'file' | 'directory';
-  path?: string;
-  children?: ProjectFileNode[];
-};
-
 export type MentionableFile = {
   name: string;
   path: string;
-  relativePath?: string;
 };
 
 type UseFileMentionsOptions = {
@@ -25,147 +17,116 @@ type UseFileMentionsOptions = {
   textareaRef: RefObject<HTMLTextAreaElement>;
 };
 
-const flattenFileTree = (files: ProjectFileNode[], basePath = ''): MentionableFile[] => {
-  let flattened: MentionableFile[] = [];
+// The `@` dropdown offers this many files, best matches first.
+const MENTION_SEARCH_LIMIT = 20;
+// While a query is typed, the server is asked again once typing pauses this long.
+const MENTION_SEARCH_DELAY_MS = 120;
 
-  files.forEach((file) => {
-    const fullPath = basePath ? `${basePath}/${file.name}` : file.name;
-    if (file.type === 'directory' && file.children) {
-      flattened = flattened.concat(flattenFileTree(file.children, fullPath));
-      return;
-    }
-
-    if (file.type === 'file') {
-      flattened.push({
-        name: file.name,
-        path: fullPath,
-        relativePath: file.path,
-      });
-    }
-  });
-
-  return flattened;
-};
-
-// True when both flattened lists hold the same files in the same order.
-const haveSameFiles = (left: MentionableFile[], right: MentionableFile[]) =>
-  left.length === right.length &&
-  left.every(
-    (file, index) => file.path === right[index].path && file.relativePath === right[index].relativePath,
-  );
+const NO_FILES: MentionableFile[] = [];
 
 export function useFileMentions({ selectedProject, input, setInput, textareaRef }: UseFileMentionsOptions) {
   const projectId = selectedProject?.projectId;
-  const [fileList, setFileList] = useState<MentionableFile[]>([]);
+  // What the server found for the latest search, and in which project.
+  const [found, setFound] = useState<{ projectId: string; files: MentionableFile[] } | null>(null);
   const [fileMentions, setFileMentions] = useState<string[]>([]);
-  const [filteredFiles, setFilteredFiles] = useState<MentionableFile[]>([]);
+  // The text typed after `@`, or null while the caret is in no `@` query.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [showFileDropdown, setShowFileDropdown] = useState(false);
-  const [selectedFileIndex, setSelectedFileIndex] = useState(-1);
+  // The highlighted file by path, so newer results do not move the highlight to another file.
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [atSymbolPosition, setAtSymbolPosition] = useState(-1);
-  // The file-list request still in flight. Starting a new one aborts it, so an
-  // older response can never overwrite a newer list.
-  const fileListRequestRef = useRef<AbortController | null>(null);
+  // The search still in flight. Starting a new one aborts it, so an older
+  // answer can never overwrite a newer one.
+  const searchRequestRef = useRef<AbortController | null>(null);
+  // The project the open dropdown has listed again; null while it is closed.
+  const listedProjectRef = useRef<string | null>(null);
 
-  const loadProjectFiles = useCallback(async (targetProjectId: string) => {
-    fileListRequestRef.current?.abort();
-    const abortController = new AbortController();
-    fileListRequestRef.current = abortController;
-
-    try {
-      // File list is keyed by DB projectId now; the backend resolves it to
-      // the project's path before reading.
-      const response = await api.getFiles(targetProjectId, {
-        signal: abortController.signal,
-      });
-      if (!response.ok) {
-        return;
-      }
-
-      const files = (await response.json()) as ProjectFileNode[];
-      if (abortController.signal.aborted) {
-        return;
-      }
-      const nextFileList = flattenFileTree(files);
-      // Keeping the same array when nothing changed stops the filter effect
-      // below from re-running and resetting the highlighted row.
-      setFileList((previousFileList) =>
-        haveSameFiles(previousFileList, nextFileList) ? previousFileList : nextFileList,
-      );
-    } catch (error) {
-      // Ignore aborts from newer requests and rapid project switches; we only care about the latest request.
-      if ((error as { name?: string })?.name === 'AbortError') {
-        return;
-      }
-      console.error('Error fetching files:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    const fetchProjectFiles = async () => {
-      setFileList([]);
-      setFilteredFiles([]);
-      if (!projectId) {
-        return;
-      }
-
-      await loadProjectFiles(projectId);
-    };
-
-    fetchProjectFiles();
-    return () => {
-      fileListRequestRef.current?.abort();
-    };
-  }, [projectId, loadProjectFiles]);
-
-  // Files keep appearing after the list above was loaded (uploads, agent edits,
-  // the terminal, git checkouts) and nothing tells the composer about them, so
-  // the list is refetched each time the `@` dropdown opens. The dropdown stays
-  // open while the query is typed, so this is one request per `@`, not one per
-  // keystroke, and the previous list stays visible until the response lands.
-  useEffect(() => {
-    const refreshProjectFiles = async () => {
-      if (!showFileDropdown || !projectId) {
-        return;
-      }
-
-      await loadProjectFiles(projectId);
-    };
-
-    refreshProjectFiles();
-  }, [showFileDropdown, projectId, loadProjectFiles]);
+  // A project switch, or the composer going away, drops a search on its way.
+  useEffect(() => () => searchRequestRef.current?.abort(), [projectId]);
 
   useEffect(() => {
     const textBeforeCursor = input.slice(0, cursorPosition);
     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    const textAfterAt = lastAtIndex === -1 ? null : textBeforeCursor.slice(lastAtIndex + 1);
 
-    if (lastAtIndex === -1) {
+    if (textAfterAt === null || textAfterAt.includes(' ')) {
       setShowFileDropdown(false);
       setAtSymbolPosition(-1);
-      return;
-    }
-
-    const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
-    if (textAfterAt.includes(' ')) {
-      setShowFileDropdown(false);
-      setAtSymbolPosition(-1);
+      setMentionQuery(null);
       return;
     }
 
     setAtSymbolPosition(lastAtIndex);
     setShowFileDropdown(true);
-    setSelectedFileIndex(-1);
+    setHighlightedPath(null);
+    setMentionQuery(textAfterAt);
+  }, [input, cursorPosition]);
 
-    const matchingFiles = fileList
-      .filter(
-        (file) =>
-          file.name.toLowerCase().includes(textAfterAt.toLowerCase()) ||
-          file.path.toLowerCase().includes(textAfterAt.toLowerCase()),
-      )
-      .slice(0, 10);
+  // The server searches the project's files: a large project's list is too
+  // big to send to the browser, and it keeps the list between keystrokes.
+  // Files keep appearing (uploads, agent edits, the terminal, git checkouts)
+  // and nothing tells the composer about them, so the first search after each
+  // `@` lists the project again. It starts at once; later ones wait for typing
+  // to pause.
+  useEffect(() => {
+    if (!showFileDropdown) {
+      listedProjectRef.current = null;
+      return undefined;
+    }
+    if (mentionQuery === null || !projectId) {
+      return undefined;
+    }
 
-    setFilteredFiles(matchingFiles);
-  }, [input, cursorPosition, fileList]);
+    const refresh = listedProjectRef.current !== projectId;
+    const timer = setTimeout(async () => {
+      searchRequestRef.current?.abort();
+      const abortController = new AbortController();
+      searchRequestRef.current = abortController;
+      listedProjectRef.current = projectId;
+
+      try {
+        const response = await api.searchFiles(
+          projectId,
+          { query: mentionQuery, limit: MENTION_SEARCH_LIMIT, refresh },
+          { signal: abortController.signal },
+        );
+        if (!response.ok) {
+          console.error('Error searching files:', response.status);
+          return;
+        }
+
+        const { files } = (await response.json()) as { files: MentionableFile[] };
+        if (abortController.signal.aborted) {
+          return;
+        }
+        setFound({ projectId, files });
+      } catch (error) {
+        // Ignore aborts from newer searches and project switches; only the latest one counts.
+        if ((error as { name?: string })?.name === 'AbortError') {
+          return;
+        }
+        console.error('Error searching files:', error);
+      }
+    }, refresh ? 0 : MENTION_SEARCH_DELAY_MS);
+
+    return () => clearTimeout(timer);
+  }, [showFileDropdown, mentionQuery, projectId]);
+
+  // The files found, narrowed to what has been typed since: while the next
+  // search is on its way the list follows typing at once, and it never offers
+  // a file the query no longer matches.
+  const filteredFiles = useMemo(() => {
+    if (!showFileDropdown || mentionQuery === null || !found || found.projectId !== projectId) {
+      return NO_FILES;
+    }
+    const query = mentionQuery.toLowerCase().replace(/\\/g, '/');
+    return found.files.filter((file) => file.path.toLowerCase().includes(query));
+  }, [found, mentionQuery, projectId, showFileDropdown]);
+
+  const selectedFileIndex = highlightedPath === null
+    ? -1
+    : filteredFiles.findIndex((file) => file.path === highlightedPath);
 
   const activeFileMentions = useMemo(() => {
     if (!input || fileMentions.length === 0) {
@@ -268,11 +229,9 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        // The caret is still inside the `@` query, so a refetch landing after
-        // this would re-open the dropdown (or first show it, when nothing
-        // matched yet) and take the next Enter. Drop it; re-opening the
-        // dropdown fetches again.
-        fileListRequestRef.current?.abort();
+        // The caret is still inside the `@` query. Only typing re-opens the
+        // dropdown, which searches again, so the search on its way is dropped.
+        searchRequestRef.current?.abort();
         setShowFileDropdown(false);
         return true;
       }
@@ -283,27 +242,23 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
 
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        setSelectedFileIndex((previousIndex) =>
-          previousIndex < filteredFiles.length - 1 ? previousIndex + 1 : 0,
+        setHighlightedPath(
+          filteredFiles[selectedFileIndex < filteredFiles.length - 1 ? selectedFileIndex + 1 : 0].path,
         );
         return true;
       }
 
       if (event.key === 'ArrowUp') {
         event.preventDefault();
-        setSelectedFileIndex((previousIndex) =>
-          previousIndex > 0 ? previousIndex - 1 : filteredFiles.length - 1,
+        setHighlightedPath(
+          filteredFiles[selectedFileIndex > 0 ? selectedFileIndex - 1 : filteredFiles.length - 1].path,
         );
         return true;
       }
 
       if (event.key === 'Tab' || event.key === 'Enter') {
         event.preventDefault();
-        if (selectedFileIndex >= 0) {
-          selectFile(filteredFiles[selectedFileIndex]);
-        } else if (filteredFiles.length > 0) {
-          selectFile(filteredFiles[0]);
-        }
+        selectFile(filteredFiles[selectedFileIndex] ?? filteredFiles[0]);
         return true;
       }
 

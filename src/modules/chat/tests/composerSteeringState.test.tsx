@@ -25,7 +25,7 @@ vi.mock('@/shared/api', () => {
       assets: { uploadFiles: mocks.upload },
       commands: { list: () => ok({ commands: [] }) },
       providers: { skills: () => ok({ data: { skills: [] } }) },
-      getFiles: () => ok([]), files: { search: () => ok({ files: [] }) },
+      searchFiles: () => ok({ files: [], truncated: false }), files: { search: () => ok({ files: [] }) },
     },
   };
 });

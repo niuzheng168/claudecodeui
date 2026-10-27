@@ -40,7 +40,48 @@ const COMMON_WORKSPACE_DIRECTORY_NAMES = [
 // server heap before the browser has a chance to switch to a narrower project.
 const MAXIMUM_FILE_TREE_ENTRIES = 10_000;
 
+// File search lists no more than this many files of a project (or files and
+// folders, when it walks one). A larger project is searched in those listed
+// first. Only paths are kept, so this is far cheaper than a file tree entry.
+const MAXIMUM_SEARCHED_ENTRIES = 250_000;
+// Searches reuse a project's list until this long after the last one, and only
+// this many projects keep a list.
+const SEARCH_LISTING_IDLE_MS = 2 * 60_000;
+const MAXIMUM_SEARCH_LISTINGS = 4;
+
 type FileTreeEntryFilter = (entryPath: string, isDirectory: boolean) => boolean;
+
+/** A project's files for search: `/`-separated relative paths, with their lower-case forms and depths. */
+type SearchListing = {
+  paths: string[];
+  lowerPaths: string[];
+  depths: Uint16Array;
+  truncated: boolean;
+};
+
+function createSearchListing(paths: string[], truncated: boolean): SearchListing {
+  const depths = new Uint16Array(paths.length);
+  paths.forEach((filePath, index) => {
+    let depth = 0;
+    for (let position = filePath.indexOf('/'); position !== -1; position = filePath.indexOf('/', position + 1)) {
+      depth += 1;
+    }
+    depths[index] = depth;
+  });
+  return { paths, lowerPaths: paths.map((filePath) => filePath.toLowerCase()), depths, truncated };
+}
+
+/**
+ * How well a lower-case relative path matches a lower-case query, lower is
+ * better: 0 the file name starts with it, 1 the file name contains it, 2 only
+ * the folders contain it (or the query spans a `/`). -1 for no match.
+ */
+function rankSearchMatch(lowerPath: string, query: string): number {
+  const nameStart = lowerPath.lastIndexOf('/') + 1;
+  const nameIndex = lowerPath.indexOf(query, nameStart);
+  if (nameIndex !== -1) return nameIndex === nameStart ? 0 : 1;
+  return lowerPath.includes(query) ? 2 : -1;
+}
 
 function includeEntryByHardExclusions(entryPath: string, isDirectory: boolean): boolean {
   return !isDirectory || !HARD_EXCLUDED_DIRECTORY_NAMES.has(path.basename(entryPath));
@@ -385,6 +426,130 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
   }
 
   /**
+   * Which entries a project listing shows: everything but version-control and
+   * dependency folders, or, when gitignore is respected and the project has a
+   * root `.gitignore`, what that file does not ignore. Undefined means the
+   * former, which is `buildFileTree`'s default.
+   */
+  async function readEntryFilter(projectRoot: string, respectGitignore: boolean): Promise<FileTreeEntryFilter | undefined> {
+    if (!respectGitignore) return undefined;
+    try {
+      const gitignoreContent = await fileSystem.readTextFile(path.join(projectRoot, '.gitignore'));
+      return createGitignoreEntryFilter(projectRoot, gitignoreContent);
+    } catch (error) {
+      if (readErrorCode(error) !== 'ENOENT') {
+        dependencies.logger.error(`Error reading .gitignore in "${projectRoot}"`, error);
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * Lists a project's files by walking it, for search where git lists none:
+   * the files the file tree shows, without reading their metadata. Breadth
+   * first, so a project over the limit is searched in its shallower files.
+   */
+  async function walkProjectFiles(projectRoot: string): Promise<{ paths: string[]; truncated: boolean }> {
+    const includeEntry = await readEntryFilter(projectRoot, true) ?? includeEntryByFallbackDirectoryNames;
+    const paths: string[] = [];
+    let remainingEntries = MAXIMUM_SEARCHED_ENTRIES;
+    let truncated = false;
+    let directories = [projectRoot];
+    while (directories.length > 0 && !truncated) {
+      const subdirectories: string[] = [];
+      await Promise.all(directories.map(async (directoryPath) => {
+        await acquire();
+        try {
+          for await (const entry of fileSystem.openDirectory(directoryPath)) {
+            const entryPath = path.join(directoryPath, entry.name);
+            const isDirectory = entry.isDirectory();
+            if (!includeEntry(entryPath, isDirectory)) continue;
+            if (remainingEntries <= 0) {
+              truncated = true;
+              break;
+            }
+            remainingEntries -= 1;
+            if (!isDirectory) {
+              paths.push(path.relative(projectRoot, entryPath).split(path.sep).join('/'));
+            } else if (!FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(entryPath))) {
+              subdirectories.push(entryPath);
+            }
+          }
+        } catch (error) {
+          const errorCode = readErrorCode(error);
+          if (errorCode !== 'EACCES' && errorCode !== 'EPERM') {
+            dependencies.logger.error(`Error reading directory "${directoryPath}"`, error);
+          }
+        } finally {
+          release();
+        }
+      }));
+      directories = subdirectories;
+    }
+    return { paths, truncated };
+  }
+
+  // Each searched project's list, by project root: the listing, whether it
+  // has finished, and the timer that drops it once searches stop.
+  const searchListings = new Map<string, {
+    listing: Promise<SearchListing>;
+    settled: boolean;
+    expiry: ReturnType<typeof setTimeout> | null;
+  }>();
+
+  /**
+   * The project's file list for a search. Git lists it when the project is in
+   * a work tree (all its `.gitignore` files apply, and tracked files count
+   * even when ignored); otherwise, or when git lists nothing there, such as a
+   * folder the repository ignores, it is walked.
+   *
+   * The list is reused by later searches, so typing a query lists the project
+   * once. `refresh` lists it again, unless a listing is already under way,
+   * which is as recent; searches made meanwhile wait for the new list.
+   */
+  function readSearchListing(projectRoot: string, refresh: boolean): Promise<SearchListing> {
+    let cached = searchListings.get(projectRoot);
+    if (!cached || (refresh && cached.settled)) {
+      if (cached?.expiry) clearTimeout(cached.expiry);
+      const created: NonNullable<typeof cached> = {
+        listing: (async () => {
+          const listed = await dependencies.git.listFiles(projectRoot, MAXIMUM_SEARCHED_ENTRIES);
+          const { paths, truncated } = listed?.paths.length ? listed : await walkProjectFiles(projectRoot);
+          return createSearchListing(paths, truncated);
+        })(),
+        settled: false,
+        expiry: null,
+      };
+      created.listing.then(() => {
+        created.settled = true;
+      }, () => {
+        // A listing that failed is not reused.
+        if (searchListings.get(projectRoot) === created) {
+          if (created.expiry) clearTimeout(created.expiry);
+          searchListings.delete(projectRoot);
+        }
+      });
+      cached = created;
+    }
+
+    const used = cached;
+    // Kept in order of use, so the projects searched longest ago go first.
+    searchListings.delete(projectRoot);
+    searchListings.set(projectRoot, used);
+    for (const [root, entry] of searchListings) {
+      if (searchListings.size <= MAXIMUM_SEARCH_LISTINGS) break;
+      if (entry.expiry) clearTimeout(entry.expiry);
+      searchListings.delete(root);
+    }
+    if (used.expiry) clearTimeout(used.expiry);
+    used.expiry = setTimeout(() => {
+      if (searchListings.get(projectRoot) === used) searchListings.delete(projectRoot);
+    }, SEARCH_LISTING_IDLE_MS);
+    used.expiry.unref?.();
+    return used.listing;
+  }
+
+  /**
    * Resolves a directory the browser may list.
    *
    * The read-only roots (the system temp directory and the Claude projects
@@ -589,19 +754,50 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
       }
 
-      let includeEntry: FileTreeEntryFilter | undefined;
-      if (options?.respectGitignore) {
-        try {
-          const gitignoreContent = await fileSystem.readTextFile(path.join(projectRoot, '.gitignore'));
-          includeEntry = createGitignoreEntryFilter(projectRoot, gitignoreContent);
-        } catch (error) {
-          if (readErrorCode(error) !== 'ENOENT') {
-            dependencies.logger.error(`Error reading .gitignore in "${projectRoot}"`, error);
-          }
-        }
+      const includeEntry = await readEntryFilter(projectRoot, Boolean(options?.respectGitignore));
+      return buildFileTree(projectRoot, 10, 0, includeEntry);
+    },
+
+    async searchProjectFiles(projectId, options) {
+      const projectRoot = await resolveProjectRoot(projectId);
+      try {
+        await fileSystem.access(projectRoot);
+      } catch {
+        throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
       }
 
-      return buildFileTree(projectRoot, 10, 0, includeEntry);
+      const listing = await readSearchListing(projectRoot, options.refresh);
+      const query = options.query.toLowerCase().replace(/\\/g, '/');
+      const limit = Math.max(1, Math.floor(options.limit));
+      // Better first: rank, then shallower, shorter, and by name. Only the
+      // best `limit` are kept while scanning, so nothing large is sorted.
+      const isBefore = (left: { index: number; rank: number }, right: { index: number; rank: number }) => {
+        const leftPath = listing.paths[left.index];
+        const rightPath = listing.paths[right.index];
+        return (left.rank - right.rank
+          || listing.depths[left.index] - listing.depths[right.index]
+          || leftPath.length - rightPath.length
+          || (leftPath < rightPath ? -1 : 1)) < 0;
+      };
+      const best: Array<{ index: number; rank: number }> = [];
+      listing.lowerPaths.forEach((lowerPath, index) => {
+        const rank = rankSearchMatch(lowerPath, query);
+        if (rank < 0) return;
+        const match = { index, rank };
+        if (best.length === limit && !isBefore(match, best[best.length - 1])) return;
+        let position = best.length;
+        while (position > 0 && isBefore(match, best[position - 1])) position -= 1;
+        best.splice(position, 0, match);
+        if (best.length > limit) best.pop();
+      });
+
+      return {
+        files: best.map(({ index }) => {
+          const filePath = listing.paths[index];
+          return { name: filePath.slice(filePath.lastIndexOf('/') + 1), path: filePath };
+        }),
+        truncated: listing.truncated,
+      };
     },
 
     async createEntry(input) {

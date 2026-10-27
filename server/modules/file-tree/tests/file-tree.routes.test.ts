@@ -22,6 +22,7 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     openFile: unexpectedOperation,
     saveTextFile: unexpectedOperation,
     listProjectFiles: unexpectedOperation,
+    searchProjectFiles: unexpectedOperation,
     createEntry: unexpectedOperation,
     renameEntry: unexpectedOperation,
     deleteEntry: unexpectedOperation,
@@ -95,6 +96,35 @@ test('project files route requests gitignore filtering when explicitly enabled',
   });
 
   assert.deepEqual(inputs, [['project-1', { respectGitignore: true }]]);
+});
+
+test('file search route forwards the query, a bounded limit and refresh', async () => {
+  const inputs: Parameters<FileTreeServices['searchProjectFiles']>[] = [];
+  const found = { files: [{ name: 'Button.tsx', path: 'src/Button.tsx' }], truncated: false };
+  const services = createFakeServices({
+    searchProjectFiles: async (...input) => {
+      inputs.push(input);
+      return found;
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const searchUrl = `${baseUrl}/api/file-tree/projects/project-1/files/search`;
+    const response = await fetch(`${searchUrl}?q=${encodeURIComponent('src/但')}&limit=5&refresh=true`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), found);
+
+    await fetch(searchUrl);
+    await fetch(`${searchUrl}?q=a&limit=100000`);
+    await fetch(`${searchUrl}?q=a&q=b&limit=-1`);
+  });
+
+  assert.deepEqual(inputs, [
+    ['project-1', { query: 'src/但', limit: 5, refresh: true }],
+    ['project-1', { query: '', limit: 20, refresh: false }],
+    ['project-1', { query: 'a', limit: 100, refresh: false }],
+    ['project-1', { query: '', limit: 20, refresh: false }],
+  ]);
 });
 
 test('text, raw-content and save routes forward absolute worktree file paths unchanged', async () => {
