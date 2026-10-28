@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { sessionsService } from '@/modules/providers/index.js';
+import { sessionsDb } from '@/modules/database/index.js';
+import { codexThreadStatus, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 /**
@@ -279,6 +280,11 @@ export async function initializeActivityReporter(): Promise<void> {
   const reporter = new ActivityReporter({
     observe: observeSessions,
     outcomeOf: (sessionId) => {
+      // A Codex thread that stopped on an error says so whoever ran the turn.
+      const session = sessionsDb.getSessionById(sessionId);
+      if (session?.provider === 'codex' && session.provider_session_id && codexThreadStatus.outcomeOf(session.provider_session_id)) {
+        return 'failed';
+      }
       const run = chatRunRegistry.getRun(sessionId);
       return run?.status === 'completed' ? run.outcome : null;
     },
@@ -288,7 +294,8 @@ export async function initializeActivityReporter(): Promise<void> {
   });
   let nextScanAt = 0;
   let busy = false;
-  const unsubscribe = chatRunRegistry.onChange(() => { nextScanAt = 0; });
+  const unsubscribers = [chatRunRegistry, codexThreadStatus].map((source) => source.onChange(() => { nextScanAt = 0; }));
+  const unsubscribe = () => unsubscribers.forEach((stop) => stop());
   const tick = async () => {
     if (busy) return;
     busy = true;

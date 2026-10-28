@@ -7,6 +7,7 @@ import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/i
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
+import { codexThreadStatus } from '@/modules/providers/list/codex/codex-thread-status.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import { sessionHistorySnapshots } from '@/modules/providers/services/session-history-snapshots.service.js';
 import { nativeHistoryPages } from '@/modules/providers/services/native-history-pages.service.js';
@@ -32,7 +33,8 @@ import { AppError } from '@/shared/index.js';
  * stopped by id through `chat.stop-task` instead. `tasks` and `scheduled` ride
  * along on both kinds whenever the session has any.
  *
- * A turn driven outside CloudCLI — the Claude CLI in the Shell view, or a
+ * A turn driven outside CloudCLI — the Claude CLI in the Shell view, the
+ * Codex app or a terminal `codex` through the local Codex daemon, or a
  * terminal the user opened themselves — is listed the same way, with
  * `canInterrupt: false` because there is no run here to abort, and a
  * `statusText` saying where the work is happening.
@@ -255,6 +257,34 @@ export const sessionsService = {
         canInterrupt: false,
         statusText: live.waitingForUser ? 'Waiting for input in the Claude CLI' : 'Running in the Claude CLI',
         ...(live.waitingForUser ? { waitingForUser: true as const } : {}),
+      });
+      runningById.set(session.session_id, entries[entries.length - 1]);
+    }
+
+    // Likewise a Codex thread the local daemon runs for another client. A turn
+    // CloudCLI drives there is listed above already; the daemon still says
+    // when it waits on an approval or a question.
+    for (const thread of codexThreadStatus.busyThreads()) {
+      const session = sessionsDb.getSessionByProviderSessionId(thread.threadId);
+      if (!session || session.provider !== 'codex') {
+        continue;
+      }
+      const listed = runningById.get(session.session_id);
+      if (listed) {
+        if (thread.waitingKind && !listed.waitingForUser) {
+          Object.assign(listed, { waitingForUser: true as const, waitingKind: thread.waitingKind });
+        }
+        continue;
+      }
+
+      entries.push({
+        sessionId: session.session_id,
+        provider: 'codex',
+        startedAt: thread.startedAt,
+        lastSeq: chatRunRegistry.getRun(session.session_id)?.lastSeq ?? 0,
+        canInterrupt: false,
+        statusText: thread.waitingKind ? 'Waiting for input in the Codex app' : 'Running in the Codex app',
+        ...(thread.waitingKind ? { waitingForUser: true as const, waitingKind: thread.waitingKind } : {}),
       });
       runningById.set(session.session_id, entries[entries.length - 1]);
     }

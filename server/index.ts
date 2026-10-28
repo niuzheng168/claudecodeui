@@ -13,6 +13,7 @@ import cors from 'cors';
 import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
+    codexThreadStatus,
     initializeSessionsWatcher,
     providerRuntimeService,
 } from '@/modules/providers/index.js';
@@ -390,6 +391,8 @@ async function startServer() {
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
+            // Follows the Codex app's threads, so the running list shows its turns too.
+            codexThreadStatus.start();
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
@@ -407,6 +410,7 @@ async function startServer() {
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
             closeActivityReporter();
+            codexThreadStatus.close();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

@@ -17,6 +17,9 @@ export { claudeNativeCommandsService } from './list/claude/claude-commands.provi
 export { sessionsService } from './services/sessions.service.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
+// codexThreadStatus: what the local Codex daemon says about every thread, for
+// the running list and Activity; started and closed with the server.
+export { codexThreadStatus } from './list/codex/codex-thread-status.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 
 // Session messages: the default permission mode of a turn they start, and the
