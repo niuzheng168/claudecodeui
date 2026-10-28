@@ -11,6 +11,9 @@ import type {
 
 type ChatRunStatus = 'running' | 'completed';
 
+/** How a completed run ended: its terminal `complete` said aborted, failed or succeeded. */
+export type ChatRunOutcome = 'completed' | 'failed' | 'interrupted';
+
 /**
  * One live (or recently finished) provider run for a single app session.
  *
@@ -37,6 +40,7 @@ type ChatRun = {
   writer: ChatSessionWriter;
   startedAt: number;
   completedAt: number | null;
+  outcome: ChatRunOutcome | null;
 };
 
 /**
@@ -71,6 +75,22 @@ const runs = new Map<string, ChatRun>();
  * subscribes meanwhile needs the run to attach to.
  */
 let retainCompletedRun: (appSessionId: string) => boolean = () => false;
+
+/**
+ * Called whenever a run starts or completes, so the activity reporter looks at
+ * the session's state at once instead of on its next periodic scan.
+ */
+const changeListeners = new Set<(appSessionId: string) => void>();
+
+function notifyChange(appSessionId: string): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(appSessionId);
+    } catch (error) {
+      console.error('[ChatRunRegistry] A run change listener failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
 
 /**
  * Schedules one run's eviction. The timer is bound to the run it was armed
@@ -129,7 +149,9 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     outbound.actualSessionId = run.appSessionId;
     run.status = 'completed';
     run.completedAt = Date.now();
+    run.outcome = message.aborted ? 'interrupted' : message.success === false ? 'failed' : 'completed';
     evictRunLater(run);
+    notifyChange(run.appSessionId);
   }
 
   run.events.push(outbound);
@@ -223,6 +245,7 @@ export const chatRunRegistry = {
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
       completedAt: null,
+      outcome: null,
     };
 
     run.writer = new ChatSessionWriter({
@@ -237,7 +260,14 @@ export const chatRunRegistry = {
     });
 
     runs.set(input.appSessionId, run);
+    notifyChange(input.appSessionId);
     return run;
+  },
+
+  /** Subscribes to runs starting and completing; returns the unsubscribe function. */
+  onChange(listener: (appSessionId: string) => void): () => void {
+    changeListeners.add(listener);
+    return () => changeListeners.delete(listener);
   },
 
   /**

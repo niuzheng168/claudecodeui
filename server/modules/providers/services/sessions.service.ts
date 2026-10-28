@@ -50,6 +50,8 @@ type RunningSessionEntry = {
   scheduled?: ScheduledTaskSummary[];
   /** The session waits for its user to answer a question or permission prompt. */
   waitingForUser?: true;
+  /** What it waits for, when CloudCLI holds the prompt: a question (AskUserQuestion) or anything else to allow. */
+  waitingKind?: 'permission' | 'question';
 };
 
 type CreateAppSessionResult = {
@@ -260,8 +262,10 @@ export const sessionsService = {
     // A prompt can also hold a background agent after its turn ended.
     const providers = new Map(providerRegistry.listProviders().map((provider) => [provider.id, provider]));
     for (const entry of entries) {
-      if ((providers.get(entry.provider)?.runtime.permissions?.listPending(entry.sessionId).length ?? 0) > 0) {
+      const pending = (providers.get(entry.provider)?.runtime.permissions?.listPending(entry.sessionId) ?? []) as Array<{ toolName?: unknown }>;
+      if (pending.length > 0) {
         entry.waitingForUser = true;
+        entry.waitingKind = pending.some((request) => request.toolName === 'AskUserQuestion') ? 'question' : 'permission';
       }
     }
 

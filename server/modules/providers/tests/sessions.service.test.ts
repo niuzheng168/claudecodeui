@@ -542,15 +542,23 @@ test('a run held on a question or permission prompt is waiting for its user', { 
   await withIsolatedDatabase(async () => {
     sessionsDb.createAppSession('asking-session', 'codex', '/tmp/running-project');
     sessionsDb.createAppSession('working-session', 'claude', '/tmp/running-project');
-    for (const sessionId of ['asking-session', 'working-session']) {
-      assert.ok(chatRunRegistry.startRun({
-        appSessionId: sessionId, provider: sessionId === 'asking-session' ? 'codex' : 'claude', providerSessionId: null, connection: null, userId: null,
-      }));
-    }
+    const startRuns = () => {
+      chatRunRegistry.clearAll();
+      for (const sessionId of ['asking-session', 'working-session']) {
+        assert.ok(chatRunRegistry.startRun({
+          appSessionId: sessionId, provider: sessionId === 'asking-session' ? 'codex' : 'claude', providerSessionId: null, connection: null, userId: null,
+        }));
+      }
+    };
+    startRuns();
     const permissions = (...asking: string[]) => ({
       resolve: () => undefined,
       listPending: (sessionId: string) => (asking.includes(sessionId) ? [{ requestId: 'r1', toolName: 'AskUserQuestion' }] : []),
     });
+    const allowing = {
+      resolve: () => undefined,
+      listPending: (sessionId: string) => (sessionId === 'working-session' ? [{ requestId: 'r2', toolName: 'Bash' }] : []),
+    };
 
     await withClaudeCliRegistry([], async () => await withProviders(
       {
@@ -560,10 +568,24 @@ test('a run held on a question or permission prompt is waiting for its user', { 
       async () => {
         const sessions = await sessionsService.listRunningSessions();
         // Only the provider that runs a session is asked about it.
-        assert.deepEqual(sessions.map((session) => [session.sessionId, session.waitingForUser]), [
-          ['asking-session', true],
-          ['working-session', undefined],
+        assert.deepEqual(sessions.map((session) => [session.sessionId, session.waitingForUser, session.waitingKind]), [
+          ['asking-session', true, 'question'],
+          ['working-session', undefined, undefined],
         ]);
+      },
+    ));
+    startRuns();
+    await withClaudeCliRegistry([], async () => await withProviders(
+      {
+        claude: { run: async () => undefined, abort: () => false, permissions: allowing },
+        codex: { run: async () => undefined, abort: () => false, permissions: permissions() },
+      },
+      async () => {
+        const sessions = await sessionsService.listRunningSessions();
+        assert.deepEqual(sessions.map((session) => [session.sessionId, session.waitingForUser, session.waitingKind]), [
+          ['asking-session', undefined, undefined],
+          ['working-session', true, 'permission'],
+        ], 'anything else held for the user is a permission');
       },
     ));
   });
