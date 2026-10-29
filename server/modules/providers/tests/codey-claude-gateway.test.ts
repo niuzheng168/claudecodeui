@@ -72,6 +72,18 @@ test('endpoint supports independent HTTPS and loopback APIs, never plaintext rem
   }
 });
 
+test('session summaries reach the Responses API of the managed model API only', () => {
+  assert.deepEqual(gateway(managed).responsesRequest(), {
+    url: 'http://127.0.0.1:4141/v1/responses',
+    headers: { Authorization: `Bearer ${managed.CODEY_MODEL_API_KEY}` },
+  });
+  assert.equal(gateway({ ...managed, CODEY_MODEL_BASE_URL: 'https://gateway.test/base/' }).responsesRequest()?.url,
+    'https://gateway.test/base/v1/responses');
+  assert.equal(gateway({ CODEY_MODEL_API_KEY: 'key' }).responsesRequest(), null, 'an unmanaged node has none');
+  assert.throws(() => gateway({ CODEY_MANAGED: 'true' }).responsesRequest(), /not configured/);
+  assert.throws(() => gateway({ ...managed, CODEY_MODEL_BASE_URL: 'http://external.test' }).responsesRequest(), /HTTPS or loopback/);
+});
+
 test('catalog retains exact gateway model IDs and native Messages capabilities', async () => {
   const model = {
     id: 'loki/claude-opus-5.5', name: 'Claude Opus 5.5',

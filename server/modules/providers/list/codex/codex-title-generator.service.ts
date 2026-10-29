@@ -1,5 +1,6 @@
 import {
   SESSION_TITLE_INSTRUCTIONS, SESSION_TITLE_SCHEMA, parseSessionTitle, readBoundedJsonResponse, readObjectRecord,
+  readResponsesOutputText,
 } from '@/shared/index.js';
 import type { AnyRecord } from '@/shared/index.js';
 
@@ -63,20 +64,6 @@ function providerRequest(input: TitleInput, environment: NodeJS.ProcessEnv): {
   return { url, headers };
 }
 
-function responseTitle(response: AnyRecord | null): string | null {
-  if (response?.status !== 'completed' || response.error || !Array.isArray(response.output)) return null;
-  const texts: string[] = [];
-  for (const item of response.output) {
-    if (item?.type === 'reasoning') continue;
-    if (item?.type !== 'message' || item.role !== 'assistant' || !Array.isArray(item.content)) return null;
-    for (const content of item.content) {
-      if (content?.type !== 'output_text' || typeof content.text !== 'string') return null;
-      texts.push(content.text);
-    }
-  }
-  return parseSessionTitle(texts.join(''));
-}
-
 /**
  * Used by Codex's background naming service and its offline HTTP tests.
  * One bounded, tool-free Responses request uses the configured custom provider
@@ -112,5 +99,6 @@ export async function generateCodexSessionTitle(
   }
   const result = await readBoundedJsonResponse(response, MAX_RESPONSE_BYTES);
   input.signal.throwIfAborted();
-  return responseTitle(result);
+  const text = readResponsesOutputText(result);
+  return text === null ? null : parseSessionTitle(text);
 }

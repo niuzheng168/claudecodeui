@@ -26,6 +26,13 @@ export {
 export {
   SESSION_TITLE_INSTRUCTIONS, SESSION_TITLE_SCHEMA, parseSessionTitle, readBoundedJsonResponse,
 } from './utils.js';
+// The Codex title generator and Activity's session summaries read Responses API answers alike.
+export { readResponsesOutputText } from './utils.js';
+// Activity writes one-line session summaries for the Codey Portal: prompt, schema, validator and fallback.
+export {
+  SESSION_SUMMARY_INSTRUCTIONS, SESSION_SUMMARY_SCHEMA, fallbackSessionSummary, parseSessionSummary,
+} from './utils.js';
+export type { SessionSummary, SessionSummaryRequest } from './types.js';
 export { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './image-attachments.js';
 // Commands resolves application metadata and parses local custom command frontmatter.
 export { findApplicationRoot, getModuleDirectory } from './utils.js';

@@ -215,6 +215,18 @@ export function createCodeyClaudeGateway(dependencies: {
     },
 
     /**
+     * Used by Activity's session summaries for one direct Responses API
+     * request to the node's own model API (its Copilot proxy), with the same
+     * validated endpoint and key. Null on unmanaged nodes; throws like
+     * `buildEnvironment` when the model API is not configured.
+     */
+    responsesRequest(): { url: string; headers: Record<string, string> } | null {
+      if (environment().CODEY_MANAGED !== 'true') return null;
+      const { key, baseUrl } = configuration();
+      return { url: `${baseUrl}/v1/responses`, headers: { Authorization: `Bearer ${key}` } };
+    },
+
+    /**
      * Used by the Claude usage readers to label a session's counter. Reads the
      * catalog once when none has been loaded; undefined when it is unavailable
      * or does not report this model's window.
@@ -231,5 +243,5 @@ export function createCodeyClaudeGateway(dependencies: {
   };
 }
 
-/** Shared by the Claude auth, model catalog, SDK runtime and automatic title adapters. */
+/** Shared by the Claude auth, model catalog, SDK runtime and automatic title adapters, and Activity's session summaries. */
 export const codeyClaudeGateway = createCodeyClaudeGateway();

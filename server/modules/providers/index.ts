@@ -20,6 +20,9 @@ export { initializeSessionsWatcher } from './services/sessions-watcher.service.j
 // codexThreadStatus: what the local Codex daemon says about every thread, for
 // the running list and Activity; started and closed with the server.
 export { codexThreadStatus } from './list/codex/codex-thread-status.service.js';
+// codeyClaudeGateway: Activity writes session summaries through the node's own
+// model API (`responsesRequest`), with the endpoint and key the harnesses use.
+export { codeyClaudeGateway } from './services/codey-claude-gateway.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 
 // Session messages: the default permission mode of a turn they start, and the

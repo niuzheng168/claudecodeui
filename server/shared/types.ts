@@ -1921,3 +1921,48 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+// ---------------------------
+//----------------- SESSION ACTIVITY SUMMARY TYPES ------------
+/**
+ * Why the Activity module summarized a session
+ * (docs/codey-project-overview-design.md §9.2): it began waiting for its user
+ * (`waiting`), a turn ended on an error (`failed`), no new turn followed the
+ * last one within `settleMs` (`settled`), or it kept starting turn after turn
+ * and `summaryTurns` turns or `summaryMs` passed since its last summary
+ * (`continuous`). The value travels unchanged in `POST /api/v1/activity`.
+ */
+export type SessionSummaryReason = 'waiting' | 'failed' | 'settled' | 'continuous';
+
+/**
+ * One generated session summary, as a session in an activity report carries
+ * it to the Portal. `text` is one line of 1–200 characters without control
+ * characters, written in the session's own language; `at` is when it was
+ * triggered, in milliseconds. The node keeps a summary only until a report
+ * carrying it is accepted: the Portal stores them, the node does not.
+ */
+export type SessionSummary = {
+  text: string;
+  reason: SessionSummaryReason;
+  at: number;
+};
+
+/**
+ * What the Activity summary scheduler asks the summary generator to write.
+ * Times are this machine's observations. `segmentStartedAt` and `turnEndedAt`
+ * bound the turns the summary covers, which picks the user messages it reads
+ * and tells a short turn (summarized without a model call) from a long one.
+ */
+export type SessionSummaryRequest = {
+  sessionId: string;
+  provider: 'claude' | 'codex';
+  reason: SessionSummaryReason;
+  /** When it was triggered; becomes the summary's `at`. */
+  at: number;
+  /** What a `waiting` session waits for, when known. */
+  waitingKind?: 'permission' | 'question';
+  /** When the first turn the summary covers began. */
+  segmentStartedAt: number;
+  /** When the last turn it covers ended; absent for `waiting`, whose turn is still going. */
+  turnEndedAt?: number;
+};
