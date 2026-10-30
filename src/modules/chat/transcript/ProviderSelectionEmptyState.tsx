@@ -25,6 +25,8 @@ import {
 import ModelGroupList, { type ModelGroup } from "@/modules/chat/composer/ModelGroupList";
 import ModelLibraryPanel from "@/modules/chat/modals/ModelLibraryPanel";
 import WorkbenchDirectoryPicker from "@/modules/chat/transcript/WorkbenchDirectoryPicker";
+import NewSessionWorktreeOption from "@/modules/chat/transcript/NewSessionWorktreeOption";
+import type { NewSessionWorktree } from "@/modules/chat/hooks/useNewSessionWorktree";
 import { tokenSearchFilter } from "@/modules/chat/utils/commandSearch";
 import { writeSelectedProvider } from '@/shared/selectedProvider';
 import { getEnabledProviders, isCodeyManagedDeployment } from '@/shared/utils';
@@ -58,6 +60,7 @@ type ProviderSelectionEmptyStateProps = {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: React.Dispatch<React.SetStateAction<string>>;
+  newSessionWorktree?: NewSessionWorktree | null;
 };
 
 function getModelConfig(
@@ -95,6 +98,7 @@ export default function ProviderSelectionEmptyState({
   isTaskMasterInstalled,
   onShowAllTasks,
   setInput,
+  newSessionWorktree = null,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -294,6 +298,8 @@ export default function ProviderSelectionEmptyState({
           </Dialog>
 
           <WorkbenchDirectoryPicker />
+
+          {newSessionWorktree && <NewSessionWorktreeOption worktree={newSessionWorktree} />}
 
           {!codeyManaged && (
             <Dialog

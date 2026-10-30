@@ -317,6 +317,16 @@
     "noneFound": "没有匹配的目录",
     "unavailable": "不可用"
   },
+  "newSessionWorktree": {
+    "title": "新建 worktree",
+    "off": "在当前目录开始",
+    "on": "从 {{branch}} 新开分支，放在单独的目录里",
+    "onNoBranch": "新开分支，放在单独的目录里",
+    "branch": "分支名",
+    "branchPlaceholder": "分支名（留空自动生成）",
+    "creating": "正在创建 worktree…",
+    "failed": "没能创建 worktree：{{message}}"
+  },
   "session": {
     "continue": {
       "title": "继续您的对话",

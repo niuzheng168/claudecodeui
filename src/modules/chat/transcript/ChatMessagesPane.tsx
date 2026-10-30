@@ -15,6 +15,7 @@ import { useLazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
 import LazyMessageRow from '@/modules/chat/transcript/LazyMessageRow';
 import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
+import type { NewSessionWorktree } from '@/modules/chat/hooks/useNewSessionWorktree';
 import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
 import LoadAllMessagesOverlay from '@/modules/chat/transcript/LoadAllMessagesOverlay';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
@@ -51,6 +52,7 @@ type ChatMessagesPaneProps = {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: Dispatch<SetStateAction<string>>;
+  newSessionWorktree?: NewSessionWorktree | null;
   isLoadingMoreMessages: boolean;
   historyError?: string | null;
   hasMoreMessages: boolean;
@@ -122,6 +124,7 @@ function ChatMessagesPane({
   isTaskMasterInstalled,
   onShowAllTasks,
   setInput,
+  newSessionWorktree = null,
   isLoadingMoreMessages,
   historyError,
   hasMoreMessages,
@@ -256,6 +259,7 @@ function ChatMessagesPane({
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
+          newSessionWorktree={newSessionWorktree}
         />
       ) : (
         <>

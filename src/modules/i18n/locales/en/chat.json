@@ -372,6 +372,16 @@
     "noneFound": "No folders found.",
     "unavailable": "Unavailable"
   },
+  "newSessionWorktree": {
+    "title": "New worktree",
+    "off": "Starts in this folder",
+    "on": "A new branch off {{branch}}, in a folder of its own",
+    "onNoBranch": "A new branch in a folder of its own",
+    "branch": "Branch name",
+    "branchPlaceholder": "Branch name (blank: one is made up)",
+    "creating": "Creating the worktree…",
+    "failed": "Failed to create the worktree: {{message}}"
+  },
   "session": {
     "continue": {
       "title": "Continue your conversation",

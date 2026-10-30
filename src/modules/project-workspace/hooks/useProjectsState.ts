@@ -644,6 +644,14 @@ export function useProjectsState({
         ? { ...previousSession, ...optimisticSession }
         : optimisticSession
     ));
+    // A session started in another directory than the open project's (a new
+    // worktree) takes its project along in the same render, so the chat never
+    // sees it under the old project and loads or subscribes to it twice.
+    setSelectedProject((previousProject) => (
+      !previousProject || previousProject.projectId === project.projectId
+        ? previousProject
+        : upsertSessionIntoProject(projectFromRegistration(project), upsert)
+    ));
   }, []);
 
   // Hydrates TaskMaster details for the given `projectId`. The project

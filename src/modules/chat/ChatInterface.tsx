@@ -24,6 +24,7 @@ import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { useChatSteering } from '@/modules/chat/hooks/useChatSteering';
+import { useNewSessionWorktree } from '@/modules/chat/hooks/useNewSessionWorktree';
 import { useSessionGoal } from '@/modules/chat/hooks/useSessionGoal';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { SessionGoalBanner } from '@/modules/chat/SessionGoalBanner';
@@ -211,6 +212,8 @@ function ChatInterface({
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
   const steering = useChatSteering(selectedSession?.id || currentSessionId || null);
+  // Whether the new session page starts the session in a new worktree; the first send makes it.
+  const newSessionWorktree = useNewSessionWorktree(selectedProject, !selectedSession && !currentSessionId);
   // Selection is authoritative: local provider/session state can lag a render
   // when opening a new draft or switching to another provider's conversation.
   const goalSessionId = selectedProject && selectedSession
@@ -304,6 +307,7 @@ function ChatInterface({
     sendByCtrlEnter,
     onSessionProcessing: markOwnSendProcessing,
     onSessionEstablished: handleSessionEstablished,
+    prepareNewSessionProject: newSessionWorktree.prepare,
     onFileOpen,
     onShowSettings,
     scrollToBottom,
@@ -523,6 +527,7 @@ function ChatInterface({
             isTaskMasterInstalled={isTaskMasterInstalled}
             onShowAllTasks={onShowAllTasks}
             setInput={setInput}
+            newSessionWorktree={newSessionWorktree}
             isLoadingMoreMessages={isLoadingMoreMessages}
             historyError={historyError}
             hasMoreMessages={hasMoreMessages}

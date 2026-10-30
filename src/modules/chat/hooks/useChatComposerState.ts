@@ -70,6 +70,12 @@ type UseChatComposerStateArgs = {
    * /session/:id and records it as the current session.
    */
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
+  /**
+   * Asked before a brand-new conversation's session is allocated: the project
+   * of a worktree made for it (useNewSessionWorktree), or null to start in the
+   * selected project.
+   */
+  prepareNewSessionProject?: () => Promise<Project | null>;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   scrollToBottom: () => void;
@@ -232,6 +238,7 @@ export function useChatComposerState({
   sendByCtrlEnter,
   onSessionProcessing,
   onSessionEstablished,
+  prepareNewSessionProject,
   onFileOpen,
   onShowSettings,
   scrollToBottom,
@@ -1105,7 +1112,6 @@ export function useChatComposerState({
       }
 
       if (nativeCommandScope && draftScopeRef.current !== nativeCommandScope) return;
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
       // The conversation always has a stable backend-allocated session id
@@ -1114,11 +1120,28 @@ export function useChatComposerState({
       // handoff later — this id stays valid for the conversation's lifetime.
       let targetSessionId = selectedSession?.id || currentSessionId || null;
       if (!targetSessionId) {
+        let sessionProject = selectedProject;
+        if (prepareNewSessionProject) {
+          try {
+            sessionProject = (await prepareNewSessionProject()) ?? selectedProject;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            addMessage({
+              type: 'error',
+              content: t('newSessionWorktree.failed', {
+                message,
+                defaultValue: 'Failed to create the worktree: {{message}}',
+              }),
+              timestamp: new Date(),
+            });
+            return;
+          }
+        }
         let createdSessionName = sessionSummary;
         try {
           const response = await api.providers.createSession({
             provider,
-            projectPath: resolvedProjectPath,
+            projectPath: sessionProject.fullPath || sessionProject.path || '',
             initialMessage: messageContent,
           });
           if (!response.ok) {
@@ -1159,7 +1182,7 @@ export function useChatComposerState({
         if (nativeCommandScope && draftScopeRef.current !== nativeCommandScope) return;
         onSessionEstablished?.(targetSessionId, {
           provider,
-          project: selectedProject,
+          project: sessionProject,
           summary: createdSessionName,
         });
       }
@@ -1297,6 +1320,7 @@ export function useChatComposerState({
       isLoading,
       onSessionProcessing,
       onSessionEstablished,
+      prepareNewSessionProject,
       provider,
       permissionMode,
       selectPermissionMode,
