@@ -53,6 +53,7 @@ import {
 } from './modules/scheduled-messages/index.js';
 import { createCodeyV1Routes, createSessionMessagesRoutes } from './modules/session-messages/index.js';
 import { closeActivityReporter, initializeActivityReporter } from './modules/activity/index.js';
+import { createProjectMemoryRoutes } from './modules/project-memory/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import { fileTreeRoutes } from './modules/file-tree/index.js';
@@ -215,6 +216,7 @@ app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/codey/session-messages', authenticateToken, createSessionMessagesRoutes({ runtime: providerRuntimeService }));
 app.use('/api/codey/v1', authenticateToken, createCodeyV1Routes({ runtime: providerRuntimeService }));
+app.use('/api/codey/memory', authenticateToken, createProjectMemoryRoutes());
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

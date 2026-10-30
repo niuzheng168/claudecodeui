@@ -28,6 +28,8 @@ export {
 } from './utils.js';
 // The Codex title generator and Activity's session summaries read Responses API answers alike.
 export { readResponsesOutputText } from './utils.js';
+// Project-memory routes use the shared async Express error adapter.
+export { asyncHandler } from './utils.js';
 // Activity writes one-line session summaries for the Codey Portal: prompt, schema, validator and fallback.
 export {
   SESSION_SUMMARY_INSTRUCTIONS, SESSION_SUMMARY_SCHEMA, fallbackSessionSummary, parseSessionSummary,

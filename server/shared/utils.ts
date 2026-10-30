@@ -1077,7 +1077,7 @@ export async function readBoundedJsonResponse(
 /**
  * Joins the answer text of one completed, tool-free Responses API reply.
  *
- * Used by the Codex title generator and by Activity's session summaries,
+ * Used by the Codex title generator, Activity's session summaries and project memory,
  * which both ask for a structured JSON answer. Reasoning items are skipped;
  * any other item that is not assistant `output_text` (a tool call, a refusal)
  * makes the reply unusable. Returns null for an incomplete, failed or
