@@ -255,3 +255,68 @@ test('node routes require signed owner identity and preserve CRUD status and val
   assert.equal((await fetch(`${url}/${memory.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await fetch(`${url}/${memory.id}`)).status, 404);
 });
+
+test('resources join an existing project once, retaining full bodies, titles, kind, timestamps and provenance', async t => {
+  const f = await fixture(t);
+  const { memory: existing } = await f.service.create('alice', PROJECT, { kind: 'fact', body: 'already on main' });
+  const resource = { id: `r-${'c'.repeat(16)}`, title: '开发环境', kind: 'environment', body: 'x'.repeat(8192), createdAt: 123, updatedAt: 456 };
+  const imported = await f.service.importLegacy('alice', PROJECT, { memory: [], resources: [resource] });
+  assert.equal(imported.resourcesImported, true);
+  assert.equal(imported.contract, 2);
+  const files = (await f.service.list('alice', PROJECT)).memory;
+  assert.equal(files.length, 2);
+  assert.ok(files.some(file => file.id === existing.id));
+  const migrated = files.find(file => file.legacyResourceId === resource.id)!;
+  assert.deepEqual([migrated.title, migrated.kind, migrated.body, migrated.createdAt, migrated.updatedAt, migrated.mode],
+    [resource.title, resource.kind, resource.body, 123, 456, 'manual']);
+  assert.equal(migrated.source, `resource:${resource.id}`);
+  assert.match(migrated.filename, /^开发环境-/);
+  await f.service.update('alice', PROJECT, migrated.id, { version: 1, title: 'New title', body: 'changed by user' });
+  await f.service.importLegacy('alice', PROJECT, { memory: [], resources: [resource] });
+  assert.equal((await f.service.history('alice', PROJECT, migrated.id)).memory.body, 'changed by user');
+  await f.service.remove('alice', PROJECT, migrated.id);
+  const restarted = new ProjectMemoryService(f.dependencies);
+  await restarted.importLegacy('alice', PROJECT, { memory: [], resources: [resource] });
+  assert.equal((await restarted.list('alice', PROJECT)).memory.length, 1, 'a deleted migrated file stays deleted after restart/reimport');
+});
+
+test('resource import is all-or-nothing and may be retried after validation failure', async t => {
+  const f = await fixture(t);
+  const resource = { id: `r-${'c'.repeat(16)}`, title: 'Rules', kind: 'rule', body: 'valid' };
+  await assert.rejects(f.service.importLegacy('alice', PROJECT, {
+    memory: [], resources: [resource, { ...resource, id: 'invalid' }],
+  }));
+  assert.equal((await f.service.list('alice', PROJECT)).memory.length, 0);
+  assert.equal((await f.service.importLegacy('alice', PROJECT, { memory: [], resources: [resource] })).resourcesImported, true);
+});
+
+test('users explicitly enable and disable automatic maintenance, independently of source and category', async t => {
+  const f = await fixture(t);
+  const { memory } = await f.service.create('alice', PROJECT, { kind: 'rule', title: 'Rules', body: 'initial rule' });
+  assert.equal(memory.mode, 'manual');
+  f.response.make = async () => completed({ upserts: [{ id: memory.id, filename: memory.filename, kind: 'rule', body: 'verified rule' }], remove: [] });
+  await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 409 });
+  await f.service.update('alice', PROJECT, memory.id, { mode: 'auto', version: 1 });
+  await f.service.summarize('alice', PROJECT, event());
+  const changed = (await f.service.history('alice', PROJECT, memory.id)).memory;
+  assert.equal(changed.mode, 'auto');
+  assert.equal(changed.title, 'Rules');
+  assert.equal(changed.source, 'user', 'origin is not the automatic-edit permission');
+  assert.equal(changed.body, 'verified rule');
+  const input = JSON.parse(f.calls.at(-1)!.input[0].content);
+  assert.equal(input.memory[0].mode, 'auto');
+  await f.service.update('alice', PROJECT, memory.id, { mode: 'manual', version: changed.version });
+  await assert.rejects(f.service.summarize('alice', PROJECT, event(2)), { statusCode: 409 });
+  await assert.rejects(f.service.update('alice', PROJECT, memory.id, { mode: 'bad', version: changed.version + 1 }), { statusCode: 400 });
+});
+
+test('invalidated files cannot be revived by the model even when automatic maintenance is enabled', async t => {
+  const f = await fixture(t);
+  const { memory } = await f.service.create('alice', PROJECT, { kind: 'fact', body: 'old', mode: 'auto' });
+  await f.service.update('alice', PROJECT, memory.id, { version: 1, state: 'invalidated', mode: 'auto' });
+  f.response.make = async () => completed({ upserts: [{ id: memory.id, filename: memory.filename, kind: 'fact', body: 'revived' }], remove: [] });
+  await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 409 });
+  const input = JSON.parse(f.calls[0].input[0].content);
+  assert.equal(input.memory[0].omitted, true);
+  assert.equal(input.memory[0].body, undefined);
+});

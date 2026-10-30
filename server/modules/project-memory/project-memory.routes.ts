@@ -34,7 +34,7 @@ export function createProjectMemoryRoutes(service = new ProjectMemoryService(), 
     if (!/^p-[a-f0-9]{16}$/.test(project) || (entry && !/^(?:m-[a-f0-9]{16}|import|summarize)$/.test(entry))) {
       throw new AppError('Invalid project memory path.', { statusCode: 400 });
     }
-    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 768 * 1024) {
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > (entry === 'import' ? 8 * 1024 * 1024 : 768 * 1024)) {
       throw new AppError('Memory request too large.', { statusCode: 413 });
     }
     if (entry === 'import' && req.method === 'POST') res.json(await service.importLegacy(owner, project, req.body));
