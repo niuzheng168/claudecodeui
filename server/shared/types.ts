@@ -1977,3 +1977,16 @@ export type SessionSummaryRequest = {
   /** When the last turn it covers ended; absent for `waiting`, whose turn is still going. */
   turnEndedAt?: number;
 };
+// ---------------------------
+//----------------- AZURE DEVOPS READ-ONLY INTEGRATION ------------
+/**
+ * Validated target passed from the owner-only ADO route to its reader.
+ * The host is always dev.azure.com; organization/project are single path segments,
+ * and id is a saved-query UUID or positive int32 work-item ID. No tokens or API URLs.
+ */
+export type AzureDevOpsTarget = {
+  organization: string;
+  project: string;
+  kind: 'query' | 'item';
+  id: string;
+};
