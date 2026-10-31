@@ -2,3 +2,5 @@
 export { createProjectMemoryRoutes } from './project-memory.routes.js';
 // The node entrypoint owns the lifetime of source hooks and main jobs.
 export { initializeProjectMemory, closeProjectMemory } from './services/project-memory-runtime.service.js';
+// Websocket dispatch carries explicit Workbench placement into native startup hooks.
+export { prepareMemoryLaunch, finishMemoryLaunch } from './services/session-memory.service.js';

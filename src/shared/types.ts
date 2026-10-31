@@ -199,6 +199,8 @@ type ProjectTaskmasterInfo = {
 /** A workspace project as the UI knows it: identity, path, star state and its loaded sessions. */
 export type Project = {
   projectId: string;
+  /** Transient Portal project for this new-session draft; never a Workspace directory/project ID. */
+  workbenchProjectId?: string;
   displayName: string;
   fullPath: string;
   path?: string;

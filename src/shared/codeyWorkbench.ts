@@ -42,6 +42,8 @@ export type WorkbenchDirectories = {
 /** A project of this machine the Workbench asks to start a new session in. */
 export type WorkbenchNewSession = {
   projectId: string;
+  /** Explicit Portal placement carried to the native memory hook on the first send. */
+  workbenchProjectId?: string;
   /** The project's directory and name, for a project this page has not listed yet. */
   path: string;
   name: string;
@@ -90,6 +92,8 @@ function readNewSession(data: Record<string, unknown>): WorkbenchNewSession | nu
   if (typeof projectId !== 'string' || !projectId) return null;
   return {
     projectId,
+    ...(typeof data.workbenchProjectId === 'string' && /^p-[a-f0-9]{16}$/.test(data.workbenchProjectId)
+      ? { workbenchProjectId: data.workbenchProjectId } : {}),
     path: typeof path === 'string' ? path : '',
     name: typeof name === 'string' ? name : '',
   };

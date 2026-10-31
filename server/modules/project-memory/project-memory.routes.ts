@@ -15,7 +15,21 @@ export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerR
     }
     next();
   });
-  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true,archiveWithoutMemory:true},integration:memoryIntegrationStatus()}));
+  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true,archiveWithoutMemory:true,sessionBriefs:true},integration:memoryIntegrationStatus()}));
+  router.post('/briefs', asyncHandler(async (req, res) => {
+    const owner = accountId(req);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 64 * 1024) throw new AppError('Request too large.', {statusCode:413});
+    res.json(await service.briefs(owner, req.body));
+  }));
+  router.post('/projects/:project/:operation(search|read)', asyncHandler(async (req, res) => {
+    const owner = accountId(req), project = String(req.params.project);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
+    if (!/^p-[a-f0-9]{16}$/.test(project)) throw new AppError('Invalid project.', {statusCode:400});
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 8192) throw new AppError('Request too large.', {statusCode:413});
+    res.json(req.params.operation === 'search'
+      ? await service.search(owner, project, req.body) : await service.read(owner, project, req.body));
+  }));
   router.post('/projects/:project/notes/:operation', asyncHandler(async (req, res) => {
     const owner = accountId(req), project = String(req.params.project), operation = String(req.params.operation);
     if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});

@@ -321,6 +321,8 @@ function mapCliOptionsToSDK(options = {}) {
     // What tells Codey's processes from Claude Desktop's or a terminal's
     // (see findForeignSessionProcess); never inherited from the node's shell.
     CLAUDE_CODE_ENTRYPOINT: CODEY_CLAUDE_ENTRYPOINT,
+    // Per-process startup ticket; do not mutate the node's shared environment.
+    CODEY_MEMORY_LAUNCH_ID: options.memoryLaunchId || '',
   };
 
   const claudeExecutablePath = resolveClaudeExecutableOption();

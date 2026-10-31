@@ -9,6 +9,7 @@ import { ProjectMemoryService } from './project-memory.service.js';
 import { ArchiveMaterialService } from './archive-material.service.js';
 import { ArchiveJobsService } from './archive-jobs.service.js';
 import { MemoryHooksService } from './memory-hooks.service.js';
+import { initializeSessionMemory, refreshSessionMemory } from './session-memory.service.js';
 
 type PortalRequest = (method:string,path:string,options:{body?:unknown})=>Promise<unknown>;
 let request: PortalRequest|undefined;
@@ -91,7 +92,7 @@ export async function initializeProjectMemory(): Promise<void> {
     if (typeof module.portalRequest!=='function') return;
     request=module.portalRequest;
     memoryArchiveDb.initialize();
-    integration={...integration,hooks:await hooks.install()};
+    integration={...integration,hooks:await hooks.install(await initializeSessionMemory(process.env.CODEY_PORTAL_CLIENT_MODULE))};
   } catch {
     request=undefined;integration={...integration,runtime:'unavailable-check-node-configuration'};
     console.warn('[Project memory] Initialization unavailable; native agent services were not changed.');
@@ -99,9 +100,14 @@ export async function initializeProjectMemory(): Promise<void> {
   }
   unsubscribe=codexThreadStatus.onArchiveChange((id,archived)=>memoryArchiveDb.observeNative('codex',id,archived));
   const safely=(work:()=>Promise<unknown>)=>{ void work().catch(()=>console.warn('[Project memory] Background processing will retry.')); };
-  timers=[setInterval(()=>safely(sourceTick),5000),setInterval(()=>safely(()=>archiveJobs.tick()),5000)];
+  const refreshBriefs=async () => {
+    try { await refreshSessionMemory();integration={...integration,sessionBriefs:'ready'}; }
+    catch { integration={...integration,sessionBriefs:'offline-using-local-cache'}; }
+  };
+  timers=[setInterval(()=>safely(sourceTick),5000),setInterval(()=>safely(()=>archiveJobs.tick()),5000),
+    setInterval(()=>safely(refreshBriefs),5*60*1000)];
   timers.forEach(timer=>timer.unref());
-  safely(sourceTick);safely(()=>archiveJobs.tick());
+  safely(sourceTick);safely(()=>archiveJobs.tick());safely(refreshBriefs);
 }
 /** The node entrypoint stops schedulers without deleting jobs or interrupting native agent sessions. */
 export function closeProjectMemory(): void {

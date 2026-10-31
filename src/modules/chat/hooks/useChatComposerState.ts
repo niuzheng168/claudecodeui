@@ -741,6 +741,7 @@ export function useChatComposerState({
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
+      ...(selectedProject?.workbenchProjectId ? { workbenchProjectId: selectedProject.workbenchProjectId } : {}),
     };
   }, [
     currentProviderEffort,
@@ -749,6 +750,7 @@ export function useChatComposerState({
     provider,
     resolvePermissionModeForProvider,
     selectedSession,
+    selectedProject?.workbenchProjectId,
   ]);
 
   // Read at send time through a ref: the map changes on every poll, and a

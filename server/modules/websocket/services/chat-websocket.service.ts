@@ -490,17 +490,32 @@ async function dispatchRun(
   };
 
   let failure: string | null = null;
+  let memoryLaunch: string | null = null;
+  let memoryModule: typeof import('@/modules/project-memory/index.js') | undefined;
   try {
     // Runs only now that the session is reserved, because an edit rewinds the
     // conversation here and a rewind for a run that was never admitted cannot
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run, uniqueAttachments);
+    // Never accept a browser-supplied native launch token, nor attach a project
+    // selection from another draft to an already-created provider session.
+    delete runtimeOptions.memoryLaunchId;
+    if (!session.provider_session_id && clientOptions.workbenchProjectId) {
+      // Providers also consume websocket dispatch. Load this feature lazily so
+      // its archive worker does not instantiate while providers are initializing.
+      try {
+        memoryModule = await import('@/modules/project-memory/index.js');
+        memoryLaunch = await memoryModule.prepareMemoryLaunch(clientOptions.workbenchProjectId, runtimeOptions.cwd, provider);
+      } catch { /* Optional memory integration must not block a native chat. */ }
+      if (provider === 'claude' && memoryLaunch) runtimeOptions.memoryLaunchId = memoryLaunch;
+    }
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
   } finally {
+    await memoryModule?.finishMemoryLaunch(memoryLaunch);
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in
     // "processing" forever on every connected client. Scoped to THIS run —

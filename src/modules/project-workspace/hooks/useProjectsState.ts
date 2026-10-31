@@ -1081,8 +1081,10 @@ export function useProjectsState({
   );
 
   const handleNewSession = useCallback(
-    (project: Project) => {
-      setSelectedProject(project);
+    (project: Project, workbenchProjectId?: string) => {
+      // Only a Workbench request sets this draft-only placement. Sidebar starts
+      // must not inherit the previous draft's explicit Portal project.
+      setSelectedProject({ ...project, workbenchProjectId });
       setSelectedSession(null);
       setActiveTab('chat');
       setNewSessionTrigger((previous) => previous + 1);
@@ -1099,6 +1101,8 @@ export function useProjectsState({
   // sidebar's "New Session" does. The Codey Workbench links here: it lists the
   // sessions itself and hides this sidebar. Read once, when the page opens.
   const requestedProjectIdRef = useRef(new URLSearchParams(window.location.search).get('project'));
+  // Keep the initial Portal placement until asynchronous Workspace projects finish loading.
+  const requestedMemoryProjectRef = useRef(new URLSearchParams(window.location.search).get('workbenchProject'));
   useEffect(() => {
     const requestedProjectId = requestedProjectIdRef.current;
     if (!requestedProjectId || isLoadingProjects) {
@@ -1111,7 +1115,8 @@ export function useProjectsState({
 
     const project = projects.find((candidate) => candidate.projectId === requestedProjectId);
     if (project) {
-      handleNewSession(project);
+      const memoryProject = requestedMemoryProjectRef.current;
+      handleNewSession(project, memoryProject && /^p-[a-f0-9]{16}$/.test(memoryProject) ? memoryProject : undefined);
     } else {
       navigate('/', { replace: true });
     }
@@ -1120,7 +1125,7 @@ export function useProjectsState({
   // A Workbench frame that is already open is asked by message instead, so the
   // page is not loaded again. The Workbench may have just added the directory
   // to this machine: until the list has it, the request says what it is.
-  useEffect(() => onWorkbenchNewSession(({ projectId, path, name }) => {
+  useEffect(() => onWorkbenchNewSession(({ projectId, path, name, workbenchProjectId }) => {
     const listed = projectsRef.current.find((candidate) => candidate.projectId === projectId);
     handleNewSession(listed ?? {
       projectId,
@@ -1130,7 +1135,7 @@ export function useProjectsState({
       isStarred: false,
       sessions: [],
       sessionMeta: { hasMore: false, total: 0 },
-    });
+    }, workbenchProjectId);
     if (!listed) {
       void refreshProjectsSilently();
     }

@@ -343,6 +343,91 @@ export class ProjectMemoryService {
     });
   }
 
+  /** Owner-only read routes supply versioned, bounded startup briefs without topic bodies. */
+  async briefs(owner: string, value: unknown) {
+    const body = fields(value, ['projects']);
+    if (!Array.isArray(body.projects) || body.projects.length > 200) fail('一次最多读取200个项目');
+    const projects = [];
+    for (const item of body.projects) {
+      const request = fields(item, ['id', 'revision']);
+      if (typeof request.id !== 'string' || (request.revision !== undefined
+        && (!Number.isSafeInteger(request.revision) || Number(request.revision) < 0))) fail('简报版本不正确');
+      const dir = this.directory(owner, request.id);
+      const brief = await this.serial(dir, async () => {
+        const snapshot = await this.snapshot(dir);
+        if (snapshot.revision === request.revision) return null;
+        const entries = snapshot.entries.filter(entry => entry.state === 'adopted')
+          .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+        const core = entries.find(entry => entry.filename === 'core.md');
+        const full = core ? redact(await this.body(dir, core.file)) : '';
+        const topics = entries.filter(entry => entry !== core);
+        return {
+          id: request.id, revision: snapshot.revision, core: full.slice(0, 6000), coreId: core?.id ?? null,
+          coreTruncated: full.length > 6000, topicCount: topics.length,
+          topics: topics.slice(0, 100).map(entry => ({
+            id: entry.id, title: entry.title || entry.filename, filename: entry.filename, updatedAt: entry.updatedAt,
+          })),
+          truncated: full.length > 6000 || topics.length > 100,
+        };
+      });
+      if (brief) projects.push(brief);
+    }
+    return { projects };
+  }
+
+  /** MCP search shares Chinese FTS ranking, not the model's maintenance context or input budget. */
+  async search(owner: string, project: string, value: unknown) {
+    const body = fields(value, ['query', 'limit']);
+    const query = text(body.query, 4096);
+    const limit = body.limit ?? 5;
+    if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 10) fail('limit 必须是1至10');
+    const dir = this.directory(owner, project);
+    return this.serial(dir, async () => {
+      const snapshot = await this.snapshot(dir);
+      const {words, hits} = this.matches(dir, query);
+      const core = snapshot.entries.find(entry => entry.filename === 'core.md' && entry.state === 'adopted');
+      const byId = new Map(snapshot.entries.filter(entry => entry.state === 'adopted').map(entry => [entry.id, entry]));
+      const selected = [...new Set([...hits, ...(core ? [core.id] : [])])]
+        .flatMap(id => byId.has(id) ? [byId.get(id)!] : []).slice(0, Number(limit));
+      const entries = [];
+      for (const entry of selected) {
+        const full = redact(await this.body(dir, entry.file));
+        const lower = full.toLowerCase();
+        const at = words.map(word => lower.indexOf(word)).find(index => index >= 0) ?? 0;
+        const start = Math.max(0, at - 100);
+        entries.push({
+          id: entry.id, title: entry.title || entry.filename, filename: entry.filename, version: entry.version,
+          snippet: full.slice(start, start + 300).replace(/[\uD800-\uDBFF]$/, ''),
+        });
+      }
+      return { revision: snapshot.revision, entries };
+    });
+  }
+
+  /** MCP reads are byte-paged at UTF-8 boundaries and expose only currently adopted entries. */
+  async read(owner: string, project: string, value: unknown) {
+    const body = fields(value, ['id', 'offset']);
+    const offset = body.offset ?? 0;
+    if (typeof body.id !== 'string' || !/^m-[a-f0-9]{16}$/.test(body.id)
+      || !Number.isSafeInteger(offset) || Number(offset) < 0) fail('记忆ID或读取位置不正确');
+    const dir = this.directory(owner, project);
+    return this.serial(dir, async () => {
+      const snapshot = await this.snapshot(dir);
+      const entry = snapshot.entries.find(item => item.id === body.id && item.state === 'adopted');
+      if (!entry) fail('没有这条记忆', 404);
+      const bytes = Buffer.from(redact(await this.body(dir, entry.file)));
+      const start = Number(offset);
+      if (start > bytes.length || (start < bytes.length && (bytes[start] & 0xc0) === 0x80)) fail('读取位置不在UTF-8边界');
+      let end = Math.min(bytes.length, start + 16 * 1024);
+      while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+      return {
+        id: entry.id, title: entry.title || entry.filename, filename: entry.filename, version: entry.version,
+        revision: snapshot.revision, body: bytes.subarray(start, end).toString('utf8'), offset: start,
+        nextOffset: end < bytes.length ? end : null, totalBytes: bytes.length,
+      };
+    });
+  }
+
   async create(owner: string, project: string, value: unknown) {
     const body = fields(value, ['kind', 'body', 'filename', 'title', 'mode']);
     const id = `m-${randomBytes(8).toString('hex')}`;
@@ -513,17 +598,20 @@ export class ProjectMemoryService {
     const dir = this.directory(owner,project);
     return this.serial(dir,async () => (await this.snapshot(dir)).checkpoints?.[key]);
   }
+  private matches(dir: string, query: string) {
+    const words = [...new Set(this.words(query).split(' ').filter(word => word.length > 1))].slice(0, 40);
+    const db = this.database(dir);
+    try {
+      const hits = words.length ? (db.prepare('SELECT id FROM search WHERE search MATCH ? ORDER BY bm25(search) LIMIT 40')
+        .all(words.map(word => `"${word.replaceAll('"', '""')}"`).join(' OR ')) as {id: string}[]).map(row => row.id) : [];
+      return {words, hits};
+    } finally { db.close(); }
+  }
   private async context(owner: string, project: string, query: string) {
     const dir = this.directory(owner,project);
     return this.serial(dir,async () => {
       const snapshot = await this.snapshot(dir);
-      const words = [...new Set(this.words(query).split(' ').filter(word => word.length>1))].slice(0,40);
-      const db = this.database(dir);
-      let hits: string[] = [];
-      try {
-        if (words.length) hits = (db.prepare('SELECT id FROM search WHERE search MATCH ? ORDER BY bm25(search) LIMIT 40')
-          .all(words.map(word => `"${word.replaceAll('"','""')}"`).join(' OR ')) as {id:string}[]).map(row => row.id);
-      } finally { db.close(); }
+      const {words, hits} = this.matches(dir, query);
       const entries = snapshot.entries.filter(entry => entry.filename==='core.md'
         || (modeOf(entry)==='manual' && entry.kind==='rule')).slice(0,8);
       for (const id of hits) {

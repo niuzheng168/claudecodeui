@@ -13,11 +13,14 @@ export class MemoryHooksService {
   constructor(private readonly home = os.homedir(), private readonly environment = process.env) {
     this.root=path.join(home,'.codey','hooks');
   }
-  async install() {
+  async install(cacheModule?: string) {
     await mkdir(this.root,{recursive:true,mode:0o700});
     const script=path.join(this.root,'project-memory-hook.mjs');
     const wake=path.join(this.root,'archive-wake');
-    const source=`import {writeFile,rename} from 'node:fs/promises';\nimport {randomBytes} from 'node:crypto';\nconst file=${JSON.stringify(wake)};\nconst tmp=file+'.'+randomBytes(8).toString('hex');\ntry { await writeFile(tmp,String(Date.now()),{mode:0o600});await rename(tmp,file); } catch {}\n`;
+    if (cacheModule) await this.atomic(path.join(this.root,'memory-cache.mjs'),await readFile(cacheModule,'utf8'));
+    const source=cacheModule
+      ? `import {runMemoryHook} from './memory-cache.mjs';\nawait runMemoryHook({root:${JSON.stringify(path.join(this.home,'.codey','memory-cache'))},wake:${JSON.stringify(wake)},event:process.argv[2],provider:process.argv[3]});\n`
+      : `import {writeFile,rename} from 'node:fs/promises';\nimport {randomBytes} from 'node:crypto';\nconst file=${JSON.stringify(wake)};\nconst tmp=file+'.'+randomBytes(8).toString('hex');\ntry { await writeFile(tmp,String(Date.now()),{mode:0o600});await rename(tmp,file); } catch {}\n`;
     await this.atomic(script,source);
     const quote=(value:string) => process.platform==='win32' ? `"${value.replaceAll('"','\\\\"')}"` : `'${value.replaceAll("'","'\\''")}'`;
     const command=`${quote(process.execPath)} ${quote(script)}`;
@@ -48,7 +51,10 @@ export class MemoryHooksService {
             const hooks=group.hooks.filter((hook: {command?:unknown}) => typeof hook.command!=='string' || !hook.command.includes(managedScript));
             if (hooks.length) others.push({...group,hooks});
           }
-          config.hooks[event]=[...others,{hooks:[{type:'command',command,timeout:2}]}];
+          config.hooks[event]=[...others,{hooks:[{
+            type:'command',command:cacheModule ? `${command} ${event} ${provider}` : command,timeout:2,
+            ...(provider==='codex' && event==='SessionStart' && cacheModule ? {additionalContextLimit:6000} : {}),
+          }]}];
         }
         const next=`${JSON.stringify(config,null,2)}\n`;
         if (next!==old) {

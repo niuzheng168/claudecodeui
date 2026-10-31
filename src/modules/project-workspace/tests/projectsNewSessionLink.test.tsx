@@ -83,6 +83,25 @@ test('a project link opens the new session view of that project', async () => {
   assert.deepEqual(navigate.mock.calls, [['/']]);
 });
 
+test('Workbench placement survives initial navigation and is cleared by a direct new-session start', async () => {
+  const portalProject = `p-${'a'.repeat(16)}`;
+  window.history.replaceState({}, '', `/?project=project-2&workbenchProject=${portalProject}`);
+  const { result } = await renderProjectsState(vi.fn());
+  await waitFor(() => assert.equal(result.current.selectedProject?.workbenchProjectId, portalProject));
+  act(() => result.current.handleNewSession(result.current.selectedProject!));
+  assert.equal(result.current.selectedProject?.workbenchProjectId, undefined);
+});
+
+test('an existing frame carries explicit Portal placement, independently of its Workspace directory', async () => {
+  const { result } = await renderProjectsState(vi.fn());
+  await waitFor(() => assert.equal(result.current.isLoadingProjects, false));
+  const workbenchProjectId = `p-${'b'.repeat(16)}`;
+  act(() => askNewSession({projectId: 'project-2', path: '/repo/two', workbenchProjectId}));
+  assert.equal(result.current.selectedProject?.workbenchProjectId, workbenchProjectId);
+  act(() => askNewSession({projectId: 'project-1', path: '/repo/one'}));
+  assert.equal(result.current.selectedProject?.workbenchProjectId, undefined);
+});
+
 test('an unknown project link only drops the parameter', async () => {
   window.history.replaceState({}, '', '/?project=missing');
   const navigate = vi.fn();
