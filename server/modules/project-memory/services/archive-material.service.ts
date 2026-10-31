@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { memoryArchiveDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
-import { AppError, redactProjectMemoryText as redact } from '@/shared/index.js';
+import { AppError, redactProjectMemoryText as redact, readObjectRecord } from '@/shared/index.js';
 import type { MemoryCheckpoint } from '@/shared/index.js';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -23,7 +23,10 @@ export class ArchiveMaterialService {
     for (;;) {
       const history = await this.reader.fetchHistory(id,{limit:100,...(snapshotId?{snapshotId}:{}),
         ...(before && beforeCursor ? {before,beforeCursor}:{offset})}).catch(error=>{
-          if ((error as AppError).statusCode===404) throw new AppError('会话正文已不存在。',{code:'SESSION_NOT_FOUND',statusCode:404});
+          if ((error as AppError).statusCode===404
+            || ((error as AppError).code==='CODEX_HISTORY_UNAVAILABLE' && readObjectRecord((error as AppError).details)?.missing===true)) {
+            throw new AppError('会话正文已不存在。',{code:'SESSION_NOT_FOUND',statusCode:404});
+          }
           throw error;
         });
       snapshotId=history.snapshotId ?? snapshotId;

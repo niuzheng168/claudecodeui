@@ -41,5 +41,5 @@ export function isCodeyOwnerRequest(request: Parameters<typeof portalSso.authent
 }
 /** Project-memory paths use the verified stable account subject, never a username or request header. */
 export function codeyOwnerAccountId(request: Parameters<typeof portalSso.authenticatedUser>[0]): string | null {
-  return isCodeyOwnerRequest(request) ? portalSso.authenticatedSubject(request) : null;
+  return isCodeyOwnerRequest(request) ? portalSso.authenticatedMemoryAccount(request) : null;
 }

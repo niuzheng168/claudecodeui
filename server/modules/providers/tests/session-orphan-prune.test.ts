@@ -91,6 +91,27 @@ test('synchronizeSessions keeps sessions whose whole transcript directory is mis
   });
 });
 
+test('native Codex archive moves retain the indexed conversation and repair only the transcript path',async()=>{
+  await withIsolatedDatabase(async workspace=>{
+    const active=path.join(workspace,'codex','sessions','2026','10','31');
+    const archived=path.join(workspace,'codex','archived_sessions');
+    await mkdir(active,{recursive:true});await mkdir(archived,{recursive:true});
+    const oldFile=path.join(active,'rollout-test-retained.jsonl');
+    const archivedFile=path.join(archived,'rollout-test-retained.jsonl');
+    await writeFile(archivedFile,'{}\n');
+    sessionsDb.createSession('retained','codex',PROJECT_PATH,'Retained',undefined,undefined,oldFile);
+    sessionsDb.updateSessionIsArchived('retained',true);
+    const before=sessionsDb.getSessionById('retained')!;
+    const result=await sessionSynchronizerService.synchronizeSessions();
+    const after=sessionsDb.getSessionById('retained')!;
+    assert.equal(result.prunedOrphans,0);assert.equal(after.isArchived,1);
+    assert.equal(after.jsonl_path,archivedFile);assert.equal(after.updated_at,before.updated_at);
+    await rm(archivedFile);
+    await sessionSynchronizerService.synchronizeSessions();
+    assert.ok(sessionsDb.getSessionById('retained'),'missing archive material is a visible read failure, not a lost memory source');
+  });
+});
+
 test('synchronizeSessions keeps sessions that have no transcript path yet', async () => {
   await withIsolatedDatabase(async () => {
     // App-created rows (jsonl_path NULL until the first provider write) and

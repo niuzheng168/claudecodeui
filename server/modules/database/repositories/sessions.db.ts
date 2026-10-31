@@ -748,6 +748,10 @@ export const sessionsDb = {
        WHERE session_id = ?`
     ).run(isArchived ? 1 : 0, sessionId);
   },
+  /** Providers repair a native archive move without changing visibility or activity timestamps. */
+  updateSessionTranscriptPath(sessionId: string, jsonlPath: string): void {
+    getConnection().prepare('UPDATE sessions SET jsonl_path=? WHERE session_id=?').run(jsonlPath,sessionId);
+  },
 
   /**
    * Moves a session's `updated_at` back to `updatedAt`; a later date is left

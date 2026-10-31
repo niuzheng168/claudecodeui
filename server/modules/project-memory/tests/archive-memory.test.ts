@@ -10,7 +10,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { initializeDatabase, closeConnection, memoryArchiveDb, sessionsDb } from '@/modules/database/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { sessionsService, synchronizeMemoryArchives } from '@/modules/providers/index.js';
+import type { ICodexRpcClient } from '@/shared/index.js';
 
 import { ProjectMemoryService } from '../services/project-memory.service.js';
 import { ArchiveMaterialService } from '../services/archive-material.service.js';
@@ -120,6 +121,23 @@ test('native first discovery does not backfill; affirmative later archive/restor
   assert.equal(sessionsDb.getSessionById('native-s')!.isArchived,0);
 });
 
+test('native archive discovery indexes missed conversations but first-install historical archives stay silent',async t=>{
+  await fixture(t);
+  const archived=[{id:'old-archived',cwd:'/repo',name:'Old',createdAt:1,updatedAt:2,path:null}];
+  const client={
+    request:async (_method:string,params:{archived:boolean})=>({data:params.archived?archived:[],nextCursor:null}),
+    close:async()=>{},
+  } as unknown as ICodexRpcClient;
+  const options={connect:async()=>client,syncClaude:async()=>{}};
+  await synchronizeMemoryArchives(options);
+  assert.equal(sessionsDb.getSessionById('old-archived')?.isArchived,1);
+  assert.equal(memoryArchiveDb.pending().length,0);
+  archived.push({id:'new-archived',cwd:'/repo',name:'New',createdAt:3,updatedAt:4,path:null});
+  await synchronizeMemoryArchives(options);
+  assert.equal(sessionsDb.getSessionById('new-archived')?.isArchived,1);
+  assert.deepEqual(memoryArchiveDb.pending().map(row=>row.session_id),['new-archived']);
+});
+
 test('source pages all history, redacts credentials, excludes tools, and rejects changed snapshots',async t=>{
   const f=await fixture(t);
   for (let i=0;i<2105;i++) f.add(`fact-${i}`);
@@ -170,6 +188,16 @@ test('reactivation during model inference fences the old result and leaves no su
   f.add('continued fact');const next=await f.archive();await f.worker.tick();
   assert.equal((await f.worker.status('alice',PROJECT,next.jobId)).status,'done');
   assert.match((await f.store.list('alice',PROJECT)).memory[0].body,/pending fact/);
+});
+
+test('main waits for its verified Portal account and never processes a former owner namespace',async t=>{
+  const f=await fixture(t);f.add('owner-isolated fact');const event=await f.archive();
+  await new ArchiveJobsService(f.store,f.request,()=>undefined).tick();
+  await new ArchiveJobsService(f.store,f.request,()=>'another-account').tick();
+  assert.equal(f.data.calls.length,0);
+  assert.equal((await f.worker.status('alice',PROJECT,event.jobId)).status,'queued');
+  await new ArchiveJobsService(f.store,f.request,()=>'alice').tick();
+  assert.equal((await f.worker.status('alice',PROJECT,event.jobId)).status,'done');
 });
 
 test('failed work resumes from its last committed prefix after reactivation and a worker restart',async t=>{

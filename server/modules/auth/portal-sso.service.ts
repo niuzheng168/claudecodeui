@@ -15,7 +15,8 @@ type PortalSsoDependencies = {
 };
 
 const trustedUser = Symbol('codey-verified-portal-user');
-type PortalRequest = IncomingMessage & { [trustedUser]?: PortalUser };
+const trustedMemoryAccount = Symbol('codey-verified-memory-account');
+type PortalRequest = IncomingMessage & { [trustedUser]?: PortalUser; [trustedMemoryAccount]?: string };
 
 /**
  * Used by Auth composition and its tests. It accepts only short-lived,
@@ -78,6 +79,10 @@ export function createPortalSsoService(dependencies: PortalSsoDependencies) {
       }
       const result = Object.freeze({ id: Number(user.id), userId: Number(user.id), username: expectedUser });
       (request as PortalRequest)[trustedUser] = result;
+      if (request.url?.startsWith('/api/codey/memory/') && typeof value.memory_account==='string'
+        && /^[a-zA-Z0-9_-]{1,80}$/.test(value.memory_account)) {
+        (request as PortalRequest)[trustedMemoryAccount]=value.memory_account;
+      }
       return result;
     } catch {
       return null;
@@ -90,7 +95,7 @@ export function createPortalSsoService(dependencies: PortalSsoDependencies) {
     // Only the global middleware can populate this unforgeable in-process mark.
     authenticatedUser: (request: IncomingMessage): PortalUser | null =>
       (request as PortalRequest)[trustedUser] ?? null,
-    authenticatedSubject: (request: IncomingMessage): string | null =>
-      (request as PortalRequest)[trustedUser] ? expectedSubject : null,
+    authenticatedMemoryAccount: (request: IncomingMessage): string | null =>
+      (request as PortalRequest)[trustedMemoryAccount] ?? null,
   };
 }

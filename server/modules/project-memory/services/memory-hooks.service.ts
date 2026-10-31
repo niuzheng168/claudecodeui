@@ -37,7 +37,10 @@ export class MemoryHooksService {
         config.hooks ??= {};
         for (const event of ['SessionEnd','SessionStart']) {
           const groups=config.hooks[event] ?? [];
-          if (!Array.isArray(groups)) throw new Error('Invalid hook group');
+          if (!Array.isArray(groups) || groups.some(group=>!group || typeof group!=='object' || Array.isArray(group)
+            || !Array.isArray(group.hooks) || group.hooks.some((hook:unknown)=>!hook || typeof hook!=='object' || Array.isArray(hook)))) {
+            throw new Error('Invalid hook group');
+          }
           const others=groups.filter(group => !Array.isArray(group?.hooks)
             || !group.hooks.some((hook: {command?:unknown}) => typeof hook.command==='string' && hook.command.includes(managedScript)));
           // Keep unrelated commands even when someone put them in the same group.

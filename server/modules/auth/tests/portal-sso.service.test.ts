@@ -92,3 +92,21 @@ test('SSO configuration cannot silently fall back when its secret is missing', (
   assert.throws(() => createPortalSsoService({ environment: { ...environment, CODEY_PORTAL_SSO_KEY: '' }, users }), /requires a node key/);
   assert.equal(createPortalSsoService({ environment: {}, users }).enabled, false);
 });
+
+test('memory uses only the signed account namespace, never the machine-local subject or an owner header',()=>{
+  const service=createPortalSsoService({
+    environment,clock:()=>now*1000,
+    users:{first:()=>({id:1,username:'operator'}),hasUsers:()=>true,create:()=>{throw new Error('unexpected');},completeOnboarding:()=>{}},
+  });
+  const path='/api/codey/memory/projects/p-aaaaaaaaaaaaaaaa/memory?cursor=100&revision=4';
+  const verified=request(assertion({path,memory_account:'stable-account'}));verified.url=path;
+  assert.ok(service.authenticate(verified));
+  assert.equal(service.authenticatedMemoryAccount(verified),'stable-account');
+  const missing=request(assertion({path}));missing.url=path;missing.headers['x-memory-account']='forged-owner';
+  assert.ok(service.authenticate(missing));
+  assert.equal(service.authenticatedMemoryAccount(missing),null);
+  const invalid=request(assertion({path,memory_account:'../escape'}));invalid.url=path;
+  assert.ok(service.authenticate(invalid));assert.equal(service.authenticatedMemoryAccount(invalid),null);
+  const ordinary=request(assertion({memory_account:'stable-account'}));
+  assert.ok(service.authenticate(ordinary));assert.equal(service.authenticatedMemoryAccount(ordinary),null);
+});

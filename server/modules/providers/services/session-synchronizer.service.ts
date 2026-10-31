@@ -3,6 +3,8 @@ import { access } from 'node:fs/promises';
 
 import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { refreshCodexTranscriptLocation } from '../list/codex/codex-sessions.provider.js';
+import { readCodexHistoryMode } from '../list/codex/codex-thread-storage.repository.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 type SessionSynchronizeResult = {
@@ -37,9 +39,18 @@ const pruneOrphanedSessions = async (): Promise<number> => {
   const knownDirectoryExists = new Map<string, boolean>();
   let pruned = 0;
 
-  for (const { session_id: sessionId, jsonl_path: jsonlPath } of sessionsDb.getSessionsWithTranscriptPath()) {
+  for (const { session_id: sessionId, provider, jsonl_path: jsonlPath } of sessionsDb.getSessionsWithTranscriptPath()) {
     if (await pathExists(jsonlPath)) {
       continue;
+    }
+    if (provider==='codex') {
+      if (await refreshCodexTranscriptLocation(sessionId)) continue;
+      const session=sessionsDb.getSessionById(sessionId);
+      if (session?.isArchived) continue; // Missing material is reported, not silently unindexed during archive processing.
+      try {
+        const mode=await readCodexHistoryMode(session?.provider_session_id ?? sessionId);
+        if (mode && mode!=='legacy') continue; // An optional export is not native history.
+      } catch { continue; } // A locked/unavailable native index is not proof of deletion.
     }
 
     const directory = path.dirname(jsonlPath);

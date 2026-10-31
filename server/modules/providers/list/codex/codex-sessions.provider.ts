@@ -206,6 +206,16 @@ async function findCodexHistorySource(filePath: string, threadId: string): Promi
   return null;
 }
 
+/** History reads and orphan pruning follow a rollout moved into native archived_sessions without reviving it. */
+export async function refreshCodexTranscriptLocation(sessionId:string): Promise<boolean> {
+  const session=sessionsDb.getSessionById(sessionId);
+  if (session?.provider!=='codex' || !session.jsonl_path) return false;
+  const resolved=await findCodexHistorySource(session.jsonl_path,session.provider_session_id ?? sessionId);
+  if (!resolved) return false;
+  if (resolved!==session.jsonl_path) sessionsDb.updateSessionTranscriptPath(sessionId,resolved);
+  return true;
+}
+
 /**
  * Codex 0.160 paginated forks keep a frozen prefix in `history_base` instead
  * of copying it. Read each ancestor only through its recorded byte boundary,
@@ -1305,6 +1315,7 @@ const CODEX_COLLABORATION_CONTROL_TOOLS = new Set([
  * `normalizeHistoryEntry` turns into `NormalizedMessage`s.
  */
 async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryResult> {
+  await refreshCodexTranscriptLocation(sessionId);
   const sessionFilePath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
 
   if (!sessionFilePath) {
@@ -2511,6 +2522,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         // conversation. Returning [] would cache the failure as successful history.
         throw new AppError('Cannot read this Codex conversation. Check the node and retry loading its history.', {
           code: 'CODEX_HISTORY_UNAVAILABLE', statusCode: 503,
+          details: { missing: (error as NodeJS.ErrnoException).code==='ENOENT' },
         });
       }
     }

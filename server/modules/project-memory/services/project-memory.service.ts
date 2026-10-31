@@ -469,10 +469,9 @@ export class ProjectMemoryService {
     });
   }
   /** Worker restart recovery scans metadata, not conversation files. */
-  async pendingJobs(): Promise<ProjectMemoryJob[]> {
+  async pendingJobs(boundOwner?: string): Promise<ProjectMemoryJob[]> {
     const result: ProjectMemoryJob[] = [];
     for (const owner of await readdir(this.root).catch(() => [] as string[])) {
-      const boundOwner=(this.dependencies.environment ?? process.env).CODEY_PORTAL_PRINCIPAL_ID;
       if (!/^[a-zA-Z0-9_-]{1,80}$/.test(owner) || (boundOwner && owner!==boundOwner)) continue;
       for (const project of await readdir(path.join(this.root,owner,'projects')).catch(() => [] as string[])) {
         if (!/^p-[a-f0-9]{16}$/.test(project)) continue;

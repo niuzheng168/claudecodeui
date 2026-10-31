@@ -118,8 +118,8 @@ export const memoryArchiveDb = {
       db.prepare('INSERT OR REPLACE INTO memory_native_archives VALUES(?,?,?,?,?,?)')
         .run(provider,nativeId,archived?1:0,Date.now(),activity ?? previous?.activity ?? '',recheck?1:0);
       if (apply && !baseline && (!previous || Boolean(previous.archived)!==archived)) {
-        db.prepare('UPDATE sessions SET isArchived=? WHERE provider=? AND (provider_session_id=? OR session_id=?)')
-          .run(archived?1:0,provider,nativeId,nativeId);
+        db.prepare('UPDATE sessions SET isArchived=? WHERE provider=? AND coalesce(provider_session_id,session_id)=?')
+          .run(archived?1:0,provider,nativeId);
       }
     })();
   },

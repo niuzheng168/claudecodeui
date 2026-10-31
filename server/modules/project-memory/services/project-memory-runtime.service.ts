@@ -12,6 +12,8 @@ import { MemoryHooksService } from './memory-hooks.service.js';
 
 type PortalRequest = (method:string,path:string,options:{body?:unknown})=>Promise<unknown>;
 let request: PortalRequest|undefined;
+let accountOwner: string|undefined;
+let nextIdentityCheck=0;
 /** Routes and the runtime deliberately share one store/worker instance. */
 export const projectMemoryStore=new ProjectMemoryService();
 /** Signed source routes and the outbox share the same content-bound material reader. */
@@ -20,7 +22,7 @@ export const archiveMaterial=new ArchiveMaterialService();
 export const archiveJobs=new ArchiveJobsService(projectMemoryStore,(path,body) => {
   if (!request) throw new AppError('Codey Portal client unavailable.',{statusCode:503});
   return request('POST',path,{body});
-});
+},()=>accountOwner);
 const hooks=new MemoryHooksService();
 let timers: NodeJS.Timeout[]=[];
 let unsubscribe: (()=>void)|undefined;
@@ -33,6 +35,14 @@ async function sourceTick() {
   if (sourceBusy || !request) return;
   sourceBusy=true;
   try {
+    if (Date.now()>=nextIdentityCheck) {
+      nextIdentityCheck=Date.now()+10000;
+      try {
+        const identity=await request('GET','/api/v1/me',{}) as {user?:{id?:unknown}};
+        accountOwner=typeof identity.user?.id==='string' && /^[a-zA-Z0-9_-]{1,80}$/.test(identity.user.id) ? identity.user.id:undefined;
+        if (accountOwner) nextIdentityCheck=Date.now()+60000;
+      } catch { accountOwner=undefined; }
+    }
     if (await hooks.takeWake() || Date.now()>=nextScan) {
       nextScan=Date.now()+60000;
       try { integration={...integration,nativeSync:await synchronizeMemoryArchives()}; }
@@ -95,5 +105,5 @@ export async function initializeProjectMemory(): Promise<void> {
 }
 /** The node entrypoint stops schedulers without deleting jobs or interrupting native agent sessions. */
 export function closeProjectMemory(): void {
-  timers.forEach(timer=>clearInterval(timer));timers=[];unsubscribe?.();unsubscribe=undefined;
+  timers.forEach(timer=>clearInterval(timer));timers=[];unsubscribe?.();unsubscribe=undefined;accountOwner=undefined;
 }

@@ -9,7 +9,8 @@ import { ProjectMemoryService } from './project-memory.service.js';
 export class ArchiveJobsService {
   private busy=false;
   constructor(private readonly store: ProjectMemoryService,
-    private readonly request: (path:string,body:unknown)=>Promise<unknown>) {}
+    private readonly request: (path:string,body:unknown)=>Promise<unknown>,
+    private readonly accountOwner?: ()=>string|undefined) {}
 
   async enqueue(owner:string,project:string,value:unknown) {
     const body=value as {jobId?:unknown;source?:ProjectMemoryJob['source']};
@@ -36,10 +37,12 @@ export class ArchiveJobsService {
   }
   async tick() {
     if (this.busy) return;
+    const owner=this.accountOwner?.();
+    if (this.accountOwner && !owner) return;
     this.busy=true;
     try {
       const selected=new Map<string,ProjectMemoryJob>();
-      for (const job of (await this.store.pendingJobs()).sort((a,b)=>a.nextAt-b.nextAt)) if (!selected.has(`${job.owner}/${job.project}`)) selected.set(`${job.owner}/${job.project}`,job);
+      for (const job of (await this.store.pendingJobs(owner)).sort((a,b)=>a.nextAt-b.nextAt)) if (!selected.has(`${job.owner}/${job.project}`)) selected.set(`${job.owner}/${job.project}`,job);
       await Promise.all([...selected.values()].slice(0,2).map(job => this.process(job)));
     } finally { this.busy=false; }
   }
