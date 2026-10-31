@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 
-type State = { session_id: string; revision: number; archived: number; content_revision: string; pending: number };
+type State = { session_id: string; revision: number; archived: number; content_revision: string; pending: number; skip_memory: number };
 const initialized = new WeakSet<object>();
 const mirrorInitialized = new WeakSet<object>();
 function mirrors() {
@@ -43,12 +43,17 @@ export const memoryArchiveDb = {
       );
       CREATE TABLE IF NOT EXISTS memory_archive_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       INSERT OR IGNORE INTO memory_archive_state (session_id,revision,archived)
-        SELECT session_id,1,isArchived FROM sessions;
-      CREATE TRIGGER IF NOT EXISTS memory_archive_transition AFTER UPDATE OF isArchived ON sessions
+        SELECT session_id,1,isArchived FROM sessions;`);
+      const stateColumns=db.prepare('PRAGMA table_info(memory_archive_state)').all() as {name:string}[];
+      if (!stateColumns.some(column=>column.name==='skip_memory')) {
+        db.exec('ALTER TABLE memory_archive_state ADD COLUMN skip_memory INTEGER NOT NULL DEFAULT 0');
+      }
+      db.exec(`DROP TRIGGER IF EXISTS memory_archive_transition;
+      CREATE TRIGGER memory_archive_transition AFTER UPDATE OF isArchived ON sessions
       WHEN OLD.isArchived <> NEW.isArchived BEGIN
         INSERT INTO memory_archive_state(session_id,revision,archived,pending)
           VALUES(NEW.session_id,1,NEW.isArchived,1)
-          ON CONFLICT(session_id) DO UPDATE SET revision=revision+1,archived=NEW.isArchived,content_revision='',pending=1;
+          ON CONFLICT(session_id) DO UPDATE SET revision=revision+1,archived=NEW.isArchived,content_revision='',pending=1,skip_memory=0;
       END;`);
       const columns=db.prepare('PRAGMA table_info(memory_native_archives)').all() as {name:string}[];
       if (!columns.some(column=>column.name==='activity')) db.exec("ALTER TABLE memory_native_archives ADD COLUMN activity TEXT NOT NULL DEFAULT ''");
@@ -63,6 +68,22 @@ export const memoryArchiveDb = {
   pending(): State[] {
     this.initialize();
     return getConnection().prepare('SELECT * FROM memory_archive_state WHERE pending=1 ORDER BY revision,session_id LIMIT 20').all() as State[];
+  },
+  /** Providers archive and opt out atomically, before a hook/outbox reader can see this generation. */
+  archiveWithoutMemory(id: string): void {
+    this.initialize();
+    const db=getConnection();
+    db.transaction(() => {
+      const session=db.prepare('SELECT isArchived FROM sessions WHERE session_id=?').get(id) as {isArchived:number}|undefined;
+      if (!session) return;
+      db.prepare('UPDATE sessions SET isArchived=1 WHERE session_id=?').run(id);
+      // Repeating the same request is idempotent. Opting out of an already
+      // archived generation advances its fence, cancelling work still in flight.
+      db.prepare(`INSERT INTO memory_archive_state(session_id,revision,archived,content_revision,pending,skip_memory)
+        VALUES(?,1,1,'',1,1) ON CONFLICT(session_id) DO UPDATE SET
+        skip_memory=1,revision=revision+?,content_revision='',pending=1 WHERE skip_memory=0`)
+        .run(id,session.isArchived ? 1:0);
+    })();
   },
   captured(id: string, revision: number, digest: string): boolean {
     return getConnection().prepare('UPDATE memory_archive_state SET content_revision=? WHERE session_id=? AND revision=?')
@@ -81,7 +102,8 @@ export const memoryArchiveDb = {
     this.initialize();
     return getConnection().prepare(`SELECT n.provider,n.native_id,n.activity,s.session_id FROM memory_native_archives n
       JOIN sessions s ON s.provider=n.provider AND coalesce(s.provider_session_id,s.session_id)=n.native_id
-      WHERE n.recheck=1 AND n.archived=1 LIMIT 10`).all() as Array<{provider:string;native_id:string;activity:string;session_id:string}>;
+      LEFT JOIN memory_archive_state m ON m.session_id=s.session_id
+      WHERE n.recheck=1 AND n.archived=1 AND coalesce(m.skip_memory,0)=0 LIMIT 10`).all() as Array<{provider:string;native_id:string;activity:string;session_id:string}>;
   },
   /** Detect a full active→archive cycle missed while offline without treating a rename as new conversation content. */
   finishNativeCheck(provider:string,nativeId:string,activity:string,digest?:string): void {
@@ -89,6 +111,11 @@ export const memoryArchiveDb = {
     db.transaction(()=>{
       if (!db.prepare('SELECT 1 FROM memory_native_archives WHERE provider=? AND native_id=? AND activity=? AND recheck=1 AND archived=1')
         .get(provider,nativeId,activity)) return;
+      // A stale scan must not manufacture a restore that clears an explicit
+      // opt-out. Only an observed restore/active turn starts a new generation.
+      if (db.prepare(`SELECT 1 FROM memory_archive_state m JOIN sessions s ON s.session_id=m.session_id
+        WHERE s.provider=? AND coalesce(s.provider_session_id,s.session_id)=? AND m.skip_memory=1`)
+        .get(provider,nativeId)) return;
       const previous=db.prepare('SELECT value FROM memory_archive_settings WHERE key=?').get(`digest:${provider}:${nativeId}`) as {value:string}|undefined;
       if (digest && previous && previous.value!==digest) {
         // Both writes and the outbox generation changes are one transaction.

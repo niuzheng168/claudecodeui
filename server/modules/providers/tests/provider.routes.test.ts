@@ -9,7 +9,7 @@ import test from 'node:test';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb, memoryArchiveDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
@@ -91,6 +91,26 @@ test('session creation route names a CloudCLI session from the initial message',
       'abcd efg hij klm',
     );
     assert.equal(sessionsDb.getSessionById(payload.data.sessionId)?.custom_name_source, 'auto');
+  });
+});
+
+test('archive-without-memory retains history, rejects deletion options, and is reversible', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    sessionsDb.createSession('archive-note-opt-out','claude',workspacePath,'Keep the session');
+    const url=`${baseUrl}/api/providers/sessions/archive-note-opt-out/archive-without-memory`;
+    for (const [suffix,body] of [['?force=true',{}],['',{deletedFromDisk:true}],['',[]]] as const) {
+      const response=await fetch(url+suffix,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+      assert.equal(response.status,400);
+      assert.equal(sessionsDb.getSessionById('archive-note-opt-out')!.isArchived,0);
+    }
+    const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+    assert.equal(response.status,200);
+    const result=await response.json() as {data:{action:string;memorySkipped:boolean;deletedFromDisk:boolean}};
+    assert.deepEqual(result.data,{sessionId:'archive-note-opt-out',action:'archived',memorySkipped:true,deletedFromDisk:false});
+    assert.equal(memoryArchiveDb.get('archive-note-opt-out')!.skip_memory,1);
+    assert.equal((await fetch(`${baseUrl}/api/providers/sessions/archive-note-opt-out/restore`,{method:'POST'})).status,200);
+    assert.equal(memoryArchiveDb.get('archive-note-opt-out')!.skip_memory,0);
+    assert.equal((await fetch(url.replace('archive-note-opt-out','missing'),{method:'POST'})).status,404);
   });
 });
 

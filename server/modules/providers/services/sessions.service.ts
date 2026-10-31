@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import { getDatabasePath, projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { getDatabasePath, projectsDb, sessionsDb, memoryArchiveDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { readCodexHistoryMode } from '@/modules/providers/list/codex/codex-thread-storage.repository.js';
@@ -824,8 +824,9 @@ export const sessionsService = {
     options: {
       force?: boolean;
       deletedFromDisk?: boolean;
+      skipMemory?: boolean;
     } = {},
-  ): Promise<{ sessionId: string; action: 'archived' | 'deleted'; deletedFromDisk: boolean }> {
+  ): Promise<{ sessionId: string; action: 'archived' | 'deleted'; deletedFromDisk: boolean; memorySkipped?: true }> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
@@ -835,11 +836,13 @@ export const sessionsService = {
     }
 
     if (!options.force) {
-      sessionsDb.updateSessionIsArchived(sessionId, true);
+      if (options.skipMemory) memoryArchiveDb.archiveWithoutMemory(sessionId);
+      else sessionsDb.updateSessionIsArchived(sessionId, true);
       return {
         sessionId,
         action: 'archived',
         deletedFromDisk: false,
+        ...(options.skipMemory ? { memorySkipped: true as const } : {}),
       };
     }
 

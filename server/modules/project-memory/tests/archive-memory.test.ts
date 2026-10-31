@@ -40,7 +40,7 @@ async function fixture(t:test.TestContext) {
       const end=Math.max(0,data.messages.length-(options.offset ?? 0)),start=Math.max(0,end-(options.limit ?? 100));
       return {messages:data.messages.slice(start,end),hasMore:start>0,snapshotId:'test-snapshot'};
     },
-  } as unknown as ConstructorParameters<typeof ArchiveMaterialService>[0];
+  } as unknown as NonNullable<ConstructorParameters<typeof ArchiveMaterialService>[0]>;
   const material=new ArchiveMaterialService(reader);
   const dependencies={
     root:path.join(root,'accounts'),environment:{},
@@ -105,6 +105,73 @@ test('baseline is silent; explicit archive, implicit reactivation and rearchive 
   assert.equal(next.revision,first.revision+2);
   memoryArchiveDb.acknowledge('native-s',first.revision);
   assert.equal(memoryArchiveDb.pending().length,1,'an old acknowledgement cannot erase a newer transition');
+});
+
+test('archive without memory is durable and idempotent, reads no transcript, and refuses material to workers', async t => {
+  const f=await fixture(t);f.add('private note that must not reach memory');
+  f.reader.fetchHistory=async () => { throw new Error('Opt-out must not read history'); };
+  const result=await sessionsService.deleteOrArchiveSessionById('native-s',{skipMemory:true});
+  assert.equal(result.memorySkipped,true);
+  const first=memoryArchiveDb.get('native-s')!;
+  assert.equal(first.archived,1);assert.equal(first.skip_memory,1);
+  const hash=await f.material.capture('native-s',first.revision);
+  const request={archived:true,archiveRevision:String(first.revision),contentRevision:hash};
+  const verified=await f.material.read('native-s',{...request,verifyOnly:true});
+  assert.equal(verified.skipMemory,true);assert.equal(verified.total,0);
+  await assert.rejects(f.material.read('native-s',request),{statusCode:409});
+  await sessionsService.deleteOrArchiveSessionById('native-s',{skipMemory:true});
+  await sessionsService.deleteOrArchiveSessionById('native-s'); // A retry cannot override the opt-out.
+  assert.equal(memoryArchiveDb.get('native-s')!.revision,first.revision);
+  closeConnection();await initializeDatabase();
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,1);
+  assert.equal((await f.material.read('native-s',{...request,verifyOnly:true})).skipMemory,true);
+  assert.equal(f.data.calls.length,0);
+  assert.equal((await f.store.list('alice',PROJECT)).memory.length,0);
+});
+
+test('hooks and catch-up preserve the opt-out until a real restore; a later ordinary archive can update memory', async t => {
+  const f=await fixture(t);f.add('a fact for a later explicit ordinary archive');
+  memoryArchiveDb.observeNative('codex','native-s',false,true,undefined,'old');
+  memoryArchiveDb.rememberDigest('native-s',sha('previous content'));
+  await sessionsService.deleteOrArchiveSessionById('native-s',{skipMemory:true});
+  const revision=memoryArchiveDb.get('native-s')!.revision;
+  memoryArchiveDb.observeNative('codex','native-s',true,false,undefined,'archived');
+  memoryArchiveDb.observeNative('codex','native-s',true,false,undefined,'renamed');
+  assert.equal(memoryArchiveDb.nativeRechecks().length,0);
+  memoryArchiveDb.finishNativeCheck('codex','native-s','renamed',sha('different'));
+  assert.equal(memoryArchiveDb.get('native-s')!.revision,revision);
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,1);
+  memoryArchiveDb.observeNative('codex','native-s',false);
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,0);
+  const next=await f.archive();await f.worker.tick();
+  assert.equal((await f.worker.status('alice',PROJECT,next.jobId)).status,'done');
+  assert.ok(f.data.calls.length>0);
+});
+
+test('opting out of an already queued archive fences the old worker without changing existing memory', async t => {
+  const f=await fixture(t);f.add('never summarize this pending archive');
+  const pending=await f.archive();
+  await sessionsService.deleteOrArchiveSessionById('native-s',{skipMemory:true});
+  assert.ok(memoryArchiveDb.get('native-s')!.revision>Number(pending.archiveRevision));
+  await f.worker.tick();
+  assert.equal((await f.worker.status('alice',PROJECT,pending.jobId)).status,'cancelled');
+  assert.equal(f.data.calls.length,0);
+  assert.equal((await f.store.list('alice',PROJECT)).memory.length,0);
+});
+
+test('an old outbox schema is migrated without queuing historical archives', async t => {
+  const f=await fixture(t);
+  closeConnection();
+  const legacy=new Database(path.join(f.root,'auth.db'));
+  legacy.exec('DROP TRIGGER memory_archive_transition; ALTER TABLE memory_archive_state DROP COLUMN skip_memory');
+  legacy.close();
+  await initializeDatabase();memoryArchiveDb.initialize();
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,0);
+  assert.equal(memoryArchiveDb.pending().length,0);
+  await sessionsService.deleteOrArchiveSessionById('native-s',{skipMemory:true});
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,1);
+  sessionsService.restoreSessionById('native-s');
+  assert.equal(memoryArchiveDb.get('native-s')!.skip_memory,0);
 });
 
 test('native first discovery does not backfill; affirmative later archive/restore changes are carried once',async t=>{

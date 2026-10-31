@@ -953,6 +953,19 @@ router.delete(
 );
 
 router.post(
+  '/sessions/:sessionId/archive-without-memory',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    // A separate route fails closed on older nodes; never fall back to DELETE.
+    if (Object.keys(req.query).length || (req.body != null && (
+      typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).length
+    ))) throw new AppError('Archive without memory accepts no options.', {statusCode:400});
+    const result = await sessionsService.deleteOrArchiveSessionById(sessionId, { skipMemory: true });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.post(
   '/sessions/:sessionId/restore',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);

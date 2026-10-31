@@ -15,7 +15,7 @@ export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerR
     }
     next();
   });
-  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true},integration:memoryIntegrationStatus()}));
+  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true,archiveWithoutMemory:true},integration:memoryIntegrationStatus()}));
   router.post('/projects/:project/notes/:operation', asyncHandler(async (req, res) => {
     const owner = accountId(req), project = String(req.params.project), operation = String(req.params.operation);
     if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});

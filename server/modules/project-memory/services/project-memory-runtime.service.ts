@@ -75,7 +75,7 @@ async function sourceTick() {
         await request('POST','/api/v1/memory/archive-events',{body:{
           eventId:createHash('sha256').update(`${state.session_id}/${state.revision}`).digest('hex'),
           provider:row.provider,sessionId:row.session_id,nativeSessionId:row.provider_session_id ?? row.session_id,
-          archived:Boolean(state.archived),archiveRevision:String(state.revision),contentRevision,
+          archived:Boolean(state.archived),archiveRevision:String(state.revision),contentRevision,skipMemory:Boolean(state.skip_memory),
         }});
         memoryArchiveDb.acknowledge(state.session_id,state.revision);
       } catch { /* Durable latest-state outbox survives offline nodes, restores and restart. */ }

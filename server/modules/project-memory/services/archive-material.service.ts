@@ -55,10 +55,10 @@ export class ArchiveMaterialService {
     const state=memoryArchiveDb.get(id);
     if (!state || state.revision!==revision) stale();
     let hash=digest('');
-    if (state.archived) hash=await this.fingerprint(id);
+    if (state.archived && !state.skip_memory) hash=await this.fingerprint(id);
     const current=memoryArchiveDb.get(id);
     if (!current || current.revision!==revision || !memoryArchiveDb.captured(id,revision,hash)) stale();
-    if (state.archived) memoryArchiveDb.rememberDigest(id,hash);
+    if (state.archived && !state.skip_memory) memoryArchiveDb.rememberDigest(id,hash);
     return hash;
   }
 
@@ -81,13 +81,15 @@ export class ArchiveMaterialService {
     const state=memoryArchiveDb.get(session.session_id);
     if (!state || String(state.revision)!==body.archiveRevision || Boolean(state.archived)!==body.archived
       || state.content_revision!==body.contentRevision || Boolean(session.isArchived)!==body.archived) stale();
-    const pieces=body.archived ? await this.pieces(session.session_id) : [];
+    if (state.skip_memory && !body.verifyOnly) stale();
+    const pieces=body.archived && !state.skip_memory ? await this.pieces(session.session_id) : [];
     const hashes=[digest('')];
     for (const piece of pieces) hashes.push(digest(`${hashes.at(-1)}\n${piece}`));
     if (hashes.at(-1)!==body.contentRevision || memoryArchiveDb.get(session.session_id)?.revision!==state.revision) stale();
     const details=this.reader.getSessionDetailsById(session.session_id);
     const identity={details:{...details,project:details.project ?? (session.project_path ? {path:session.project_path}:null)},
-      provider:session.provider,nativeSessionId:session.provider_session_id ?? session.session_id,contentRevision:body.contentRevision,total:pieces.length};
+      provider:session.provider,nativeSessionId:session.provider_session_id ?? session.session_id,contentRevision:body.contentRevision,total:pieces.length,
+      skipMemory:Boolean(state.skip_memory)};
     if (body.verifyOnly) return identity;
     let cursor=Number(body.cursor ?? 0);
     if (body.cursor===undefined && body.checkpoint) {
