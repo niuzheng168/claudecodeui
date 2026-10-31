@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHmac, randomBytes } from 'node:crypto';
+import { once } from 'node:events';
 import type { IncomingMessage } from 'node:http';
 import test from 'node:test';
+
+import express from 'express';
+import type { ErrorRequestHandler } from 'express';
+
+import { createAzureDevOpsRoutes } from '@/modules/azure-devops/index.js';
 
 import { createPortalSsoService } from '../portal-sso.service.js';
 
@@ -109,4 +115,59 @@ test('memory uses only the signed account namespace, never the machine-local sub
   assert.ok(service.authenticate(invalid));assert.equal(service.authenticatedMemoryAccount(invalid),null);
   const ordinary=request(assertion({memory_account:'stable-account'}));
   assert.ok(service.authenticate(ordinary));assert.equal(service.authenticatedMemoryAccount(ordinary),null);
+});
+
+test('ADO accepts request-bound owner SSO without a memory-only claim; forged owners and replay still fail', async t => {
+  const sso = createPortalSsoService({
+    environment, clock: () => now * 1000,
+    users: {
+      first: () => ({ id: 7, username: 'operator' }), hasUsers: () => true,
+      create: () => { throw new Error('unexpected create'); }, completeOnboarding: () => {},
+    },
+  });
+  let calls = 0;
+  const service = {
+    read: async () => {
+      calls++;
+      return { contract: 1, title: 'Example', queryType: 'item', items: [], columns: [], relations: [], missingIds: [], truncated: false, fetchedAt: new Date().toISOString() };
+    },
+  };
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    sso.authenticate(req);
+    // An attacker-controlled user/header must not become the trusted owner mark.
+    Object.assign(req, { user: { username: 'operator' } });
+    next();
+  });
+  app.use('/api/codey/azure-devops', createAzureDevOpsRoutes(service, req => {
+    assert.equal(sso.authenticatedMemoryAccount(req), null);
+    return sso.authenticatedUser(req) !== null;
+  }));
+  app.use(((error, _req, res, _next) => {
+    res.status(error.statusCode ?? 500).json({ code: error.code });
+  }) as ErrorRequestHandler);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const route = '/api/codey/azure-devops/read';
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}${route}`;
+  const post = (token?: string) => fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-memory-account': 'forged-owner',
+      ...(token ? { 'x-codey-workspace-assertion': token } : {}) },
+    body: JSON.stringify({ organization: 'example-org', project: 'Example', kind: 'item', id: '123' }),
+  });
+  for (const token of [undefined, 'unsigned',
+    assertion({ method: 'POST', path: route, sub: 'other-owner' }),
+    assertion({ method: 'POST', path: route, aud: 'other-node' }),
+    assertion({ method: 'GET', path: route }),
+    assertion({ method: 'POST', path: '/api/projects' }),
+  ]) assert.equal((await post(token)).status, 403);
+  assert.equal(calls, 0);
+  const valid = assertion({ method: 'POST', path: route });
+  assert.equal((await post(valid)).status, 200);
+  assert.equal(calls, 1);
+  assert.equal((await post(valid)).status, 403);
+  assert.equal(calls, 1);
 });

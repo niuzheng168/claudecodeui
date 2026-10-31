@@ -117,8 +117,7 @@ test('node routes require verified owner SSO and reject non-target input before 
   const app = express();
   app.use(express.json({ limit: '8kb' }));
   app.use('/guarded', createAzureDevOpsRoutes(service));
-  app.use('/missing-account', createAzureDevOpsRoutes(service, () => true, () => null));
-  app.use('/test', createAzureDevOpsRoutes(service, () => true, () => 'alice'));
+  app.use('/test', createAzureDevOpsRoutes(service, () => true));
   app.use(((error, _req, res, _next) => {
     res.status(error.statusCode ?? 500).json({ code: error.code, error: error.message });
   }) as ErrorRequestHandler);
@@ -130,7 +129,6 @@ test('node routes require verified owner SSO and reject non-target input before 
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value),
   });
   assert.equal((await post('guarded', target)).status, 403);
-  assert.equal((await post('missing-account', target)).status, 403);
   for (const input of [
     null, {}, { ...target, token: 'bad' }, { ...target, project: '../other' }, { ...target, organization: 'example.org/other' },
     { ...target, kind: 'write' }, { ...target, kind: 'item', id: '2147483648' }, { ...target, id: '123' },

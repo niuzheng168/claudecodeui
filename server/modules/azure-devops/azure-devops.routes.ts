@@ -1,6 +1,6 @@
 import express from 'express';
 
-import { codeyOwnerAccountId, isCodeyOwnerRequest } from '@/modules/auth/index.js';
+import { isCodeyOwnerRequest } from '@/modules/auth/index.js';
 import { AppError, asyncHandler } from '@/shared/index.js';
 import type { AzureDevOpsTarget } from '@/shared/index.js';
 
@@ -24,12 +24,13 @@ function target(body: unknown): AzureDevOpsTarget {
 export function createAzureDevOpsRoutes(
   service: Pick<AzureDevOpsService, 'read'> = new AzureDevOpsService(),
   isOwner = isCodeyOwnerRequest,
-  accountId = codeyOwnerAccountId,
 ) {
   const router = express.Router();
   router.use((req, res, next) => {
     res.setHeader('cache-control', 'private, no-store');
-    if (!isOwner(req) || !accountId(req)) {
+    // ADO uses this node's verified owner identity, not project memory's
+    // separately signed account namespace (which exists only on memory paths).
+    if (!isOwner(req)) {
       next(new AppError('Azure DevOps requires owner SSO.', { code: 'ADO_FORBIDDEN', statusCode: 403 }));
     } else next();
   });
