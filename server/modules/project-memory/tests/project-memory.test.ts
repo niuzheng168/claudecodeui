@@ -178,7 +178,7 @@ test('legacy migration is idempotent and deleting a project removes Markdown and
 test('credentials are redacted from material before the model call', async t => {
   const f = await fixture(t);
   await f.service.summarize('alice', PROJECT, { ...event(), transcript: `password=hunter2\nBearer hidden\nsk-${'a'.repeat(40)}\nUser: use Postgres` });
-  const input = f.calls[0].input[0].content;
+  const input = f.calls[0].input[1].content;
   assert.ok(!input.includes('hunter2') && !input.includes('Bearer hidden') && !input.includes(`sk-${'a'.repeat(40)}`));
   assert.match(input, /credential omitted/);
 });
@@ -284,7 +284,7 @@ test('users explicitly enable and disable automatic maintenance, independently o
   assert.equal(changed.title, 'Rules');
   assert.equal(changed.source, 'user', 'origin is not the automatic-edit permission');
   assert.equal(changed.body, 'verified rule');
-  const input = JSON.parse(f.calls.at(-1)!.input[0].content);
+  const input = JSON.parse(f.calls.at(-1)!.input[1].content);
   assert.equal(input.memory[0].mode, 'auto');
   await f.service.update('alice', PROJECT, memory.id, { mode: 'manual', version: changed.version });
   await assert.rejects(f.service.summarize('alice', PROJECT, event(2)), { statusCode: 409 });
@@ -297,6 +297,6 @@ test('invalidated files cannot be revived by the model even when automatic maint
   await f.service.update('alice', PROJECT, memory.id, { version: 1, state: 'invalidated', mode: 'auto' });
   f.response.make = async () => completed({ upserts: [{ id: memory.id, version:2, filename: memory.filename, kind: 'fact', body: 'revived' }], remove: [] });
   await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 409 });
-  const input = JSON.parse(f.calls[0].input[0].content);
+  const input = JSON.parse(f.calls[0].input[1].content);
   assert.ok(input.memory.every((entry: {id:string}) => entry.id!==memory.id));
 });

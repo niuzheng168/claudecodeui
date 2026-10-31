@@ -47,7 +47,8 @@ async function fixture(t:test.TestContext) {
     modelEndpoint:()=>({url:'http://model.test/responses',headers:{}}),
     fetch:(async (_url,init)=>{
       const request=JSON.parse(String(init?.body));data.calls.push(request);
-      const input=JSON.parse(request.input[0].content);
+      assert.match(request.input[0].content, /JSON/);
+      const input=JSON.parse(request.input[1].content);
       if (request.instructions.startsWith('提取')) return completed({
         facts:input.transcript.split('\n').filter(Boolean).map((line:string)=>JSON.parse(line).text),
       });
@@ -173,7 +174,7 @@ test('archive → active → rearchive processes only the successful suffix; unc
   assert.equal((await f.worker.status('alice',PROJECT,next.jobId)).status,'done');
   const extracts=f.data.calls.filter(call=>call.instructions.startsWith('提取'));
   assert.equal(extracts.length,2);
-  assert.doesNotMatch(JSON.parse(extracts[1].input[0].content).transcript,/first verified fact/);
+  assert.doesNotMatch(JSON.parse(extracts[1].input[1].content).transcript,/first verified fact/);
   const files=(await f.store.list('alice',PROJECT)).memory;
   assert.equal(files.length,1);assert.equal(files[0].version,2);
   assert.match(files[0].body,/first verified fact/);assert.match(files[0].body,/second verified fact/);
@@ -321,7 +322,7 @@ test('more than 512 topics remain paged and old Chinese topics are retrieved wit
   await f.store.create('alice',PROJECT,{filename:'new-topic.md',kind:'fact',body:'Works past the old file-count cap.'});
   await assert.rejects(f.store.list('alice',PROJECT,100,first.revision),{statusCode:409});
   await f.store.summarize('alice',PROJECT,{eventId:sha('old-topic-search'),source:`session:${NODE}/native-s`,transcript:'超导部署的回滚要求。'});
-  const input=JSON.parse(f.data.calls.at(-1)!.input[0].content);
+  const input=JSON.parse(f.data.calls.at(-1)!.input[1].content);
   assert.ok(input.memory.some((entry:{id:string})=>entry.id===target.id));
   assert.ok(input.memory.length<20);assert.ok(Buffer.byteLength(JSON.stringify(input))<24000);
 });

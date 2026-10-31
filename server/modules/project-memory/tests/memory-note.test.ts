@@ -56,6 +56,20 @@ test('a note previews without writing knowledge, then confirms atomically as man
   assert.equal(f.calls.length, 1, 'confirmation never calls the model');
 });
 
+test('JSON mode is explicitly instructed in an input message, independently of the user material', async t => {
+  const f = await fixture(t);
+  f.response.make = async () => {
+    const request = f.calls.at(-1)!;
+    assert.deepEqual(request.text, { format: { type: 'json_object' } });
+    const instruction = request.input.find((message: { role: string }) => message.role === 'developer');
+    assert.match(instruction?.content ?? '', /JSON/);
+    const material = request.input.find((message: { role: string }) => message.role === 'user');
+    assert.deepEqual(JSON.parse(material.content).note, '生产环境使用 PostgreSQL');
+    return completed({ changes: [fresh()] });
+  };
+  assert.equal((await f.service.previewNote('alice', PROJECT, { text: '生产环境使用 PostgreSQL' })).changes.length, 1);
+});
+
 test('explicit confirmation can merge protected knowledge but preserves its old content until confirmed', async t => {
   const f = await fixture(t);
   const old = (await f.service.create('alice', PROJECT, { kind: 'rule', title: '部署', body: '先跑测试。', filename: 'deploy.md' })).memory;
@@ -132,7 +146,7 @@ test('large context excerpts cannot be used to replace a full existing file', as
   const old = (await f.service.create('alice', PROJECT, { kind: 'environment', title: '生产数据库', body: '数据库约定。'.repeat(4000) })).memory;
   f.response.make = async () => completed({ changes: [{ ...fresh('truncated replacement'), id: old.id, version: 1 }] });
   await assert.rejects(f.service.previewNote('alice', PROJECT, { text: '生产数据库' }), { statusCode: 409 });
-  const material = JSON.parse(f.calls[0].input[0].content);
+  const material = JSON.parse(f.calls[0].input[1].content);
   assert.equal(material.memory[0].excerpt, true);
   assert.equal((await f.service.history('alice', PROJECT, old.id)).memory.body, old.body);
 });
