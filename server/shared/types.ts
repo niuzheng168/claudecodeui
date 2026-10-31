@@ -1531,6 +1531,8 @@ export type WorktreeProjectGateway = {
 export type WorktreeServices = {
   resolveProjectPath(projectId: string): string;
   list(input: ListWorktreesInput): Promise<WorktreeListResult>;
+  /** Read-only checkout discovery for an absolute, possibly unregistered path. */
+  directories(projectPath: string): Promise<{ paths: string[] }>;
   create(input: CreateWorktreeInput): Promise<CreateWorktreeResult>;
   createAndOpen(input: CreateWorktreeInput): Promise<CreateAndOpenWorktreeResult>;
   open(input: OpenWorktreeInput): Promise<WorktreeProjectView>;

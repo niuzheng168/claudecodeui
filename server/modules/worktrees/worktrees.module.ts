@@ -11,12 +11,13 @@ import type {
   WorktreeProjectGateway,
   WorktreeServices,
 } from '@/shared/index.js';
-import { AppError } from '@/shared/index.js';
+import { AppError, validateWorkspacePath } from '@/shared/index.js';
 import { createWorktree } from '@/modules/worktrees/services/worktree-create.service.js';
 import { createAndOpenWorktree } from '@/modules/worktrees/services/worktree-create-and-open.service.js';
 import { runGitCommand } from '@/modules/worktrees/services/worktree-git.service.js';
 import { findRelatedWorktreeFileRoot } from '@/modules/worktrees/services/worktree-file-scope.service.js';
 import { listWorktrees } from '@/modules/worktrees/services/worktree-list.service.js';
+import { discoverWorktreeDirectories } from '@/modules/worktrees/services/worktree-directories.service.js';
 import { mergeWorktree } from '@/modules/worktrees/services/worktree-merge.service.js';
 import { openWorktreeAsProject } from '@/modules/worktrees/services/worktree-open.service.js';
 import { removeWorktree } from '@/modules/worktrees/services/worktree-remove.service.js';
@@ -90,6 +91,11 @@ const worktreeServices: WorktreeServices = {
   list: (input) => listWorktrees(input, {
     runGit: runGitCommand,
     getProjectByPath: worktreeProjects.getProjectByPath,
+  }),
+  directories: (projectPath) => discoverWorktreeDirectories(projectPath, {
+    runGit: (args, cwd) => runGitCommand(args, cwd, { readOnly: true }),
+    validatePath: validateWorkspacePath,
+    realpath,
   }),
   create,
   createAndOpen: (input) => createAndOpenWorktree(input, {

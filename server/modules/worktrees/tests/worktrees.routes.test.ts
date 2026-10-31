@@ -26,6 +26,7 @@ function createFakeServices(overrides: Partial<WorktreeServices> = {}): Worktree
       throw new Error('Unexpected project resolution');
     },
     list: unused,
+    directories: unused,
     create: unused,
     createAndOpen: unused,
     open: unused,
@@ -115,6 +116,27 @@ test('create route parses input and invokes the create-and-open application serv
     branch: 'feature/login',
     baseBranch: 'main',
   }]);
+});
+
+test('directory discovery accepts an unregistered path without resolving or creating a project', async () => {
+  const calls: string[] = [];
+  await withWorktreesServer(createFakeServices({
+    directories: async (projectPath) => {
+      calls.push(projectPath);
+      return { paths: ['/workspace/other checkout'] };
+    },
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/worktrees/directories?${new URLSearchParams({ path: '/workspace/repo' })}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      success: true, data: { paths: ['/workspace/other checkout'] },
+    });
+    for (const query of ['', '?path=', '?path=a&path=b']) {
+      const invalid = await fetch(`${baseUrl}/api/worktrees/directories${query}`);
+      assert.equal(invalid.status, 400);
+    }
+  });
+  assert.deepEqual(calls, ['/workspace/repo']);
 });
 
 test('create route rejects missing branch before calling a mutation service', async () => {

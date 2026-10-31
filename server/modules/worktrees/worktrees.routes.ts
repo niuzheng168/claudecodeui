@@ -42,6 +42,14 @@ export function createWorktreesRouter(services: WorktreeServices): express.Route
   const router = express.Router();
 
   router.get(
+    '/directories',
+    asyncHandler(async (req, res) => {
+      const result = await services.directories(readRequiredString(req.query.path, 'path'));
+      res.json(createApiSuccessResponse(result));
+    }),
+  );
+
+  router.get(
     '/',
     asyncHandler(async (req, res) => {
       const projectPath = services.resolveProjectPath(readProjectId(req.query.project));

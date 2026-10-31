@@ -65,6 +65,6 @@ export type {
   FileTreeDirectoryEntry, FileTreeFileSystem, FileTreeGitGateway, FileTreeLogger, FileTreeNode,
   FileTreeProjectGateway, FileTreeServiceDependencies, FileTreeServices, FileTreeTranscriptImageGateway,
   FileTreeStats, FileTreeUploadedFile, FileTreeWorkspaceGateway, FileTreeWorktreeGateway,
-  GitCommandResult, GitCommandRunner, WorktreeFileSystem, WorktreePorcelainEntry,
+  GitCommandResult, GitCommandRunner, WorkspacePathValidationResult, WorktreeFileSystem, WorktreePorcelainEntry,
   WorktreeProjectGateway, WorktreeServices,
 } from './types.js';
