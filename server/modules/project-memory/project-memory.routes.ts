@@ -1,12 +1,12 @@
 import express from 'express';
 
-import { isCodeyOwnerRequest } from '@/modules/auth/index.js';
+import { isCodeyOwnerRequest, codeyOwnerAccountId } from '@/modules/auth/index.js';
 import { AppError, asyncHandler } from '@/shared/index.js';
 
-import { ProjectMemoryService, readProjectMemoryMaterial } from './services/project-memory.service.js';
+import { projectMemoryStore, archiveMaterial, archiveJobs, memoryIntegrationStatus } from './services/project-memory-runtime.service.js';
 
 /** Mounted by the node entrypoint; only an owner authenticated by the signed Portal SSO may use it. */
-export function createProjectMemoryRoutes(service = new ProjectMemoryService(), isOwnerRequest = isCodeyOwnerRequest) {
+export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerRequest = isCodeyOwnerRequest, accountId = codeyOwnerAccountId) {
   const router = express.Router();
   router.use((req, _res, next) => {
     if (!isOwnerRequest(req)) {
@@ -15,32 +15,45 @@ export function createProjectMemoryRoutes(service = new ProjectMemoryService(), 
     }
     next();
   });
+  router.get('/info',(_req,res)=>res.json({contract:3,integration:memoryIntegrationStatus()}));
   // A dedicated bounded transcript route avoids shipping tool outputs, reasoning or secrets to Portal.
   router.post('/sessions/:sessionId/material', asyncHandler(async (req, res) => {
     const sessionId = String(req.params.sessionId);
     if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId)) {
       throw new AppError('Invalid session.', { statusCode: 400 });
     }
-    const { through, after = null } = req.body ?? {};
-    if (!Number.isSafeInteger(through) || through <= 0 || (after !== null && (!Number.isSafeInteger(after) || after >= through))) {
-      throw new AppError('Invalid turn boundary.', { statusCode: 400 });
-    }
-    res.json(await readProjectMemoryMaterial(sessionId, through, after));
+    res.json(await archiveMaterial.read(sessionId,req.body));
+  }));
+  router.all('/projects/:project/jobs/:jobId?',asyncHandler(async (req,res) => {
+    const owner=accountId(req), project=String(req.params.project), id=req.params.jobId ? String(req.params.jobId):undefined;
+    if (!owner) throw new AppError('Verified account identity required.',{statusCode:403});
+    if (!/^p-[a-f0-9]{16}$/.test(project) || (id && !/^[a-f0-9]{64}$/.test(id))) throw new AppError('Invalid memory job path.',{statusCode:400});
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {}))>16384) throw new AppError('Job metadata too large.',{statusCode:413});
+    if (req.method==='POST' && !id) res.status(202).json(await archiveJobs.enqueue(owner,project,req.body));
+    else if (req.method==='GET' && id) res.json(await archiveJobs.status(owner,project,id));
+    else res.sendStatus(405);
   }));
   router.all('/projects/:project/memory/:entry?', asyncHandler(async (req, res) => {
     const project = String(req.params.project);
     const entry = req.params.entry ? String(req.params.entry) : undefined;
-    const owner = (req as typeof req & { user: { username: string } }).user.username;
+    const owner = accountId(req);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
     if (!/^p-[a-f0-9]{16}$/.test(project) || (entry && !/^(?:m-[a-f0-9]{16}|import|summarize)$/.test(entry))) {
       throw new AppError('Invalid project memory path.', { statusCode: 400 });
     }
-    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > (entry === 'import' ? 8 * 1024 * 1024 : 768 * 1024)) {
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 8 * 1024 * 1024) {
       throw new AppError('Memory request too large.', { statusCode: 413 });
     }
     if (entry === 'import' && req.method === 'POST') res.json(await service.importLegacy(owner, project, req.body));
-    else if (entry === 'summarize' && req.method === 'POST') res.json(await service.summarize(owner, project, req.body));
+    else if (entry === 'summarize') res.status(410).json({error:'Turn summarization retired; submit a confirmed archive job.'});
     else if (entry && !entry.startsWith('m-')) res.sendStatus(405);
-    else if (req.method === 'GET') res.json(entry ? await service.history(owner, project, entry) : await service.list(owner, project));
+    else if (req.method === 'GET') {
+      const offset=Number(req.query.cursor ?? 0);
+      if (!Number.isSafeInteger(offset) || offset<0) throw new AppError('Invalid cursor.',{statusCode:400});
+      const revision=req.query.revision===undefined ? undefined:Number(req.query.revision);
+      if (revision!==undefined && (!Number.isSafeInteger(revision)||revision<0)) throw new AppError('Invalid revision.',{statusCode:400});
+      res.json(entry ? await service.history(owner,project,entry,offset,revision) : {...await service.list(owner,project,offset,revision),integration:memoryIntegrationStatus()});
+    }
     else if (req.method === 'POST' && !entry) res.status(201).json(await service.create(owner, project, req.body));
     else if (req.method === 'PATCH' && entry) res.json(await service.update(owner, project, entry, req.body));
     else if (req.method === 'DELETE') res.json(await service.remove(owner, project, entry));

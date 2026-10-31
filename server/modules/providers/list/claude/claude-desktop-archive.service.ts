@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { claudeDesktopArchiveDb, sessionsDb } from '@/modules/database/index.js';
+import { claudeDesktopArchiveDb, sessionsDb, memoryArchiveDb } from '@/modules/database/index.js';
 import type { PendingClaudeDesktopArchive } from '@/modules/database/index.js';
 import { readLastMessageTime } from '@/modules/providers/list/claude/claude-session-synchronizer.provider.js';
 import { broadcastSessionsArchived, broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
@@ -231,7 +231,13 @@ export async function synchronizeClaudeDesktopArchive(
 ): Promise<Pick<ClaudeArchiveResult, 'archived' | 'restored'> & { passOn: boolean }> {
   const changed: DesktopSession[] = [];
   for (const session of await readClaudeDesktopSessions(folders)) {
+    // The local Desktop copy of an SSH conversation is not its material source.
+    // This metadata does not initialize the archive outbox or backfill old sessions.
+    memoryArchiveDb.setMirror('claude',session.providerSessionId,session.remote);
     const known = claudeDesktopArchiveDb.get(session.providerSessionId);
+    if (process.env.CODEY_PORTAL_CLIENT_MODULE && memoryArchiveDb.started()) {
+      memoryArchiveDb.observeNative('claude',session.providerSessionId,session.archived,!known,undefined,String(session.desktopActivityAt ?? ''),false);
+    }
     if (known?.archived === session.archived) continue;
     // First seen in use: nothing to carry over, and Codey's own archive stays.
     const carried = Boolean(known) || session.archived;

@@ -64,6 +64,24 @@ async function until(check: () => boolean, what: string): Promise<void> {
   }
 }
 
+test('only affirmative archive/unarchive notifications reach the memory observer, not close or turn completion',unixOnly,async()=>{
+  const daemon=await fakeDaemon({});
+  const watcher=new CodexThreadStatusWatcher({
+    connect:()=>CodexDaemonClient.connect({socketPath:daemon.socketPath,timeoutMs:1000}),now:Date.now,retryMs:[20],
+  });
+  const events: Array<[string,boolean]>=[];
+  watcher.onArchiveChange((id,archived)=>events.push([id,archived]));
+  try {
+    watcher.start();await until(()=>daemon.methods.includes('thread/loaded/list'),'connection');
+    daemon.notify('thread/closed',{threadId:'s'});
+    daemon.notify('thread/status/changed',{threadId:'s',status:{type:'idle'}});
+    daemon.notify('thread/archived',{threadId:'s'});
+    daemon.notify('thread/unarchived',{threadId:'s'});
+    await until(()=>events.length===2,'archive/restore');
+    assert.deepEqual(events,[['s',true],['s',false]]);
+  } finally { watcher.close();await daemon.close(); }
+});
+
 test('the watcher follows every thread of the daemon without subscribing to any', unixOnly, async () => {
   const daemon = await fakeDaemon({
     'thread-asking': { type: 'active', activeFlags: ['waitingOnApproval'] },

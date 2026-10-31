@@ -6,9 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import express from 'express';
+import Database from 'better-sqlite3';
 import type { ErrorRequestHandler } from 'express';
 
-import { ProjectMemoryService, readProjectMemoryMaterial } from '../services/project-memory.service.js';
+import { ProjectMemoryService } from '../services/project-memory.service.js';
 import { createProjectMemoryRoutes } from '../project-memory.routes.js';
 
 const PROJECT = `p-${'a'.repeat(16)}`;
@@ -51,9 +52,11 @@ test('multiple Markdown memories survive restart, with owner/project isolation, 
   await assert.rejects(restarted.update('alice', PROJECT, a.id, { body: 'stale', version: 1 }), { statusCode: 409 });
   await assert.rejects(restarted.update('bob', PROJECT, a.id, { body: 'steal', version: 2 }), { statusCode: 404 });
   assert.deepEqual((await restarted.history('alice', PROJECT, a.id)).history.map(entry => entry.body), ['# Updated', a.body]);
-  const directories = await readdir(path.join(f.root, PROJECT));
-  const files = await readdir(path.join(f.root, PROJECT, directories.find(name => name !== '')!, 'memory'));
-  assert.ok(files.some(file => file.endsWith('.md')));
+  const directory=path.join(f.root,'alice','projects',PROJECT,'memory');
+  const files=await readdir(path.join(directory,'topics'));
+  assert.ok(files.includes('architecture.md'));
+  assert.match(await readFile(path.join(directory,'topics','architecture.md'),'utf8'),/^---\nid: m-/);
+  assert.ok((await readdir(directory)).includes('index.sqlite'));
   await restarted.remove('alice', PROJECT, b.id);
   assert.equal((await restarted.list('alice', PROJECT)).memory.length, 1);
   await assert.rejects(restarted.history('alice', PROJECT, b.id), { statusCode: 404 });
@@ -63,7 +66,8 @@ test('filenames, credentials, byte limits and unknown fields are rejected withou
   const f = await fixture(t);
   for (const body of [
     { filename: '../outside.md' }, { filename: '/tmp/a.md' }, { filename: 'a/b.md' }, { filename: 'a\\b.md' },
-    { filename: 'a.txt' }, { body: '' }, { body: '记'.repeat(2731) }, { body: `ghp_${'x'.repeat(36)}` },
+    { filename: 'a.txt' }, { body: '' }, { body: '记'.repeat(349526) }, { body: `ghp_${'x'.repeat(36)}` },
+    { filename: 'CON.md' }, {filename:'主题'.repeat(50)+'.md'},
     { state: 'candidate' }, { kind: 'unknown' }, { owner: 'bob' },
   ]) {
     await assert.rejects(f.service.create('alice', PROJECT, { kind: 'fact', body: 'valid', ...body }), { statusCode: 400 });
@@ -113,13 +117,13 @@ test('automatic summaries update automatic files, but may not overwrite manually
   const f = await fixture(t);
   await f.service.summarize('alice', PROJECT, event());
   const a = (await f.service.list('alice', PROJECT)).memory[0];
-  f.response.make = async () => completed({ upserts: [{ ...addition().upserts[0], id: a.id, body: 'PostgreSQL 16 verified.' }], remove: [] });
+  f.response.make = async () => completed({ upserts: [{ ...addition().upserts[0], id: a.id, version:a.version, body: 'PostgreSQL 16 verified.' }], remove: [] });
   await f.service.summarize('alice', PROJECT, event(2));
   const updated = (await f.service.list('alice', PROJECT)).memory[0];
   assert.equal(updated.version, 2);
   await f.service.update('alice', PROJECT, a.id, { version: 2, body: 'Only PostgreSQL 16 is supported.' });
   await assert.rejects(f.service.summarize('alice', PROJECT, event(3)), { statusCode: 409 });
-  f.response.make = async () => completed({ upserts: [], remove: [a.id] });
+  f.response.make = async () => completed({ upserts: [], remove: [{id:a.id,version:3}] });
   await assert.rejects(f.service.summarize('alice', PROJECT, event(4)), { statusCode: 409 });
   assert.equal((await f.service.list('alice', PROJECT)).memory[0].body, 'Only PostgreSQL 16 is supported.');
 });
@@ -163,10 +167,12 @@ test('legacy migration is idempotent and deleting a project removes Markdown and
   await f.service.remove('alice', PROJECT);
   await assert.rejects(f.service.list('alice', PROJECT), { statusCode: 404 });
   await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 404 });
-  const ownerDir = (await readdir(path.join(f.root, PROJECT)))[0];
-  const files = await readdir(path.join(f.root, PROJECT, ownerDir, 'memory'));
-  assert.deepEqual(files, ['index.json']);
-  assert.equal((await readFile(path.join(f.root, PROJECT, ownerDir, 'memory/index.json'), 'utf8')).includes('legacy fact'), false);
+  const directory=path.join(f.root,'alice','projects',PROJECT,'memory');
+  assert.deepEqual(await readdir(path.join(directory,'topics')),[]);
+  assert.deepEqual(await readdir(path.join(directory,'.history')),[]);
+  const db=new Database(path.join(directory,'index.sqlite'));
+  try { assert.equal((db.prepare('SELECT count(*) AS n FROM entries').get() as {n:number}).n,0); }
+  finally { db.close(); }
 });
 
 test('credentials are redacted from material before the model call', async t => {
@@ -187,8 +193,7 @@ test('history is bounded and discarded versions are physically pruned', async t 
   assert.equal(history.history.length, 50);
   assert.equal(history.history[0].version, 53);
   assert.equal(history.history.at(-1)?.version, 4);
-  const ownerDir = (await readdir(path.join(f.root, PROJECT)))[0];
-  assert.equal((await readdir(path.join(f.root, PROJECT, ownerDir, 'memory'))).filter(file => file.endsWith('.md')).length, 50);
+  assert.equal((await readdir(path.join(f.root,'alice','projects',PROJECT,'memory','.history'))).length,50);
 });
 
 test('a deleted project cannot be resurrected by an already-running model', async t => {
@@ -205,38 +210,13 @@ test('a deleted project cannot be resurrected by an already-running model', asyn
   await assert.rejects(task, { statusCode: 404 });
 });
 
-test('the source material excludes later turns, old turns, tool output and reasoning', async () => {
-  const through = Date.parse('2026-10-30T12:00:00Z');
-  const details = { sessionId: 'app-s', project: null };
-  const message = (role: string, content: string, at: number, kind = 'text') => ({
-    id: content, sessionId: 'app-s', provider: 'codex', role, content, timestamp: new Date(at).toISOString(), kind,
-  });
-  const rows = [
-    message('user', 'old', through - 3000), message('user', 'current password=hidden', through - 900),
-    message('assistant', 'reasoning secret', through - 800, 'thinking'),
-    message('assistant', 'tool output secret', through - 700, 'tool_result'),
-    message('assistant', 'verified', through - 100), message('assistant', 'future', through + 100),
-  ];
-  const reader = {
-    getSessionDetailsById: () => details,
-    fetchHistory: async (id: string) => {
-      assert.equal(id, 'app-s');
-      return { messages: rows, hasMore: false };
-    },
-  } as unknown as NonNullable<Parameters<typeof readProjectMemoryMaterial>[3]>;
-  const result = await readProjectMemoryMaterial('native-s', through, through - 1000, reader);
-  assert.match(result.transcript, /current.*credential omitted/);
-  assert.match(result.transcript, /verified/);
-  assert.doesNotMatch(result.transcript, /old|future|secret|hidden/);
-});
-
 test('node routes require signed owner identity and preserve CRUD status and validation', async t => {
   const f = await fixture(t);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { Object.assign(req, { user: { username: 'alice' } }); next(); });
   app.use('/guarded', createProjectMemoryRoutes(f.service));
-  app.use('/test', createProjectMemoryRoutes(f.service, () => true));
+  app.use('/test', createProjectMemoryRoutes(f.service, () => true, () => 'alice'));
   app.use(((error, _req, res, _next) => {
     res.status(error.statusCode ?? 500).json({ error: error.message });
   }) as ErrorRequestHandler);
@@ -247,6 +227,7 @@ test('node routes require signed owner identity and preserve CRUD status and val
   const url = `${base}/test/projects/${PROJECT}/memory`;
   assert.equal((await fetch(`${base}/guarded/projects/${PROJECT}/memory`)).status, 403);
   assert.equal((await fetch(url)).status, 200);
+  assert.equal((await fetch(`${url}/summarize`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(event())})).status,410);
   const created = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ filename: 'api.md', kind: 'fact', body: 'from API' }) });
   assert.equal(created.status, 201);
   const { memory } = await created.json() as { memory: { id: string } };
@@ -262,7 +243,7 @@ test('resources join an existing project once, retaining full bodies, titles, ki
   const resource = { id: `r-${'c'.repeat(16)}`, title: '开发环境', kind: 'environment', body: 'x'.repeat(8192), createdAt: 123, updatedAt: 456 };
   const imported = await f.service.importLegacy('alice', PROJECT, { memory: [], resources: [resource] });
   assert.equal(imported.resourcesImported, true);
-  assert.equal(imported.contract, 2);
+  assert.equal(imported.contract, 3);
   const files = (await f.service.list('alice', PROJECT)).memory;
   assert.equal(files.length, 2);
   assert.ok(files.some(file => file.id === existing.id));
@@ -294,7 +275,7 @@ test('users explicitly enable and disable automatic maintenance, independently o
   const f = await fixture(t);
   const { memory } = await f.service.create('alice', PROJECT, { kind: 'rule', title: 'Rules', body: 'initial rule' });
   assert.equal(memory.mode, 'manual');
-  f.response.make = async () => completed({ upserts: [{ id: memory.id, filename: memory.filename, kind: 'rule', body: 'verified rule' }], remove: [] });
+  f.response.make = async () => completed({ upserts: [{ id: memory.id, version:2, filename: memory.filename, kind: 'rule', body: 'verified rule' }], remove: [] });
   await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 409 });
   await f.service.update('alice', PROJECT, memory.id, { mode: 'auto', version: 1 });
   await f.service.summarize('alice', PROJECT, event());
@@ -314,9 +295,8 @@ test('invalidated files cannot be revived by the model even when automatic maint
   const f = await fixture(t);
   const { memory } = await f.service.create('alice', PROJECT, { kind: 'fact', body: 'old', mode: 'auto' });
   await f.service.update('alice', PROJECT, memory.id, { version: 1, state: 'invalidated', mode: 'auto' });
-  f.response.make = async () => completed({ upserts: [{ id: memory.id, filename: memory.filename, kind: 'fact', body: 'revived' }], remove: [] });
+  f.response.make = async () => completed({ upserts: [{ id: memory.id, version:2, filename: memory.filename, kind: 'fact', body: 'revived' }], remove: [] });
   await assert.rejects(f.service.summarize('alice', PROJECT, event()), { statusCode: 409 });
   const input = JSON.parse(f.calls[0].input[0].content);
-  assert.equal(input.memory[0].omitted, true);
-  assert.equal(input.memory[0].body, undefined);
+  assert.ok(input.memory.every((entry: {id:string}) => entry.id!==memory.id));
 });

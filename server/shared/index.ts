@@ -1,6 +1,9 @@
 // Auth uses the deployment flag; WebSocket uses the shared authenticated request contract.
 export { IS_PLATFORM } from './utils.js';
 export type { AuthenticatedWebSocketRequest } from './types.js';
+// Project-memory storage, source pagination and main workers share content-bound checkpoints.
+export type { MemoryCheckpoint, ProjectMemoryJob } from './types.js';
+export { redactProjectMemoryText } from './utils.js';
 // Projects, Providers and Settings consume shared validation/error contracts through this barrel.
 export { AppError, normalizeProjectPath, validateWorkspacePath } from './utils.js';
 // Queued delivery uses exact persistence receipts and safe JSON parsing across module boundaries.

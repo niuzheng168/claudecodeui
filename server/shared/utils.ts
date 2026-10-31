@@ -1692,3 +1692,17 @@ export function findApplicationRoot(startDirectory: string): string {
     ? path.dirname(parentDirectory)
     : parentDirectory;
 }
+// ---------------------------
+//----------------- PROJECT MEMORY MATERIAL REDACTION ------------
+/**
+ * Project-memory's source reader and main model adapter use this best-effort
+ * credential redaction before any model input or cross-node transcript transfer.
+ * It is not a general secret scanner; callers must still omit tools/reasoning
+ * and reject credential-shaped model output before committing knowledge.
+ */
+export function redactProjectMemoryText(value: string): string {
+  return value
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[credential omitted]')
+    .replace(/\b(?:Bearer\s+\S+|(?:sk-|gh[pousr]_|github_pat_|xox[abprs]-)[A-Za-z0-9_-]+|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/=]+)/gi, '[credential omitted]')
+    .replace(/\b(?:api[_-]?key|password|token|secret)\s*[:=]\s*["']?[^\s"',;]+/gi, '[credential omitted]');
+}

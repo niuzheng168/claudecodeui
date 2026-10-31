@@ -1,6 +1,17 @@
 import type { IncomingMessage } from 'node:http';
 import type { Readable } from 'node:stream';
 
+//----------------- PROJECT MEMORY ARCHIVE CONTRACTS ------------
+/** A successful chronological prefix of filtered transcript pieces, verified by its SHA-256 chain. */
+export type MemoryCheckpoint = { count: number; digest: string };
+/** Durable metadata only: main's worker never retains conversation text in this job record. */
+export type ProjectMemoryJob = {
+  jobId: string; owner: string; project: string;
+  source: { nodeId: string; sessionId: string; nativeSessionId: string; provider: string; archiveRevision: string; contentRevision: string };
+  status: 'queued' | 'working' | 'retrying' | 'done' | 'cancelled' | 'failed';
+  nextAt: number; attempts: number; lastError?: string;
+};
+
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
  * Canonical success envelope used by backend APIs that return a structured payload.

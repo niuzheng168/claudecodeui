@@ -35,3 +35,5 @@ export {
 // applyClaudeArchiveChanges: used by Session messages' `/api/codey/v1` for an
 // archive Claude Desktop made on another of the owner's machines.
 export { applyClaudeArchiveChanges } from './list/claude/claude-desktop-archive.service.js';
+// Project-memory wakeups and catch-up verify native archive metadata.
+export { synchronizeMemoryArchives } from './services/memory-archive-sync.service.js';

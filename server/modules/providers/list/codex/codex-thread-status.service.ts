@@ -60,6 +60,7 @@ export class CodexThreadStatusWatcher {
   /** Threads that are active, or stopped on an error; idle ones are forgotten. */
   private readonly threads = new Map<string, ThreadState>();
   private readonly listeners = new Set<() => void>();
+  private readonly archiveListeners = new Set<(threadId: string, archived: boolean) => void>();
   private client: CodexDaemonClient | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = true;
@@ -103,6 +104,11 @@ export class CodexThreadStatusWatcher {
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+  /** Project-memory follows affirmative archive and active notifications without owning a thread. */
+  onArchiveChange(listener: (threadId: string, archived: boolean) => void): () => void {
+    this.archiveListeners.add(listener);
+    return () => this.archiveListeners.delete(listener);
   }
 
   private async connect(): Promise<void> {
@@ -172,7 +178,12 @@ export class CodexThreadStatusWatcher {
         this.apply(thread.id, thread.status);
         return thread.id;
       }
+      if (method === 'thread/unarchived' && typeof params.threadId === 'string') {
+        for (const listener of this.archiveListeners) listener(params.threadId,false);
+        return params.threadId;
+      }
       if ((method === 'thread/closed' || method === 'thread/deleted' || method === 'thread/archived') && typeof params.threadId === 'string') {
+        if (method === 'thread/archived') for (const listener of this.archiveListeners) listener(params.threadId,true);
         this.apply(params.threadId, null);
         return params.threadId;
       }
@@ -185,6 +196,7 @@ export class CodexThreadStatusWatcher {
   private apply(threadId: string, status: unknown): void {
     const previous = this.threads.get(threadId);
     const next = readStatus(status, this.deps.now(), previous);
+    if (next?.active) for (const listener of this.archiveListeners) listener(threadId,false);
     if (sameState(previous, next)) return;
     if (next) this.threads.set(threadId, next);
     else this.threads.delete(threadId);

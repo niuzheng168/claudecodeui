@@ -90,5 +90,7 @@ export function createPortalSsoService(dependencies: PortalSsoDependencies) {
     // Only the global middleware can populate this unforgeable in-process mark.
     authenticatedUser: (request: IncomingMessage): PortalUser | null =>
       (request as PortalRequest)[trustedUser] ?? null,
+    authenticatedSubject: (request: IncomingMessage): string | null =>
+      (request as PortalRequest)[trustedUser] ? expectedSubject : null,
   };
 }
