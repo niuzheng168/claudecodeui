@@ -15,7 +15,16 @@ export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerR
     }
     next();
   });
-  router.get('/info',(_req,res)=>res.json({contract:3,integration:memoryIntegrationStatus()}));
+  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true},integration:memoryIntegrationStatus()}));
+  router.post('/projects/:project/notes/:operation', asyncHandler(async (req, res) => {
+    const owner = accountId(req), project = String(req.params.project), operation = String(req.params.operation);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
+    if (!/^p-[a-f0-9]{16}$/.test(project) || !['preview', 'confirm'].includes(operation)) {
+      throw new AppError('Invalid memory note path.', {statusCode:400});
+    }
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 16384) throw new AppError('Note too large.', {statusCode:413});
+    res.json(operation === 'preview' ? await service.previewNote(owner, project, req.body) : await service.confirmNote(owner, project, req.body));
+  }));
   // A dedicated bounded transcript route avoids shipping tool outputs, reasoning or secrets to Portal.
   router.post('/sessions/:sessionId/material', asyncHandler(async (req, res) => {
     const sessionId = String(req.params.sessionId);
