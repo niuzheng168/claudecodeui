@@ -2434,3 +2434,146 @@ test('the first scan moves sessions dated by their file back to their last messa
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Forks made by the Claude CLI, as Claude Desktop forks a session
+// ---------------------------------------------------------------------------
+
+const FORK_SOURCE_ID = '9e0a653e-5243-4493-8589-000000000001';
+const CLI_FORK_ID = 'e5deb1b5-bef4-4f71-8ff1-000000000002';
+
+const forkTurnRow = (
+  sessionId: string,
+  cwd: string,
+  type: 'user' | 'assistant',
+  uuid: string,
+  parentUuid: string | null,
+  timestamp: string,
+  text: string,
+): string => JSON.stringify({
+  parentUuid,
+  isSidechain: false,
+  type,
+  message: { role: type, content: [{ type: 'text', text }] },
+  uuid,
+  timestamp,
+  cwd,
+  sessionId,
+});
+
+/**
+ * Writes a source session and a fork of it as `claude --resume <id>
+ * --fork-session` leaves one in a new worktree: the source's rows copied
+ * unchanged, then the fork's own rows under its own id and directory.
+ */
+async function writeCliFork(home: string): Promise<{ sourcePath: string; forkPath: string }> {
+  const sourceDirectory = path.join(home, '.claude', 'projects', '-workspace-demo');
+  const forkDirectory = path.join(home, '.claude', 'projects', '-workspace-demo-fork');
+  await mkdir(sourceDirectory, { recursive: true });
+  await mkdir(forkDirectory, { recursive: true });
+
+  const copied = [
+    forkTurnRow(FORK_SOURCE_ID, '/workspace/demo', 'user', 'u-1', null, '2026-07-10T00:00:00.000Z', 'source prompt'),
+    forkTurnRow(FORK_SOURCE_ID, '/workspace/demo', 'assistant', 'a-1', 'u-1', '2026-07-10T00:01:00.000Z', 'source reply'),
+    JSON.stringify({ type: 'custom-title', customTitle: 'Source title', sessionId: FORK_SOURCE_ID }),
+  ];
+
+  const sourcePath = path.join(sourceDirectory, `${FORK_SOURCE_ID}.jsonl`);
+  await writeFile(sourcePath, `${[
+    ...copied,
+    forkTurnRow(FORK_SOURCE_ID, '/workspace/demo', 'user', 'u-2', 'a-1', '2026-07-12T00:00:00.000Z', 'source goes on'),
+  ].join('\n')}\n`, 'utf8');
+
+  const forkPath = path.join(forkDirectory, `${CLI_FORK_ID}.jsonl`);
+  await writeFile(forkPath, `${[
+    ...copied,
+    JSON.stringify({ type: 'file-history-snapshot', messageId: 'u-1', snapshot: {} }),
+    JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-07-11T00:00:00.000Z', sessionId: CLI_FORK_ID }),
+    forkTurnRow(CLI_FORK_ID, '/workspace/demo-fork', 'user', 'u-3', 'a-1', '2026-07-11T00:00:00.000Z', 'fork prompt'),
+    forkTurnRow(CLI_FORK_ID, '/workspace/demo-fork', 'assistant', 'a-3', 'u-3', '2026-07-11T00:01:00.000Z', 'fork reply'),
+    JSON.stringify({ type: 'custom-title', customTitle: 'Fork title', sessionId: CLI_FORK_ID }),
+  ].join('\n')}\n`, 'utf8');
+
+  return { sourcePath, forkPath };
+}
+
+test('a CLI fork is indexed as its own session in its own directory, leaving its source alone', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-cli-fork-', async (home) => {
+    const { sourcePath, forkPath } = await writeCliFork(home);
+
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new ClaudeSessionSynchronizer();
+      assert.equal(await synchronizer.synchronizeFile(sourcePath), FORK_SOURCE_ID);
+      assert.equal(await synchronizer.synchronizeFile(forkPath), CLI_FORK_ID);
+
+      const fork = sessionsDb.getSessionById(CLI_FORK_ID);
+      assert.equal(fork?.provider_session_id, CLI_FORK_ID);
+      assert.equal(fork?.project_path, '/workspace/demo-fork');
+      assert.equal(fork?.jsonl_path, forkPath);
+      assert.equal(fork?.custom_name, 'Fork title');
+      assert.equal(fork?.updated_at, '2026-07-11T00:01:00.000Z');
+
+      const source = sessionsDb.getSessionById(FORK_SOURCE_ID);
+      assert.equal(source?.project_path, '/workspace/demo');
+      assert.equal(source?.jsonl_path, sourcePath);
+      assert.equal(source?.custom_name, 'Source title');
+      assert.equal(source?.updated_at, '2026-07-12T00:00:00.000Z');
+    });
+  });
+});
+
+test('a CLI fork with no turn of its own yet is indexed as itself', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-cli-fork-empty-', async (home) => {
+    const forkDirectory = path.join(home, '.claude', 'projects', '-workspace-demo-fork');
+    await mkdir(forkDirectory, { recursive: true });
+    const forkPath = path.join(forkDirectory, `${CLI_FORK_ID}.jsonl`);
+    await writeFile(
+      forkPath,
+      `${forkTurnRow(FORK_SOURCE_ID, '/workspace/demo', 'user', 'u-1', null, '2026-07-10T00:00:00.000Z', 'source prompt')}\n`,
+      'utf8',
+    );
+
+    await withIsolatedDatabase(async () => {
+      assert.equal(await new ClaudeSessionSynchronizer().synchronizeFile(forkPath), CLI_FORK_ID);
+      assert.equal(sessionsDb.getSessionById(FORK_SOURCE_ID), null);
+    });
+  });
+});
+
+test('Claude history of a CLI fork includes the conversation copied from its source', { concurrency: false }, async () => {
+  await withClaudeHome('claude-history-cli-fork-', async (home) => {
+    const { forkPath } = await writeCliFork(home);
+
+    await withIsolatedDatabase(async () => {
+      await new ClaudeSessionSynchronizer().synchronizeFile(forkPath);
+      const history = await new ClaudeSessionsProvider().fetchHistory(CLI_FORK_ID, { providerSessionId: CLI_FORK_ID });
+
+      assert.deepEqual(
+        history.messages.map((message) => message.content),
+        ['source prompt', 'source reply', 'fork prompt', 'fork reply'],
+      );
+    });
+  });
+});
+
+test('the first scan indexes forks that earlier versions filed under their source', { concurrency: false }, async () => {
+  await withClaudeHome('claude-sync-cli-fork-repair-', async (home) => {
+    const { sourcePath, forkPath } = await writeCliFork(home);
+
+    await withIsolatedDatabase(async () => {
+      // As an earlier version indexed the fork: as its source, dated by the fork.
+      sessionsDb.createSession(FORK_SOURCE_ID, 'claude', '/workspace/demo', 'Source title', undefined, '2026-07-11T00:01:00.000Z', forkPath);
+
+      // No transcript is new since this scan's cursor, so only the repair has work.
+      await new ClaudeSessionSynchronizer().synchronize(new Date());
+
+      const fork = sessionsDb.getSessionById(CLI_FORK_ID);
+      assert.equal(fork?.project_path, '/workspace/demo-fork');
+      assert.equal(fork?.jsonl_path, forkPath);
+
+      const source = sessionsDb.getSessionById(FORK_SOURCE_ID);
+      assert.equal(source?.jsonl_path, sourcePath);
+      assert.equal(source?.updated_at, '2026-07-12T00:00:00.000Z');
+    });
+  });
+});

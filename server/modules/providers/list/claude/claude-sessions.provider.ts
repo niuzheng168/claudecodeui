@@ -462,8 +462,13 @@ function replaceLaunchToolResultContent(message: AnyRecord, replacement: string)
  * The file is append-only and every row names its predecessor in `parentUuid`,
  * so a conversation is a path through it rather than the whole file. Editing a
  * sent message makes a second path appear alongside the first.
+ *
+ * A fork made by the Claude CLI (`--fork-session`, as Claude Desktop forks)
+ * starts with a copy of its source's rows, which keep the source's
+ * `sessionId`, and its first turn parents onto the last of them. The CLI
+ * replays them on resume like the fork's own, so they are read as its history.
  */
-async function readTranscriptRows(jsonlPath: string, providerSessionId: string): Promise<AnyRecord[]> {
+async function readTranscriptRows(jsonlPath: string): Promise<AnyRecord[]> {
   const rows: AnyRecord[] = [];
   const fileStream = fs.createReadStream(jsonlPath);
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -474,7 +479,7 @@ async function readTranscriptRows(jsonlPath: string, providerSessionId: string):
     }
     try {
       const entry = JSON.parse(line) as AnyRecord;
-      if (entry.sessionId === providerSessionId && !isClaudeNonTurnMessageRow(entry)) {
+      if (typeof entry.sessionId === 'string' && !isClaudeNonTurnMessageRow(entry)) {
         rows.push(entry);
       }
     } catch {
@@ -703,7 +708,7 @@ async function getSessionMessages(
     const projectDir = path.dirname(jsonLPath);
 
     const messages = dropSupersededPromptBranches(
-      await readTranscriptRows(jsonLPath, providerSessionId),
+      await readTranscriptRows(jsonLPath),
     );
 
     const agentIds = new Set<string>();
@@ -1729,7 +1734,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return { found: false, resumeThroughId: null };
     }
 
-    const rows = await readTranscriptRows(jsonlPath, providerSessionId);
+    const rows = await readTranscriptRows(jsonlPath);
     const byUuid = new Map<string, AnyRecord>();
     for (const row of rows) {
       if (typeof row.uuid === 'string') {

@@ -1,11 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
+import { createReadStream } from 'node:fs';
 import { open, readFile } from 'node:fs/promises';
+import readline from 'node:readline';
 
 import { appConfigDb, sessionsDb } from '@/modules/database/index.js';
 import {
   buildLookupMap,
-  extractFirstValidJsonlData,
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
@@ -18,11 +19,72 @@ type ParsedSession = {
   sessionName?: string;
 };
 
+type TranscriptIdentity = {
+  sessionId: string;
+  projectPath: string;
+  /** The session a CLI fork copied its history from, when the file is one. */
+  copiedFrom?: string;
+};
+
 // The longest transcript tail read to find the session's last message.
 const LAST_MESSAGE_TAIL_BYTES = 1024 * 1024;
 // `app_config` key set once the sessions indexed before dates came from
 // messages have been re-dated (see redateIndexedSessions).
 const REDATED_BY_LAST_MESSAGE_KEY = 'claude_sessions_redated_by_last_message';
+// `app_config` key set once the forks indexed under their source session have
+// been indexed as themselves (see reindexForkedTranscripts).
+const FORKS_REINDEXED_KEY = 'claude_forked_transcripts_reindexed';
+// Claude Code names each top-level transcript `<session id>.jsonl`.
+const SESSION_TRANSCRIPT_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/**
+ * Which session a transcript holds and the directory that session runs in.
+ *
+ * The file name says which session it is, not the first row. A fork made by
+ * the Claude CLI (`--resume <id> --fork-session`, which Claude Desktop's fork
+ * runs, often in a new worktree) begins with a copy of the source conversation
+ * whose rows keep the source's `sessionId` and `cwd`; only the rows after it
+ * carry the fork's own. Read by its first row, the fork was indexed as its
+ * source: it never appeared, and the source's row pointed at the fork's file.
+ * So the directory comes from the session's own first row, and from the copy
+ * only while the fork has no turn of its own yet.
+ * A transcript not named by a session id is identified by its first row.
+ */
+async function readTranscriptIdentity(filePath: string): Promise<TranscriptIdentity | null> {
+  const fileSessionId = SESSION_TRANSCRIPT_NAME.exec(path.basename(filePath))?.[1];
+  let copied: TranscriptIdentity | undefined;
+
+  const fileStream = createReadStream(filePath);
+  const lines = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      let row: unknown;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        // A blank, partially written or unrelated line.
+        continue;
+      }
+      const data = row && typeof row === 'object' ? row as Record<string, unknown> : undefined;
+      const sessionId = typeof data?.sessionId === 'string' ? data.sessionId : undefined;
+      const projectPath = typeof data?.cwd === 'string' ? data.cwd : undefined;
+      if (!sessionId || !projectPath) {
+        continue;
+      }
+      if (!fileSessionId || sessionId === fileSessionId) {
+        return { sessionId: fileSessionId ?? sessionId, projectPath, copiedFrom: copied?.copiedFrom };
+      }
+      copied ??= { sessionId: fileSessionId, projectPath, copiedFrom: sessionId };
+    }
+  } catch {
+    // A missing or unreadable transcript is skipped so scans keep going.
+    return null;
+  } finally {
+    lines.close();
+    fileStream.destroy();
+  }
+  return copied ?? null;
+}
 
 /**
  * When the session last had a message: the `timestamp` of the transcript's
@@ -172,6 +234,11 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       appConfigDb.set(REDATED_BY_LAST_MESSAGE_KEY, new Date().toISOString());
     }
 
+    if (!appConfigDb.get(FORKS_REINDEXED_KEY)) {
+      await this.reindexForkedTranscripts();
+      appConfigDb.set(FORKS_REINDEXED_KEY, new Date().toISOString());
+    }
+
     return processed;
   }
 
@@ -238,30 +305,48 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   }
 
   /**
+   * Earlier versions indexed a CLI fork as the session it was copied from (see
+   * readTranscriptIdentity). Scans only reach transcripts created since the
+   * previous one, so a fork that stopped changing would stay hidden, and its
+   * source would keep pointing at the fork's file until its own transcript
+   * changed. Once, each fork is indexed as itself, then each session whose
+   * transcript is not its own file is indexed again from that file.
+   */
+  private async reindexForkedTranscripts(): Promise<void> {
+    const transcripts = (await findFilesRecursivelyCreatedAfter(path.join(this.claudeHome, 'projects'), '.jsonl', null))
+      .filter((filePath) => !this.isSubagentTranscript(filePath));
+    const transcriptByName = new Map(transcripts.map((filePath) => [path.basename(filePath), filePath]));
+
+    for (const filePath of transcripts) {
+      if ((await readTranscriptIdentity(filePath))?.copiedFrom) {
+        await this.synchronizeFile(filePath);
+      }
+    }
+
+    for (const session of sessionsDb.getSessionsWithTranscriptPath()) {
+      if (session.provider !== this.provider || !session.provider_session_id) {
+        continue;
+      }
+      const ownName = `${session.provider_session_id}.jsonl`;
+      const ownTranscript = transcriptByName.get(ownName);
+      if (path.basename(session.jsonl_path) !== ownName && ownTranscript) {
+        await this.synchronizeFile(ownTranscript);
+      }
+    }
+  }
+
+  /**
    * Extracts session metadata from one Claude JSONL session file.
    */
   private async processSessionFile(
     filePath: string,
     nameMap: Map<string, string>
   ): Promise<ParsedSession | null> {
-    const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
-      const data = rawData as Record<string, unknown>;
-      const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-      const projectPath = typeof data.cwd === 'string' ? data.cwd : undefined;
-
-      if (!sessionId || !projectPath) {
-        return null;
-      }
-
-      return {
-        sessionId,
-        projectPath,
-      };
-    });
-
-    if (!parsed) {
+    const identity = await readTranscriptIdentity(filePath);
+    if (!identity) {
       return null;
     }
+    const parsed: ParsedSession = { sessionId: identity.sessionId, projectPath: identity.projectPath };
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
