@@ -202,7 +202,8 @@ test('update writes one JSON Patch that tests the revision, edits tags case-inse
   assert.equal((patch.options.headers as Record<string, string>)['content-type'], 'application/json-patch+json');
   const operations = JSON.parse(String(patch.options.body));
   assert.deepEqual(operations[0], { op: 'test', path: '/rev', value: 5 });
-  assert.deepEqual(operations.find((op: { path: string }) => op.path === '/fields/System.Tags').value, 'SLA; codey_rejected');
+  assert.deepEqual(operations.find((op: { path: string }) => op.path === '/fields/System.Tags'),
+    { op: 'replace', path: '/fields/System.Tags', value: 'SLA; codey_rejected' }, 'ADO merges an add, so removing a tag replaces the list');
   assert.equal(operations.find((op: { path: string }) => op.path === '/fields/System.History').value, '[codey] &lt;b&gt;not ours&lt;/b&gt;<br>second line');
   assert.equal(operations.find((op: { path: string }) => op.path === '/fields/System.AssignedTo').value, 'bot@example.test');
   for (const [status, code] of [[412, 'ADO_CONFLICT'], [409, 'ADO_CONFLICT'], [400, 'ADO_UPDATE_INVALID']] as const) {
@@ -210,6 +211,13 @@ test('update writes one JSON Patch that tests the revision, edits tags case-inse
       ? json({ message: 'private-body' }, status) : json({ id: 7, rev: 5, fields: {} })) as typeof fetch });
     await assert.rejects(failing.update({ ...scope, id: '7', comment: 'x' }), { code });
   }
+  const untagged: RequestInit[] = [];
+  const first = new AzureDevOpsService({ token: async () => 'test-only', fetch: (async (_url, options) => {
+    untagged.push(options!);
+    return options?.method === 'PATCH' ? json({ id: 7, rev: 2 }) : json({ id: 7, rev: 1, fields: {} });
+  }) as typeof fetch });
+  await first.update({ ...scope, id: '7', addTags: ['codey_B'] });
+  assert.equal(JSON.parse(String(untagged[1].body))[1].op, 'add', 'an item without tags gets its first one added');
   const unchanged = new AzureDevOpsService({ token: async () => 'test-only', fetch: (async () => json({ id: 7, rev: 5, fields: { 'System.Tags': 'SLA' } })) as typeof fetch });
   assert.equal((await unchanged.update({ ...scope, id: '7', removeTags: ['codey_A'] })).changed, false);
 });

@@ -296,7 +296,10 @@ export class AzureDevOpsService {
       const next = existing.filter(tag => !remove.has(tag.toLowerCase()));
       for (const tag of input.addTags ?? []) if (!next.some(value => value.toLowerCase() === tag.toLowerCase())) next.push(tag);
       const operations: Json[] = [{ op: 'test', path: '/rev', value: current.rev }];
-      if (next.join(';') !== existing.join(';')) operations.push({ op: 'add', path: '/fields/System.Tags', value: next.join('; ') });
+      // ADO merges an `add` into the existing tags, so only `replace` can remove one.
+      if (next.join(';') !== existing.join(';')) {
+        operations.push({ op: existing.length ? 'replace' : 'add', path: '/fields/System.Tags', value: next.join('; ') });
+      }
       if (input.comment) operations.push({ op: 'add', path: '/fields/System.History', value: commentHtml(input.comment) });
       if (input.assignTo) {
         const creator = fields['System.CreatedBy'];
