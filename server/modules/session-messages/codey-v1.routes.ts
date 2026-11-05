@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { codeyInboundMessagesDb, sessionsDb } from '@/modules/database/index.js';
 import { applyClaudeArchiveChanges } from '@/modules/providers/index.js';
 import { deliverSessionMessage } from '@/modules/session-messages/services/session-message-delivery.service.js';
+import { startSession } from '@/modules/session-messages/services/session-start.service.js';
 import type { SessionMessageResult } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
@@ -43,7 +44,7 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
   const router = express.Router();
 
   router.get('/info', (_req: Request, res: Response) => {
-    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive'] }));
+    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive', 'session-start'] }));
   });
 
   /**
@@ -75,6 +76,63 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
           provider: 'claude', sessionId: providerSessionId, listed: sessionId !== null,
         })),
       }));
+    }),
+  );
+
+  /**
+   * Starts a new session with a first message, once per start ID: a repeated
+   * request gets the first result instead of a second session.
+   */
+  router.post(
+    '/sessions/start',
+    asyncHandler(async (req: Request, res: Response) => {
+      const userId = Number((req as AuthenticatedRequest).user?.id);
+      if (!Number.isInteger(userId)) {
+        throw new AppError('Starting sessions needs a Codey-managed node.', { code: 'SESSION_START_UNAVAILABLE', statusCode: 403 });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const invalidStart = (message: string) => new AppError(message, { code: 'SESSION_START_INVALID', statusCode: 400 });
+      if (Object.keys(body).some((key) => !['startId', 'path', 'provider', 'text', 'branch', 'workbenchProjectId'].includes(key))) {
+        throw invalidStart('The request has unsupported fields.');
+      }
+      if (typeof body.startId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(body.startId)) throw invalidStart('startId is invalid.');
+      if (typeof body.path !== 'string' || !body.path.trim() || body.path.length > 1024) throw invalidStart('path is invalid.');
+      if (body.provider !== 'claude' && body.provider !== 'codex') throw invalidStart('provider must be claude or codex.');
+      if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > MAX_TEXT_CHARS) {
+        throw invalidStart(`text must be 1–${MAX_TEXT_CHARS} characters.`);
+      }
+      if (body.branch !== undefined && body.branch !== null && (typeof body.branch !== 'string' || body.branch.length > 200)) {
+        throw invalidStart('branch is invalid.');
+      }
+      if (body.workbenchProjectId !== undefined && body.workbenchProjectId !== null
+        && (typeof body.workbenchProjectId !== 'string' || !/^p-[a-f0-9]{16}$/.test(body.workbenchProjectId))) {
+        throw invalidStart('workbenchProjectId is invalid.');
+      }
+      const key = `start:${body.startId}`;
+      const claim = codeyInboundMessagesDb.claim(key, 'session-start');
+      if (claim.state === 'done') {
+        res.json(createApiSuccessResponse(claim.result));
+        return;
+      }
+      if (claim.state !== 'new') {
+        throw new AppError(claim.state === 'in_progress' ? 'This session is being started.'
+          : 'This machine stopped while starting this session; it may or may not exist.', {
+          code: claim.state === 'in_progress' ? 'SESSION_START_IN_PROGRESS' : 'SESSION_START_UNCONFIRMED', statusCode: 409,
+        });
+      }
+      let result;
+      try {
+        result = await startSession({
+          path: body.path, provider: body.provider, text: body.text,
+          branch: typeof body.branch === 'string' && body.branch ? body.branch : null,
+          workbenchProjectId: typeof body.workbenchProjectId === 'string' ? body.workbenchProjectId : null,
+        }, { userId, runtime });
+      } catch (error) {
+        codeyInboundMessagesDb.release(key);
+        throw error;
+      }
+      codeyInboundMessagesDb.complete(key, result);
+      res.json(createApiSuccessResponse(result));
     }),
   );
 

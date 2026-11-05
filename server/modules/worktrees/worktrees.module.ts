@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { access, realpath } from 'node:fs/promises';
 
 import { projectsDb } from '@/modules/database/index.js';
@@ -21,6 +22,7 @@ import { discoverWorktreeDirectories } from '@/modules/worktrees/services/worktr
 import { mergeWorktree } from '@/modules/worktrees/services/worktree-merge.service.js';
 import { openWorktreeAsProject } from '@/modules/worktrees/services/worktree-open.service.js';
 import { removeWorktree } from '@/modules/worktrees/services/worktree-remove.service.js';
+import { createTaskWorktree } from '@/modules/worktrees/services/worktree-task.service.js';
 import { createWorktreesRouter } from '@/modules/worktrees/worktrees.routes.js';
 
 /**
@@ -123,6 +125,24 @@ export function resolveRelatedWorktreeRoot(
     runGit: (args, cwd) => runGitCommand(args, cwd, { readOnly: true }),
     realpath,
   });
+}
+
+/** `git fetch origin` that never prompts for credentials and gives up after a minute. */
+function fetchOrigin(repositoryRoot: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['fetch', '--quiet', '--no-tags', 'origin'], {
+      cwd: repositoryRoot, timeout: 60_000, killSignal: 'SIGKILL', windowsHide: true, maxBuffer: 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    }, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+/**
+ * Used by the Codey session start (session-messages module): a worktree on a
+ * new branch from the remote's default branch, registered as a project.
+ */
+export function createTaskWorktreeProject(input: { projectPath: string; branch: string }) {
+  return createTaskWorktree(input, { runGit: runGitCommand, fetchOrigin, createAndOpen: worktreeServices.createAndOpen });
 }
 
 /**

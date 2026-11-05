@@ -14,6 +14,7 @@ import { closeConnection, initializeDatabase, sessionDraftsDb, sessionsDb, userD
 import { providerModelsService } from '@/modules/providers/index.js';
 import { createCodeyV1Routes } from '@/modules/session-messages/codey-v1.routes.js';
 import { crossSessionMessage } from '@/modules/session-messages/services/claude-peer-message.service.js';
+import { startSession } from '@/modules/session-messages/services/session-start.service.js';
 import {
   deliverSessionMessage,
   parseSessionAddress,
@@ -234,7 +235,7 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
   await withRoutes(async ({ root, post, get }) => {
     sessionsDb.createAppSession('app-1', 'codex', root, 'Review');
     sessionsDb.assignProviderSessionId('app-1', 'thread-1');
-    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive'] });
+    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive', 'session-start'] });
     const session = (await get('/sessions/thread-1')).body.data;
     assert.equal(session.sessionId, 'app-1');
     assert.equal(session.providerSessionId, 'thread-1');
@@ -295,4 +296,51 @@ test('the Portal\'s node API archives and restores Claude sessions that Claude D
       assert.equal((await archive(bad)).status, 400, JSON.stringify(bad));
     }
   }, []);
+});
+
+test('a started session runs its first message as the user typed it, in a new worktree when asked', async () => {
+  await withNode(async ({ userId, root }) => {
+    const runs: RunCall[] = [];
+    const worktrees: { projectPath: string; branch: string }[] = [];
+    const dependencies = {
+      directory: async (requested: string) => requested,
+      register: async () => {},
+      createWorktree: async (input: { projectPath: string; branch: string }) => {
+        worktrees.push(input);
+        return { worktreePath: `${root}-worktrees/codey-wi-7`, branch: input.branch, createdBranch: true, project: {} as never };
+      },
+      runTurn: (await import('@/modules/websocket/index.js')).runDetachedChatTurn,
+    };
+    const text = '处理 ADO 工单 #7：Startup retry storm';
+    const started = await startSession({ path: root, provider: 'codex', text, branch: 'codey/wi-7', workbenchProjectId: 'p-0123456789abcdef' },
+      { userId, runtime: runtime(runs) }, dependencies);
+    assert.deepEqual(worktrees, [{ projectPath: root, branch: 'codey/wi-7' }]);
+    assert.equal(started.path, `${root}-worktrees/codey-wi-7`);
+    assert.equal(started.branch, 'codey/wi-7');
+    assert.equal(sessionsDb.getSessionById(started.sessionId)?.project_path, started.path);
+    assert.equal(runs[0].command, text, 'not wrapped as a message from another session');
+
+    const plain = await startSession({ path: root, provider: 'claude', text: 'second', branch: null, workbenchProjectId: null },
+      { userId, runtime: runtime(runs) }, dependencies);
+    assert.equal(plain.path, root);
+    assert.equal(plain.branch, null);
+    assert.equal(worktrees.length, 1);
+    await assert.rejects(startSession({ path: root, provider: 'claude', text: 'x', branch: null, workbenchProjectId: null },
+      { userId, runtime: Object.assign(runtime(runs) as object, { hasRuntime: () => false }) as never }, dependencies), { code: 'SESSION_START_UNAVAILABLE' });
+  });
+});
+
+test('the session start route validates its input and lets a refused start be retried', async () => {
+  const runs: RunCall[] = [];
+  await withRoutes(async ({ postTo }) => {
+    const start = { startId: 'start-0123456789', path: '/etc/codey', provider: 'claude', text: 'Fix it', branch: 'codey/wi-7' };
+    for (const bad of [{ ...start, startId: 'x' }, { ...start, provider: 'cursor' }, { ...start, text: '' }, { ...start, extra: 1 },
+      { ...start, workbenchProjectId: 'nope' }, { ...start, path: '' }]) {
+      assert.equal((await postTo('/sessions/start', bad)).status, 400, JSON.stringify(bad).slice(0, 80));
+    }
+    const refused = await postTo('/sessions/start', start);
+    assert.equal(refused.body.error.code, 'SESSION_START_INVALID_PATH');
+    assert.equal((await postTo('/sessions/start', start)).body.error.code, 'SESSION_START_INVALID_PATH', 'not reported as in progress');
+    assert.equal(runs.length, 0);
+  }, runs);
 });

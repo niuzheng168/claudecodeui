@@ -122,9 +122,10 @@ function findSession(sessionId: string) {
 /**
  * The options a turn this message starts runs with: the model and effort the
  * composer would send for this session, including one Codey never ran (a
- * managed node only runs a model it can name).
+ * managed node only runs a model it can name). The session start uses the
+ * same options for a new session's first turn.
  */
-async function turnOptions(provider: LLMProvider, sessionId: string): Promise<Record<string, unknown>> {
+export async function turnOptions(provider: LLMProvider, sessionId: string): Promise<Record<string, unknown>> {
   const options: Record<string, unknown> = {};
   try {
     const selection = await providerModelsService.resolveSessionModel(provider, { sessionId });
@@ -150,7 +151,7 @@ function queueMessage(userId: number, sessionId: string, input: SessionMessageIn
 }
 
 /** Errors a run reported before it got going, or null while it runs or once it finished cleanly. */
-async function watchStart(sessionId: string, startedAt: number): Promise<string | null> {
+export async function watchStart(sessionId: string, startedAt: number): Promise<string | null> {
   const deadline = Date.now() + START_WATCH_MS;
   while (Date.now() < deadline) {
     const run = chatRunRegistry.getRun(sessionId);
