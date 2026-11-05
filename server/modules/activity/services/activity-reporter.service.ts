@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { activityChangesDb, sessionsDb } from '@/modules/database/index.js';
 import { codexThreadStatus, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { generateSessionSummary } from '@/modules/activity/services/session-summary-generator.service.js';
@@ -24,6 +24,10 @@ import type { SessionSummary, SessionSummaryRequest } from '@/shared/index.js';
  * also carry one-line summaries (§9): written when a session starts waiting
  * or fails, when it settles, and now and then while it keeps running, then
  * sent with the next report and forgotten once the Portal has them.
+ *
+ * Likewise (`features.sessionChanges`), reports carry the sessions archived,
+ * restored or deleted here, within seconds, so the overview stops listing a
+ * session put away. They wait in the database until the Portal has them.
  */
 
 export type ActivityState = 'running' | 'waiting' | 'background' | 'idle';
@@ -53,12 +57,20 @@ export type ReportedSession = {
   summary?: SessionSummary;
 };
 
+/** A session archived, restored or deleted here, sent only to a Portal that takes them. */
+export type SessionChange = {
+  sessionId: string;
+  provider: 'claude' | 'codex';
+  change: 'archived' | 'restored' | 'deleted';
+};
+
 export type ActivityReport = {
   boot: string;
   seq: number;
   full: boolean;
   version?: string;
   sessions: ReportedSession[];
+  changes?: SessionChange[];
 };
 
 export type ReporterSettings = {
@@ -101,6 +113,10 @@ export type ReporterDependencies = {
   send(report: ActivityReport): Promise<unknown>;
   /** Writes one session's summary line, or null when there is nothing to say. Without it nothing is summarized. */
   summarize?(request: SessionSummaryRequest, signal: AbortSignal): Promise<string | null>;
+  /** Up to `limit` sessions archived, restored or deleted that the Portal does not have yet, oldest first. Without it none are sent. */
+  changes?(limit: number): Array<SessionChange & { revision: number }>;
+  /** The Portal has these changes, or will never take them. */
+  acknowledgeChanges?(changes: Array<{ sessionId: string; revision: number }>): void;
   now(): number;
   version?: string;
 };
@@ -115,6 +131,8 @@ const RETRY_MAX_MS = 5 * 60_000;
 const MAX_REPORT_SESSIONS = 200;
 /** The Portal takes request bodies of up to 64 KiB, so one report carries at most this many summaries. */
 const MAX_REPORT_SUMMARIES = 40;
+/** As many changes as the Portal takes in one report; the rest go in the next one. */
+const MAX_REPORT_CHANGES = 200;
 /** Summaries waiting while the Portal cannot be reached; beyond this the oldest go. */
 const MAX_UNSENT_SUMMARIES = 200;
 /** How long a session's idle state is remembered for a summary still to come. */
@@ -132,6 +150,11 @@ function withoutSummaries(report: ActivityReport, carriers: Set<string>): Activi
       .filter((session) => !carriers.has(session.sessionId))
       .map(({ summary: _summary, ...session }) => session),
   };
+}
+
+/** The same report without its changes. */
+function withoutChanges({ changes: _changes, ...report }: ActivityReport): ActivityReport {
+  return report;
 }
 
 function readSettings(current: ReporterSettings, value: unknown): ReporterSettings {
@@ -170,6 +193,12 @@ export class ActivityReporter {
   private inflightCarriers: Set<string> | null = null;
   /** The Portal's last reply said it takes summaries; nothing is summarized until one does. */
   private summariesAccepted = false;
+  /** The Portal's last reply said it takes archives, restores and deletions. */
+  private changesAccepted = false;
+  /** The changes the report in flight carries, acknowledged once the Portal has it. */
+  private inflightChanges: Array<{ sessionId: string; revision: number }> = [];
+  /** When the changes found waiting go out. */
+  private changesDueAt: number | null = null;
   private readonly summaryScheduler: SessionSummaryScheduler | null;
 
   constructor(private readonly deps: ReporterDependencies) {
@@ -229,6 +258,10 @@ export class ActivityReporter {
       if (this.summaryScheduler) this.idle.set(sessionId, next);
       this.keep(next, next.outcome === 'failed', now);
       this.noteForSummaries(previous, next, undefined, now);
+    }
+    // The Workbench keeps a session it archived out of sight only for a while, so changes go out like urgent ones.
+    if (this.changesAccepted && this.changesDueAt === null && this.deps.changes?.(1).length) {
+      this.changesDueAt = now + this.settings.urgentMergeMs;
     }
   }
 
@@ -300,6 +333,7 @@ export class ActivityReporter {
     if (this.inflight) return this.retryAt;
     const due = [this.lastSentAt + this.settings.heartbeatMs];
     if (this.needFull) due.push(0);
+    if (this.changesDueAt !== null) due.push(this.changesDueAt);
     if (this.pending.size || this.unsentSummaries.length) {
       if (this.urgentAt !== null) due.push(this.urgentAt);
       if (this.batchStartedAt !== null) due.push(this.batchStartedAt + this.settings.batchMs);
@@ -314,7 +348,8 @@ export class ActivityReporter {
    * meanwhile wait for the next one. After a restart or a refusal the first
    * report lists every busy session (`full`), and the Portal idles the rest.
    * A report whose summaries the Portal will not take (400, 413) goes again at
-   * once without them, and they are dropped.
+   * once without them, and they are dropped; then, refused again, without its
+   * changes, which are dropped too.
    */
   async flush(): Promise<void> {
     if (this.sending) return;
@@ -324,13 +359,17 @@ export class ActivityReporter {
       for (;;) {
         const report = this.inflight;
         try {
-          const reply = await this.deps.send(report) as { settings?: unknown; features?: { summary?: unknown } } | null;
+          const reply = await this.deps.send(report) as {
+            settings?: unknown; features?: { summary?: unknown; sessionChanges?: unknown };
+          } | null;
           this.inflight = null;
           this.inflightCarriers = null;
+          this.settleChanges();
           this.failures = 0;
           this.lastSentAt = this.deps.now();
           this.settings = readSettings(this.settings, reply?.settings);
           this.acceptSummaries(reply?.features?.summary === true);
+          this.acceptChanges(reply?.features?.sessionChanges === true);
           return;
         } catch (error) {
           const status = (error as { status?: unknown })?.status;
@@ -340,13 +379,21 @@ export class ActivityReporter {
             this.inflightCarriers = null;
             continue;
           }
+          if (typeof status === 'number' && UNACCEPTABLE_STATUSES.has(status) && report.changes) {
+            // Kept, they would hold up every report after this one.
+            this.inflight = withoutChanges(report);
+            this.settleChanges();
+            continue;
+          }
           if (typeof status === 'number' && REFUSED_STATUSES.has(status)) {
             // An older Portal, or a machine it does not take reports from. Start over later.
             this.inflight = null;
             this.inflightCarriers = null;
+            this.inflightChanges = [];
             this.needFull = true;
             this.pausedUntil = this.deps.now() + REFUSED_PAUSE_MS;
             this.acceptSummaries(false);
+            this.acceptChanges(false);
             return;
           }
           this.failures += 1;
@@ -359,13 +406,19 @@ export class ActivityReporter {
     }
   }
 
-  /** The next report: the changes kept since the last one, with the summaries that fit. */
+  /**
+   * The next report: the state changes kept since the last one, with the
+   * summaries that fit, and the archives, restores and deletions waiting.
+   */
   private nextReport(): ActivityReport {
     const changes = [...this.pending.values()];
     const full = this.needFull;
     const sessions = full
       ? [...this.busy.values(), ...changes.filter((session) => session.state === 'idle')]
       : changes;
+    const sessionChanges = this.changesAccepted ? this.deps.changes?.(MAX_REPORT_CHANGES) ?? [] : [];
+    this.inflightChanges = sessionChanges.map(({ sessionId, revision }) => ({ sessionId, revision }));
+    this.changesDueAt = null;
     const report: ActivityReport = {
       boot: this.boot,
       seq: this.seq++,
@@ -373,6 +426,9 @@ export class ActivityReporter {
       full: full && sessions.length <= MAX_REPORT_SESSIONS,
       ...(this.deps.version ? { version: this.deps.version } : {}),
       sessions: this.attachSummaries(sessions.slice(0, MAX_REPORT_SESSIONS)),
+      ...(sessionChanges.length
+        ? { changes: sessionChanges.map(({ sessionId, provider, change }) => ({ sessionId, provider, change })) }
+        : {}),
     };
     this.pending.clear();
     for (const session of sessions.slice(MAX_REPORT_SESSIONS)) this.pending.set(session.sessionId, session);
@@ -434,6 +490,18 @@ export class ActivityReporter {
     this.unsentSummaries = [];
     this.summaryScheduler?.clear();
   }
+
+  /** The same for changes, which stay in the database for a Portal that takes them. */
+  private acceptChanges(accepted: boolean): void {
+    this.changesAccepted = accepted;
+    if (!accepted) this.changesDueAt = null;
+  }
+
+  /** The changes of the report just sent are done with: the Portal has them, or will not take them. */
+  private settleChanges(): void {
+    if (this.inflightChanges.length) this.deps.acknowledgeChanges?.(this.inflightChanges);
+    this.inflightChanges = [];
+  }
 }
 
 /** The busy sessions as `GET /api/providers/sessions/running` lists them, with what each waiting one waits for. */
@@ -478,6 +546,8 @@ export async function initializeActivityReporter(): Promise<void> {
   if (running) return;
   const request = await loadPortalRequest();
   if (!request) return;
+  // From here on, archives, restores and deletions wait for the Portal.
+  activityChangesDb.initialize();
   const reporter = new ActivityReporter({
     observe: observeSessions,
     outcomeOf: (sessionId) => {
@@ -491,6 +561,8 @@ export async function initializeActivityReporter(): Promise<void> {
     },
     send: (report) => request('POST', '/api/v1/activity', { body: report }),
     summarize: (summaryRequest, signal) => generateSessionSummary(summaryRequest, signal),
+    changes: (limit) => activityChangesDb.pending(limit),
+    acknowledgeChanges: (changes) => activityChangesDb.acknowledge(changes),
     now: Date.now,
     version: process.env.CODEY_NODE_VERSION || undefined,
   });

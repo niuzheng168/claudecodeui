@@ -1,5 +1,8 @@
 export { initializeDatabase } from '@/modules/database/init-db.js';
 export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
+// activityChangesDb: used by Activity to tell the Portal of sessions archived, restored or deleted here.
+export { activityChangesDb } from '@/modules/database/repositories/activity-changes.db.js';
+export type { ActivitySessionChange, ActivitySessionChangeKind } from '@/modules/database/repositories/activity-changes.db.js';
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 // claudeDesktopArchiveDb: used by Providers to carry Claude Desktop's archive into Codey once per change.

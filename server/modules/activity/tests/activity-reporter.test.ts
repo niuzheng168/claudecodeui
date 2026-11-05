@@ -6,6 +6,7 @@ import {
   type ActivityOutcome,
   type ActivityReport,
   type ObservedSession,
+  type SessionChange,
 } from '@/modules/activity/services/activity-reporter.service.js';
 import type { SessionSummaryRequest } from '@/shared/index.js';
 
@@ -13,8 +14,10 @@ import type { SessionSummaryRequest } from '@/shared/index.js';
  * A reporter over a fake clock, a settable set of busy sessions and a Portal
  * that records or refuses reports. With `summaries`, it summarizes at once as
  * "<reason> <session>", and the Portal can refuse reports carrying summaries.
+ * With `changes`, archives, restores and deletions wait in `outbox`, and the
+ * Portal can refuse reports carrying them.
  */
-function fixture(options: { summaries?: boolean } = {}) {
+function fixture(options: { summaries?: boolean; changes?: boolean } = {}) {
   const state = {
     now: 1_000_000,
     busy: [] as ObservedSession[],
@@ -22,12 +25,20 @@ function fixture(options: { summaries?: boolean } = {}) {
     sent: [] as ActivityReport[],
     fail: null as null | { status?: number },
     refuseSummaries: null as null | number,
+    refuseChanges: null as null | number,
     summarized: [] as SessionSummaryRequest[],
+    outbox: [] as Array<SessionChange & { revision: number }>,
     reply: {
       accepted: true,
       settings: { version: 1, values: {} as Record<string, number> },
-      ...(options.summaries ? { features: { summary: true } } : {}),
-    } as { accepted: boolean; settings: { version: number; values: Record<string, number> }; features?: { summary: boolean } },
+      ...(options.summaries || options.changes ? {
+        features: { ...(options.summaries ? { summary: true } : {}), ...(options.changes ? { sessionChanges: true } : {}) },
+      } : {}),
+    } as {
+      accepted: boolean;
+      settings: { version: number; values: Record<string, number> };
+      features?: { summary?: boolean; sessionChanges?: boolean };
+    },
   };
   const reporter = new ActivityReporter({
     observe: async () => state.busy,
@@ -37,6 +48,7 @@ function fixture(options: { summaries?: boolean } = {}) {
       if (state.refuseSummaries && report.sessions.some((session) => session.summary)) {
         throw Object.assign(new Error('unknown field'), { status: state.refuseSummaries });
       }
+      if (state.refuseChanges && report.changes) throw Object.assign(new Error('unknown field'), { status: state.refuseChanges });
       state.sent.push(structuredClone(report));
       return state.reply;
     },
@@ -44,6 +56,13 @@ function fixture(options: { summaries?: boolean } = {}) {
       summarize: async (request: SessionSummaryRequest) => {
         state.summarized.push(request);
         return `${request.reason} ${request.sessionId}`;
+      },
+    } : {}),
+    ...(options.changes ? {
+      changes: (limit: number) => state.outbox.slice(0, limit).map((change) => ({ ...change })),
+      acknowledgeChanges: (done: Array<{ sessionId: string; revision: number }>) => {
+        state.outbox = state.outbox.filter((change) =>
+          !done.some((item) => item.sessionId === change.sessionId && item.revision === change.revision));
       },
     } : {}),
     now: () => state.now,
@@ -318,6 +337,89 @@ test('a Portal without the route drops the summaries not yet sent', async () => 
   assert.equal(f.state.sent.length, 2);
   assert.equal(f.state.sent[1].full, true);
   assert.deepEqual(f.summariesSent(), []);
+});
+
+/** What each report carried as changes, `<session> <change>`. */
+const changesSent = (sent: ActivityReport[]) => sent.map((report) => report.changes?.map((item) => `${item.sessionId} ${item.change}`));
+
+test('archives, restores and deletions go out within seconds once the Portal takes them, and are acknowledged', async () => {
+  const f = fixture({ changes: true });
+  f.state.outbox = [{ sessionId: 'a', provider: 'claude', change: 'archived', revision: 1 }];
+  await f.step();
+  assert.deepEqual(changesSent(f.state.sent), [undefined], 'the first reply says whether the Portal takes them');
+  await f.step(1_000);
+  assert.equal(f.state.sent.length, 1);
+  await f.step(2_000);
+  assert.deepEqual(changesSent(f.state.sent), [undefined, ['a archived']]);
+  assert.deepEqual(f.state.outbox, []);
+
+  f.state.outbox = [
+    { sessionId: 'b', provider: 'codex', change: 'deleted', revision: 1 },
+    { sessionId: 'c', provider: 'claude', change: 'restored', revision: 4 },
+  ];
+  await f.step(5_000);
+  await f.step(2_000);
+  assert.deepEqual(changesSent(f.state.sent).at(-1), ['b deleted', 'c restored']);
+  assert.deepEqual(f.state.sent.at(-1)!.changes!.map((item) => item.provider), ['codex', 'claude']);
+  await f.step(5 * 60_000);
+  assert.equal(f.state.sent.at(-1)!.changes, undefined, 'a heartbeat after has nothing left to carry');
+});
+
+test('a failed report keeps its changes for the retry; a newer change of the same session goes in the next one', async () => {
+  const f = fixture({ changes: true });
+  await f.step();
+  f.state.outbox = [{ sessionId: 'a', provider: 'claude', change: 'archived', revision: 1 }];
+  f.state.fail = {};
+  await f.step(1_000);
+  await f.step(2_000);
+  f.state.outbox = [{ sessionId: 'a', provider: 'claude', change: 'restored', revision: 2 }];
+  f.state.fail = null;
+  await f.step(15_000);
+  assert.deepEqual(changesSent(f.state.sent).slice(1), [['a archived']], 'the same report again');
+  assert.equal(f.state.outbox.length, 1, 'the Portal has revision 1, not 2');
+  await f.step(1_000);
+  await f.step(2_000);
+  assert.deepEqual(changesSent(f.state.sent).slice(1), [['a archived'], ['a restored']]);
+  assert.deepEqual(f.state.outbox, []);
+});
+
+test('a Portal that does not take changes gets none; they wait for one that does', async () => {
+  const f = fixture({ changes: true });
+  delete f.state.reply.features;
+  f.state.outbox = [{ sessionId: 'a', provider: 'claude', change: 'deleted', revision: 1 }];
+  await f.step();
+  await f.step(5 * 60_000);
+  assert.deepEqual(changesSent(f.state.sent), [undefined, undefined]);
+  assert.equal(f.state.outbox.length, 1);
+  f.state.reply.features = { sessionChanges: true };
+  await f.step(5 * 60_000);
+  await f.step(1_000);
+  await f.step(2_000);
+  assert.deepEqual(changesSent(f.state.sent).at(-1), ['a deleted']);
+  assert.deepEqual(f.state.outbox, []);
+
+  f.state.outbox = [{ sessionId: 'b', provider: 'claude', change: 'archived', revision: 1 }];
+  f.state.fail = { status: 404 };
+  await f.step(1_000);
+  await f.step(2_000);
+  f.state.fail = null;
+  await f.step(60 * 60_000);
+  assert.equal(f.state.sent.at(-1)!.full, true);
+  assert.equal(f.state.sent.at(-1)!.changes, undefined, 'after a refusal, not before the Portal says so again');
+  assert.equal(f.state.outbox.length, 1);
+});
+
+test('a report the Portal refuses for its changes goes again at once without them, and they are dropped', async () => {
+  const f = fixture({ changes: true });
+  await f.step();
+  f.state.busy = [claude('a', 'waiting')];
+  f.state.outbox = [{ sessionId: 'x', provider: 'claude', change: 'archived', revision: 1 }];
+  f.state.refuseChanges = 400;
+  await f.step(1_000);
+  await f.step(2_000);
+  assert.deepEqual(f.state.sent.slice(1).map((report) => [report.seq, report.sessions.map((s) => s.sessionId), report.changes]),
+    [[1, ['a'], undefined]], 'the same sequence number, without the changes');
+  assert.deepEqual(f.state.outbox, [], 'kept, they would hold up every report after it');
 });
 
 test('the run registry tells listeners when runs start and end, and remembers how each ended', async () => {
