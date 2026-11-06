@@ -383,14 +383,22 @@ test('an idle session takes one more turn as typed, with a checked model; its la
       { code: 'SESSION_TURN_BUSY' });
     await assert.rejects(continueSession({ sessionId: 'nope', text: 'x' }, { userId, runtime: runtime(runs) }, { runTurn, options }), { code: 'SESSION_TURN_NO_SESSION' });
 
-    const message = (role: 'user' | 'assistant', kind: string, content: string, timestamp: string) =>
-      ({ id: timestamp, sessionId: started.sessionId, provider: 'claude', role, kind, content, timestamp }) as never;
+    const message = (role: 'user' | 'assistant', kind: string, content: string, timestamp: string, model?: string) =>
+      ({ id: timestamp, sessionId: started.sessionId, provider: 'claude', role, kind, content, timestamp, ...(model ? { model } : {}) }) as never;
+    const asked = [message('user', 'text', '诊断 #7', 't1'), message('assistant', 'text', 'old', 't2', 'opus'), message('user', 'text', '再看看', 't3')];
     const reply = await lastReply(started.sessionId, runtime(runs), async () => ({ messages: [
-      message('user', 'text', '诊断 #7', 't1'), message('assistant', 'text', 'old', 't2'), message('user', 'text', '再看看', 't3'),
-      message('assistant', 'tool_use', 'grep', 't4'), message('user', 'tool_result', 'match', 't5'), message('assistant', 'text', '根因在重试', 't6'),
-      message('assistant', 'text', '<diagnosis>{}</diagnosis>', 't7'),
-    ] }));
-    assert.deepEqual(reply, { sessionId: started.sessionId, busy: false, text: '根因在重试\n\n<diagnosis>{}</diagnosis>', at: 't7' });
+      ...asked, message('assistant', 'tool_use', 'grep', 't4'), message('user', 'tool_result', 'match', 't5'), message('assistant', 'text', '根因在重试', 't6', 'opus'),
+      message('assistant', 'text', '<diagnosis>{}</diagnosis>', 't7', 'opus'),
+    ] }), () => 'completed');
+    assert.deepEqual(reply, { sessionId: started.sessionId, busy: false, failed: false, text: '根因在重试\n\n<diagnosis>{}</diagnosis>', at: 't7' });
+
+    // A turn that ended in an error failed, and so did one only Claude Code itself answered (an API error, a usage limit), even once the run is forgotten.
+    const apiError = message('assistant', 'text', 'API Error: 422 {"type":"error"}', 't8');
+    assert.equal((await lastReply(started.sessionId, runtime(runs), async () => ({ messages: [...asked, apiError] }), () => null)).failed, true);
+    assert.equal((await lastReply(started.sessionId, runtime(runs), async () => ({ messages: [...asked, message('assistant', 'text', '一半', 't8', 'opus')] }),
+      () => 'failed')).failed, true);
+    assert.equal((await lastReply(started.sessionId, runtime(runs, { busy: true }), async () => ({ messages: [...asked, apiError] }), () => null)).failed, false,
+      'a running turn has not failed yet');
   });
 });
 

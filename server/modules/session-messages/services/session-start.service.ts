@@ -2,7 +2,7 @@ import { stat } from 'node:fs/promises';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
-import { providerCapabilitiesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { codexThreadStatus, providerCapabilitiesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { turnOptions, watchStart } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
@@ -209,12 +209,27 @@ export async function continueSession(
 
 const MAX_REPLY_CHARS = 32_000;
 
-/** The session's reply to its last user message, as text, and whether a turn is running; the end is kept when it is long. */
+/** How the session's last turn ended, while this machine still knows: as the activity report says it. */
+function turnOutcome(sessionId: string): string | null {
+  const session = sessionsDb.getSessionById(sessionId);
+  if (session?.provider === 'codex' && session.provider_session_id && codexThreadStatus.outcomeOf(session.provider_session_id)) return 'failed';
+  const run = chatRunRegistry.getRun(sessionId);
+  return run?.status === 'completed' ? run.outcome : null;
+}
+
+/**
+ * The session's reply to its last user message, as text, whether a turn is
+ * running, and whether the turn failed: it ended in an error, or (Claude) no
+ * model wrote any of the reply, as with the API-error and usage-limit notices
+ * Claude Code writes itself. The end of a long reply is kept.
+ */
 export async function lastReply(
   sessionId: string, runtime: ProviderRuntimeGateway,
   history: (id: string) => Promise<{ messages: NormalizedMessage[] }> = (id) => sessionsService.fetchHistory(id, { limit: 100, offset: 0 }),
-): Promise<{ sessionId: string; busy: boolean; text: string; at: string | null }> {
-  if (!sessionsDb.getSessionById(sessionId)) {
+  outcome: (id: string) => string | null = turnOutcome,
+): Promise<{ sessionId: string; busy: boolean; failed: boolean; text: string; at: string | null }> {
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
     throw new AppError('No such session on this machine.', { code: 'SESSION_TURN_NO_SESSION', statusCode: 404 });
   }
   const busy = isBusy(sessionId, runtime);
@@ -222,8 +237,10 @@ export async function lastReply(
   let lastUser = -1;
   messages.forEach((message, index) => { if (message.role === 'user' && message.kind === 'text') lastUser = index; });
   const reply = messages.slice(lastUser + 1).filter((message) => message.role === 'assistant' && message.kind === 'text' && message.content);
+  const unanswered = session.provider === 'claude' && reply.length > 0 && reply.every((message) => !message.model);
   return {
-    sessionId, busy, text: reply.map((message) => message.content).join('\n\n').slice(-MAX_REPLY_CHARS),
+    sessionId, busy, failed: !busy && (outcome(sessionId) === 'failed' || unanswered),
+    text: reply.map((message) => message.content).join('\n\n').slice(-MAX_REPLY_CHARS),
     at: reply.at(-1)?.timestamp ?? null,
   };
 }
