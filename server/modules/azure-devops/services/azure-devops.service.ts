@@ -11,12 +11,13 @@ const BASE_FIELDS = ['System.Id', 'System.TeamProject', 'System.Title', 'System.
 const INTAKE_FIELDS = [
   ...BASE_FIELDS, 'System.Rev', 'System.Tags', 'System.AreaPath', 'System.CreatedBy', 'System.CreatedDate', 'System.ChangedDate',
 ];
-/** Closed in the stock processes; an item that reaches one of these leaves the intake. */
+/** Closed in the stock processes: such an item is not received, and one awaiting the user leaves the intake. */
 const CLOSED_STATES = ['Closed', 'Done', 'Removed', 'Resolved', 'Completed', 'Cut'];
 type Json = Record<string, any>;
 
 export type AzureDevOpsScope = { organization: string; project: string };
-export type AzureDevOpsIntakeInput = AzureDevOpsScope & { tag: string; assignedToMe: boolean };
+/** Items by ID, or the items a saved query returns. */
+export type AzureDevOpsItemsInput = AzureDevOpsScope & ({ ids: number[] } | { queryId: string });
 export type AzureDevOpsUpdateInput = AzureDevOpsScope & {
   id: string;
   comment?: string;
@@ -104,21 +105,21 @@ function itemView(raw: Json, target: AzureDevOpsTarget, columns: { referenceName
   };
 }
 
+function validId(id: unknown): id is number {
+  return Number.isInteger(id) && Number(id) > 0 && Number(id) <= 2147483647;
+}
+
 function intakeView(raw: Json, scope: AzureDevOpsScope) {
   const fields: Json = raw.fields ?? {};
+  const state = text(fields['System.State'], 100);
   return {
-    id: raw.id, rev: Number(raw.rev ?? fields['System.Rev']) || 0,
-    title: text(fields['System.Title'], 500), type: text(fields['System.WorkItemType'], 100), state: text(fields['System.State'], 100),
+    id: raw.id, rev: Number(raw.rev ?? fields['System.Rev']) || 0, project: text(fields['System.TeamProject'], 128),
+    title: text(fields['System.Title'], 500), type: text(fields['System.WorkItemType'], 100), state, closed: CLOSED_STATES.includes(state),
     tags: tags(fields['System.Tags']), areaPath: text(fields['System.AreaPath'], 400),
     createdBy: text(fields['System.CreatedBy'], 200), assignedTo: text(fields['System.AssignedTo'], 200),
     createdAt: text(fields['System.CreatedDate'], 64), changedAt: text(fields['System.ChangedDate'], 64),
     url: itemUrl(scope, text(fields['System.TeamProject'], 128), raw.id),
   };
-}
-
-/** WIQL string literal: the tag is already restricted to a safe set; quotes are doubled anyway. */
-function wiqlString(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
 }
 
 type Request = (suffix: string, options?: { method?: string; body?: unknown; patch?: boolean; apiVersion?: string }) => Promise<Json>;
@@ -199,7 +200,6 @@ export class AzureDevOpsService {
         .filter((column: Json) => typeof column.referenceName === 'string' && /^[A-Za-z0-9_.-]{1,200}$/.test(column.referenceName))
         .slice(0, 32).map((column: Json) => ({ referenceName: column.referenceName, name: text(column.name, 120) }));
       const ids = new Set<number>();
-      const validId = (id: unknown): id is number => Number.isInteger(id) && Number(id) > 0 && Number(id) <= 2147483647;
       const relations: { sourceId: number | null; targetId: number; rel: string }[] = [];
       for (const reference of result.workItems ?? []) if (validId(reference.id)) ids.add(reference.id);
       for (const relation of result.workItemRelations ?? []) {
@@ -220,7 +220,8 @@ export class AzureDevOpsService {
           ids: selected.slice(offset, offset + 200), fields, errorPolicy: 'Omit',
           ...(typeof result.asOf === 'string' ? { asOf: result.asOf } : {}),
         } });
-        for (const raw of batch.value ?? []) if (selectedSet.has(raw.id)) items.push(itemView(raw, target, columns));
+        // `Omit` leaves a null in place of an item that is gone or hidden.
+        for (const raw of batch.value ?? []) if (selectedSet.has(raw?.id)) items.push(itemView(raw, target, columns));
       }
       const byId = new Map(items.map(item => [item.id, item]));
       return {
@@ -235,24 +236,30 @@ export class AzureDevOpsService {
     });
   }
 
-  /** Open items carrying one project's intake tag: metadata only, newest change first. */
-  async intake(input: AzureDevOpsIntakeInput) {
+  /**
+   * Metadata of received items (codey/docs/codey-ado-intake.md §4): up to 200
+   * by ID, or the first 200 a saved query returns. No text, so it is cheap to poll.
+   */
+  async items(input: AzureDevOpsItemsInput) {
     return this.session(input, async request => {
-      const query = [
-        'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project',
-        `AND [System.Tags] CONTAINS ${wiqlString(input.tag)}`,
-        `AND [System.State] NOT IN (${CLOSED_STATES.map(wiqlString).join(', ')})`,
-        ...(input.assignedToMe ? ['AND [System.AssignedTo] = @Me'] : []),
-        'ORDER BY [System.ChangedDate] DESC',
-      ].join(' ');
-      const result = await request(`wiql?$top=${MAX_INTAKE_ITEMS + 1}`, { body: { query } });
-      const ids = (result.workItems ?? []).map((reference: Json) => reference.id)
-        .filter((id: unknown) => Number.isInteger(id) && Number(id) > 0 && Number(id) <= 2147483647) as number[];
-      const selected = ids.slice(0, MAX_INTAKE_ITEMS);
-      const items = selected.length ? ((await request('workitemsbatch', { body: {
-        ids: selected, fields: INTAKE_FIELDS, errorPolicy: 'Omit', ...(typeof result.asOf === 'string' ? { asOf: result.asOf } : {}),
-      } })).value ?? []).filter((raw: Json) => selected.includes(raw.id)).map((raw: Json) => intakeView(raw, input)) : [];
-      return { contract: 1, items, truncated: ids.length > MAX_INTAKE_ITEMS, fetchedAt: this.fetchedAt() };
+      let ids: number[], truncated = false, asOf: unknown;
+      if ('queryId' in input) {
+        const result = await request(`wiql/${input.queryId}?$top=${MAX_INTAKE_ITEMS + 1}`);
+        const found = new Set<number>();
+        for (const reference of result.workItems ?? []) if (validId(reference.id)) found.add(reference.id);
+        for (const relation of result.workItemRelations ?? []) {
+          for (const end of [relation.source, relation.target]) if (validId(end?.id)) found.add(end.id);
+        }
+        ids = [...found].slice(0, MAX_INTAKE_ITEMS);
+        truncated = found.size > MAX_INTAKE_ITEMS || (result.workItems?.length ?? 0) > MAX_INTAKE_ITEMS ||
+          (result.workItemRelations?.length ?? 0) > MAX_INTAKE_ITEMS;
+        asOf = result.asOf;
+      } else ids = input.ids.slice(0, MAX_INTAKE_ITEMS);
+      const items = ids.length ? ((await request('workitemsbatch', { body: {
+        ids, fields: INTAKE_FIELDS, errorPolicy: 'Omit', ...(typeof asOf === 'string' ? { asOf } : {}),
+      } })).value ?? []).filter((raw: Json) => ids.includes(raw?.id)).map((raw: Json) => intakeView(raw, input)) : [];
+      const found = new Set(items.map((item: { id: number }) => item.id));
+      return { contract: 1, items, missingIds: ids.filter(id => !found.has(id)), truncated, fetchedAt: this.fetchedAt() };
     });
   }
 
@@ -304,7 +311,7 @@ export class AzureDevOpsService {
       if (input.assignTo) {
         const creator = fields['System.CreatedBy'];
         const assignee = input.assignTo === 'creator' ? text(creator?.uniqueName, 256) : input.assignTo;
-        if (!assignee) throw failure('读不到工单创建者，无法指派回去；请在收件设置里指定退回时指派给谁。', 400, 'ADO_UPDATE_INVALID');
+        if (!assignee) throw failure('读不到工单创建者，无法指派回去；请在退回时指定指派给谁。', 400, 'ADO_UPDATE_INVALID');
         operations.push({ op: 'add', path: '/fields/System.AssignedTo', value: assignee });
       }
       if (operations.length === 1) return { contract: 1, id: current.id, rev: current.rev, changed: false };

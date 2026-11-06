@@ -5,13 +5,14 @@ import { AppError, asyncHandler } from '@/shared/index.js';
 import type { AzureDevOpsTarget } from '@/shared/index.js';
 
 import { AzureDevOpsService } from './services/azure-devops.service.js';
-import type { AzureDevOpsScope, AzureDevOpsUpdateInput } from './services/azure-devops.service.js';
+import type { AzureDevOpsItemsInput, AzureDevOpsScope, AzureDevOpsUpdateInput } from './services/azure-devops.service.js';
 import { readTriageContext, triageWorkItem } from './services/work-item-triage.service.js';
 
 /** What the Portal checks before using the intake routes (codey/docs/codey-ado-intake.md §8). */
-const FEATURES = ['read', 'intake', 'item', 'triage', 'update'];
+const FEATURES = ['read', 'items', 'item', 'triage', 'update'];
 const TAG = /^[A-Za-z0-9_.-]{1,64}$/;
 const ITEM_ID = /^[1-9]\d{0,9}$/;
+const QUERY_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const EMAIL = /^[^\s@<>;,"]{1,128}@[^\s@<>;,"]{1,128}$/;
 
 function invalid() {
@@ -39,9 +40,20 @@ function target(value: unknown): AzureDevOpsTarget {
   const input = body(value, ['organization', 'project', 'kind', 'id']);
   const base = scope(input);
   if (typeof input.id !== 'string') throw invalid();
-  if (input.kind === 'query' ? !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.id)
+  if (input.kind === 'query' ? !QUERY_ID.test(input.id)
     : input.kind !== 'item' || itemId(input.id) !== input.id) throw invalid();
   return { ...base, kind: input.kind as AzureDevOpsTarget['kind'], id: input.id };
+}
+
+function items(value: unknown): AzureDevOpsItemsInput {
+  const input = body(value, ['organization', 'project', 'ids', 'queryId']);
+  if (input.queryId !== undefined) {
+    if (input.ids !== undefined || typeof input.queryId !== 'string' || !QUERY_ID.test(input.queryId)) throw invalid();
+    return { ...scope(input), queryId: input.queryId };
+  }
+  if (!Array.isArray(input.ids) || !input.ids.length || input.ids.length > 200 ||
+      input.ids.some(id => !Number.isSafeInteger(id) || id <= 0 || id > 2147483647)) throw invalid();
+  return { ...scope(input), ids: [...new Set(input.ids as number[])] };
 }
 
 function tagList(value: unknown): string[] | undefined {
@@ -62,7 +74,7 @@ function update(value: unknown): AzureDevOpsUpdateInput {
   };
 }
 
-type Service = Pick<AzureDevOpsService, 'read' | 'intake' | 'item' | 'update'>;
+type Service = Pick<AzureDevOpsService, 'read' | 'items' | 'item' | 'update'>;
 
 /** Route tests may supply only the operations they exercise. */
 function operation<K extends keyof Service>(service: Partial<Service>, name: K): Service[K] {
@@ -92,10 +104,8 @@ export function createAzureDevOpsRoutes(
   router.post('/read', asyncHandler(async (req, res) => {
     res.json(await operation(service, 'read')(target(req.body)));
   }));
-  router.post('/intake', asyncHandler(async (req, res) => {
-    const input = body(req.body, ['organization', 'project', 'tag', 'assignedToMe']);
-    if (typeof input.tag !== 'string' || !TAG.test(input.tag) || typeof input.assignedToMe !== 'boolean') throw invalid();
-    res.json(await operation(service, 'intake')({ ...scope(input), tag: input.tag, assignedToMe: input.assignedToMe }));
+  router.post('/items', asyncHandler(async (req, res) => {
+    res.json(await operation(service, 'items')(items(req.body)));
   }));
   router.post('/item', asyncHandler(async (req, res) => {
     const input = body(req.body, ['organization', 'project', 'id']);

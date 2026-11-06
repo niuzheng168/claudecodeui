@@ -144,31 +144,36 @@ const intakeRaw = (id: number, extra: Record<string, unknown> = {}) => ({ id, re
   'System.CreatedDate': '2026-11-05T01:00:00Z', 'System.ChangedDate': '2026-11-05T02:00:00Z', ...extra,
 } });
 
-test('intake runs a fixed WIQL for one tag and returns metadata only, at most 200 items', async () => {
+test('items returns metadata only: by ID with the missing ones, or for the first 200 items of a saved query', async () => {
   const calls: { url: string; options: RequestInit }[] = [];
   const service = new AzureDevOpsService({ token: async () => 'test-only', fetch: (async (url, options) => {
     calls.push({ url: String(url), options: options! });
-    if (String(url).includes('/wiql?')) return json({ workItems: Array.from({ length: 201 }, (_, i) => ({ id: i + 1 })) });
+    if (String(url).includes('/wiql/')) {
+      return json({ asOf: '2026-11-05T03:00:00Z', workItems: Array.from({ length: 201 }, (_, i) => ({ id: i + 1 })), workItemRelations: [{ source: null, target: { id: 500 } }] });
+    }
     const ids: number[] = JSON.parse(String(options?.body)).ids;
-    return json({ value: ids.map(id => intakeRaw(id, { 'System.Description': 'secret text' })) });
+    // `errorPolicy: Omit` answers a missing item with null.
+    return json({ value: ids.map(id => id === 404 ? null : intakeRaw(id, { 'System.Description': 'secret text', ...(id === 9 ? { 'System.State': 'Closed' } : {}) })) });
   }) as typeof fetch });
-  const result = await service.intake({ ...scope, tag: "codey_A", assignedToMe: true });
-  const query = JSON.parse(String(calls[0].options.body)).query as string;
-  assert.match(query, /\[System\.Tags\] CONTAINS 'codey_A'/);
-  assert.match(query, /\[System\.AssignedTo\] = @Me/);
-  assert.match(query, /NOT IN \('Closed'/);
-  assert.equal(result.items.length, 200);
-  assert.equal(result.truncated, true);
-  assert.deepEqual(result.items[0].tags, ['codey_A', 'SLA']);
-  assert.equal(result.items[0].createdBy, 'Detector Bot');
-  assert.equal(result.items[0].rev, 3);
-  assert.equal(JSON.stringify(result).includes('secret text'), false);
-  const unassigned = new AzureDevOpsService({ token: async () => 'test-only', fetch: (async (url, options) => {
-    calls.push({ url: String(url), options: options! });
-    return json({ workItems: [] });
-  }) as typeof fetch });
-  assert.deepEqual((await unassigned.intake({ ...scope, tag: 'codey_A', assignedToMe: false })).items, []);
-  assert.doesNotMatch(JSON.parse(String(calls.at(-1)!.options.body)).query, /@Me/);
+  const byId = await service.items({ ...scope, ids: [7, 9, 404] });
+  assert.deepEqual(byId.items.map((item: { id: number; closed: boolean }) => [item.id, item.closed]), [[7, false], [9, true]]);
+  assert.deepEqual(byId.missingIds, [404]);
+  assert.equal(byId.truncated, false);
+  assert.deepEqual(byId.items[0].tags, ['codey_A', 'SLA']);
+  assert.equal(byId.items[0].createdBy, 'Detector Bot');
+  assert.equal(byId.items[0].rev, 3);
+  assert.equal(JSON.stringify(byId).includes('secret text'), false);
+  const batch = JSON.parse(String(calls[0].options.body));
+  assert.equal(batch.errorPolicy, 'Omit');
+  assert.ok(batch.fields.includes('System.Rev'));
+
+  calls.length = 0;
+  const byQuery = await service.items({ ...scope, queryId: '11111111-2222-3333-4444-555555555555' });
+  assert.match(calls[0].url, /\/wiql\/11111111-2222-3333-4444-555555555555\?\$top=201&/);
+  assert.equal(calls[0].options.method, 'GET', 'a saved query is run, not written');
+  assert.equal(byQuery.items.length, 200);
+  assert.equal(byQuery.truncated, true);
+  assert.equal(JSON.parse(String(calls[1].options.body)).asOf, '2026-11-05T03:00:00Z');
 });
 
 test('item detail is plain text with the newest comments; missing comments do not fail it', async () => {
@@ -222,13 +227,13 @@ test('update writes one JSON Patch that tests the revision, edits tags case-inse
   assert.equal((await unchanged.update({ ...scope, id: '7', removeTags: ['codey_A'] })).changed, false);
 });
 
-test('intake, item, update and triage routes reject unbounded input before touching ADO', async t => {
+test('items, item, update and triage routes reject unbounded input before touching ADO', async t => {
   const calls: string[] = [];
   const service = {
-    intake: async () => { calls.push('intake'); return { contract: 1, items: [] }; },
+    items: async () => { calls.push('items'); return { contract: 1, items: [] }; },
     item: async () => { calls.push('item'); return { contract: 1, item: { id: 7, title: 'T', description: 'body', reproSteps: '', comments: [] } }; },
     update: async () => { calls.push('update'); return { contract: 1 }; },
-  } as unknown as Pick<AzureDevOpsService, 'intake' | 'item' | 'update'>;
+  } as unknown as Pick<AzureDevOpsService, 'items' | 'item' | 'update'>;
   const triage = async () => ({ verdict: 'not_ours' }) as never;
   const app = express();
   app.use(express.json());
@@ -241,20 +246,21 @@ test('intake, item, update and triage routes reject unbounded input before touch
   const post = (path: string, value: unknown) => fetch(`${base}/${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value),
   });
-  assert.deepEqual(await (await fetch(`${base}/info`)).json(), { contract: 1, features: ['read', 'intake', 'item', 'triage', 'update'] });
+  assert.deepEqual(await (await fetch(`${base}/info`)).json(), { contract: 1, features: ['read', 'items', 'item', 'triage', 'update'] });
   for (const [path, input] of [
-    ['intake', { ...scope, tag: "x' OR 1=1", assignedToMe: true }], ['intake', { ...scope, tag: 'codey_A' }],
+    ['items', { ...scope, queryId: "x' OR 1=1" }], ['items', { ...scope, ids: [] }], ['items', { ...scope, ids: ['7'] }],
+    ['items', { ...scope, ids: Array.from({ length: 201 }, (_, i) => i + 1) }], ['items', { ...scope, ids: [7], queryId: '11111111-2222-3333-4444-555555555555' }],
     ['update', { ...scope, id: '7', addTags: ['a', 'b', 'c', 'd', 'e'] }], ['update', { ...scope, id: '7', assignTo: 'someone' }],
     ['update', { ...scope, id: '7', comment: 'x'.repeat(4001) }], ['update', { ...scope, id: '7', fields: {} }],
     ['triage', { ...scope, id: '7', context: { project: { name: 'P' }, directories: 'nope' } }],
     ['item', { ...scope, id: '0' }],
   ] as const) assert.equal((await post(path, input)).status, 400, JSON.stringify(input));
   assert.deepEqual(calls, []);
-  assert.equal((await post('intake', { ...scope, tag: 'codey_A', assignedToMe: false })).status, 200);
+  assert.equal((await post('items', { ...scope, ids: [7, 7] })).status, 200);
   assert.equal((await post('update', { ...scope, id: '7', comment: 'ok', assignTo: 'dev@example.test' })).status, 200);
   const triaged = await post('triage', { ...scope, id: '7', context: { project: { name: 'P', description: '' }, directories: [], otherProjects: [], openWorkItems: [] } });
   const body = await triaged.json() as { item: Record<string, unknown>; result: { verdict: string } };
   assert.equal(body.item.description, undefined);
   assert.equal(body.result.verdict, 'not_ours');
-  assert.deepEqual(calls, ['intake', 'update', 'item']);
+  assert.deepEqual(calls, ['items', 'update', 'item']);
 });
