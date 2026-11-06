@@ -1,13 +1,13 @@
 import { stat } from 'node:fs/promises';
 
-import { projectsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { providerCapabilitiesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { turnOptions, watchStart } from '@/modules/session-messages/services/session-message-delivery.service.js';
-import { runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { createTaskWorktreeProject } from '@/modules/worktrees/index.js';
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
 import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/index.js';
 
 /**
@@ -18,10 +18,50 @@ import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/
  *
  * The first message is the user's own request, not a message from another
  * session, so it goes to the agent as typed. The turn runs with the options
- * a session message's turn gets, and resolves once it has started.
+ * a session message's turn gets, or the model, effort and permission mode the
+ * user chose from `startOptions`, and resolves once it has started.
  */
 
 const START_POLL_MS = 100;
+export const START_PROVIDERS = ['claude', 'codex'] as const;
+export type StartProvider = typeof START_PROVIDERS[number];
+
+/** One agent's choices on this machine. */
+export type StartAgentOptions = {
+  available: boolean;
+  models: { value: string; label: string; description: string; efforts: string[]; defaultEffort: string | null }[];
+  defaultModel: string | null;
+  permissionModes: string[];
+  /** The mode a start gets when none is chosen; null keeps the agent's own (Codex: the thread's configured permissions). */
+  defaultPermissionMode: string | null;
+};
+export type StartOptions = Record<StartProvider, StartAgentOptions>;
+
+/** The models with their efforts and the permission modes a start may choose, per agent (codey/docs/codey-ado-intake.md §7). */
+export async function startOptions(hasRuntime: (provider: string) => boolean = () => true): Promise<StartOptions> {
+  const agents = {} as StartOptions;
+  for (const provider of START_PROVIDERS) {
+    let catalog: ProviderModelsDefinition | null = null;
+    try {
+      catalog = await providerModelsService.getProviderModels(provider);
+    } catch {
+      // Listed without models: a start then runs the agent's default.
+    }
+    const capabilities = providerCapabilitiesService.getProviderCapabilities(provider);
+    agents[provider] = {
+      available: hasRuntime(provider),
+      models: (catalog?.OPTIONS ?? []).slice(0, 50).map((option) => ({
+        value: option.value, label: option.label.slice(0, 200), description: (option.description ?? '').slice(0, 300),
+        efforts: (option.effort?.values ?? []).map((entry) => entry.value), defaultEffort: option.effort?.default ?? null,
+      })),
+      defaultModel: catalog?.DEFAULT || null,
+      permissionModes: capabilities.permissionModes,
+      // Matches turnOptions: only a Claude turn is given a mode.
+      defaultPermissionMode: provider === 'claude' ? capabilities.defaultPermissionMode : null,
+    };
+  }
+  return agents;
+}
 
 export type SessionStartInput = {
   path: string;
@@ -31,6 +71,10 @@ export type SessionStartInput = {
   branch: string | null;
   /** The Codey project the session is for, so it gets the project's memory brief. */
   workbenchProjectId: string | null;
+  /** Chosen from `startOptions`; null keeps what a session message's turn would get. */
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: string | null;
 };
 
 export type SessionStartResult = { sessionId: string; provider: string; path: string; branch: string | null };
@@ -40,6 +84,7 @@ type Dependencies = {
   register: (projectPath: string) => Promise<void>;
   createWorktree: typeof createTaskWorktreeProject;
   runTurn: typeof runDetachedChatTurn;
+  options?: () => Promise<StartOptions>;
 };
 
 /** The existing directory a request names, inside this machine's workspace. */
@@ -65,6 +110,27 @@ async function register(projectPath: string): Promise<void> {
   }
 }
 
+type Choice = { provider: LLMProvider; model?: string | null; effort?: string | null; permissionMode?: string | null };
+
+/** The chosen model, effort and permission mode, checked against what this machine offers before anything is created. */
+async function chosenOptions(input: Choice, options: () => Promise<StartOptions>): Promise<Record<string, string>> {
+  if (!input.model && !input.effort && !input.permissionMode) return {};
+  const agent = (await options())[input.provider as StartProvider];
+  const refuse = (message: string) => new AppError(message, { code: 'SESSION_START_INVALID', statusCode: 400 });
+  const model = input.model ?? agent?.defaultModel ?? null;
+  const entry = agent?.models.find((option) => option.value === model);
+  if (input.model && !entry) throw refuse(`This machine has no ${input.provider} model ${input.model}.`);
+  if (input.effort && !entry?.efforts.includes(input.effort)) throw refuse(`The model does not offer effort ${input.effort}.`);
+  if (input.permissionMode && !agent?.permissionModes.includes(input.permissionMode)) {
+    throw refuse(`${input.provider} has no permission mode ${input.permissionMode}.`);
+  }
+  return {
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.effort ? { effort: input.effort } : {}),
+    ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+  };
+}
+
 const defaults: Dependencies = { directory, register, createWorktree: createTaskWorktreeProject, runTurn: runDetachedChatTurn };
 
 export async function startSession(
@@ -75,6 +141,7 @@ export async function startSession(
   if (!runtime.hasRuntime(input.provider)) {
     throw new AppError(`This machine cannot run ${input.provider} sessions.`, { code: 'SESSION_START_UNAVAILABLE', statusCode: 409 });
   }
+  const chosen = await chosenOptions(input, dependencies.options ?? startOptions);
   const root = await dependencies.directory(input.path);
   let path = root;
   let branch: string | null = null;
@@ -87,15 +154,76 @@ export async function startSession(
   const { sessionId } = sessionsService.createAppSession(input.provider, path, input.text);
   const options = {
     ...await turnOptions(input.provider, sessionId),
+    ...chosen,
     ...(input.workbenchProjectId ? { workbenchProjectId: input.workbenchProjectId } : {}),
   };
+  await runTurn(dependencies.runTurn, { sessionId, userId, content: input.text, options }, runtime, 'SESSION_START_FAILED');
+  return { sessionId, provider: input.provider, path, branch };
+}
+
+/** Starts a turn and resolves once it runs; a turn that fails to get going is an error. */
+async function runTurn(
+  run: typeof runDetachedChatTurn, turn: Parameters<typeof runDetachedChatTurn>[0], runtime: ProviderRuntimeGateway, code: string,
+): Promise<void> {
   const startedAt = Date.now();
   const outcome: { refused: string | null } = { refused: null };
-  const run = dependencies.runTurn({ sessionId, userId, content: input.text, options }, { runtime })
+  const running = run(turn, { runtime })
     .then((value) => { if (!value.started) outcome.refused = value.error; })
     .catch((error: unknown) => { outcome.refused = error instanceof Error ? error.message : String(error); });
-  await Promise.race([run, new Promise((resolve) => setTimeout(resolve, START_POLL_MS))]);
-  const failure = outcome.refused ?? await watchStart(sessionId, startedAt);
-  if (failure) throw new AppError(failure, { code: 'SESSION_START_FAILED', statusCode: 409 });
-  return { sessionId, provider: input.provider, path, branch };
+  await Promise.race([running, new Promise((resolve) => setTimeout(resolve, START_POLL_MS))]);
+  const failure = outcome.refused ?? await watchStart(turn.sessionId, startedAt);
+  if (failure) throw new AppError(failure, { code, statusCode: 409 });
+}
+
+function isBusy(sessionId: string, runtime: ProviderRuntimeGateway): boolean {
+  return chatRunRegistry.isProcessing(sessionId) || runtime.hasBackgroundWork?.(sessionId) === true;
+}
+
+export type SessionTurnInput = { sessionId: string; text: string; model?: string | null; effort?: string | null; permissionMode?: string | null };
+
+/**
+ * One more turn of an existing session, with the user's own message as typed:
+ * carrying out a diagnosis in the session that made it, or diagnosing again
+ * (codey/docs/codey-ado-intake.md §7.2). An idle session only.
+ */
+export async function continueSession(
+  input: SessionTurnInput,
+  { userId, runtime }: { userId: number; runtime: ProviderRuntimeGateway },
+  dependencies: Pick<Dependencies, 'runTurn' | 'options'> = defaults,
+): Promise<{ sessionId: string; provider: string }> {
+  const session = sessionsDb.getSessionById(input.sessionId);
+  if (!session) throw new AppError('No such session on this machine.', { code: 'SESSION_TURN_NO_SESSION', statusCode: 404 });
+  const provider = session.provider as LLMProvider;
+  if (!START_PROVIDERS.includes(provider as StartProvider) || !runtime.hasRuntime(provider)) {
+    throw new AppError(`This machine cannot run ${provider} sessions.`, { code: 'SESSION_TURN_UNAVAILABLE', statusCode: 409 });
+  }
+  if (isBusy(input.sessionId, runtime)) {
+    throw new AppError('The session is busy; try again when its turn has ended.', { code: 'SESSION_TURN_BUSY', statusCode: 409 });
+  }
+  const chosen = await chosenOptions({ provider, model: input.model, effort: input.effort, permissionMode: input.permissionMode },
+    dependencies.options ?? startOptions);
+  const options = { ...await turnOptions(provider, input.sessionId), ...chosen };
+  await runTurn(dependencies.runTurn, { sessionId: input.sessionId, userId, content: input.text, options }, runtime, 'SESSION_TURN_FAILED');
+  return { sessionId: input.sessionId, provider };
+}
+
+const MAX_REPLY_CHARS = 32_000;
+
+/** The session's reply to its last user message, as text, and whether a turn is running; the end is kept when it is long. */
+export async function lastReply(
+  sessionId: string, runtime: ProviderRuntimeGateway,
+  history: (id: string) => Promise<{ messages: NormalizedMessage[] }> = (id) => sessionsService.fetchHistory(id, { limit: 100, offset: 0 }),
+): Promise<{ sessionId: string; busy: boolean; text: string; at: string | null }> {
+  if (!sessionsDb.getSessionById(sessionId)) {
+    throw new AppError('No such session on this machine.', { code: 'SESSION_TURN_NO_SESSION', statusCode: 404 });
+  }
+  const busy = isBusy(sessionId, runtime);
+  const { messages } = await history(sessionId);
+  let lastUser = -1;
+  messages.forEach((message, index) => { if (message.role === 'user' && message.kind === 'text') lastUser = index; });
+  const reply = messages.slice(lastUser + 1).filter((message) => message.role === 'assistant' && message.kind === 'text' && message.content);
+  return {
+    sessionId, busy, text: reply.map((message) => message.content).join('\n\n').slice(-MAX_REPLY_CHARS),
+    at: reply.at(-1)?.timestamp ?? null,
+  };
 }

@@ -50,6 +50,8 @@ export type TriageResult = {
   question: string | null;
   project: string | null;
   duplicateOf: number | null;
+  /** Whether the session should work in a new worktree (it changes code) or in the directory itself (investigation only). */
+  worktree: boolean | null;
 };
 
 export const TRIAGE_INSTRUCTIONS = `You triage one Azure DevOps work item for a software project managed in Codey. The item was received into this project, by a saved query or by hand; automated agents open many such items. The user decides what happens next; a coding agent may then work on it in one of the project's directories.
@@ -63,6 +65,7 @@ Choose the verdict:
 - "not_ours": it belongs to none of the listed projects, or it is a false alarm or expected behaviour.
 - "duplicate": an open work item of this project already covers it. Give that item's id.
 Fields: "directory" is the index of the best directory (required for "actionable", else only when obvious, otherwise null); "alternatives" lists up to 3 other plausible indices, best first; "confidence" is "high", "medium" or "low"; "reason" says why in at most three sentences and names the evidence (session topics, area path, error text); "goal" and "acceptance" (one to five checkable criteria) only for "actionable", otherwise null and []; "question" only for "needs_info"; "project" only for "other_project"; "duplicateOf" only for "duplicate"; otherwise null.
+Also say, whatever the verdict, whether the work belongs in a new worktree: "worktree" is true when it will change code, false when it is investigation only.
 Write reason, goal and acceptance in Simplified Chinese, and the question in the language the work item is written in. Plain text without Markdown, URLs or credentials.
 Return only the JSON object.`;
 
@@ -78,9 +81,10 @@ export const TRIAGE_SCHEMA = {
     acceptance: { type: 'array', items: { type: 'string' } },
     question: { type: ['string', 'null'] },
     project: { type: ['string', 'null'] },
+    worktree: { type: 'boolean' },
     duplicateOf: { type: ['integer', 'null'] },
   },
-  required: ['verdict', 'directory', 'alternatives', 'confidence', 'reason', 'goal', 'acceptance', 'question', 'project', 'duplicateOf'],
+  required: ['verdict', 'directory', 'alternatives', 'confidence', 'reason', 'goal', 'acceptance', 'question', 'project', 'duplicateOf', 'worktree'],
   additionalProperties: false,
 };
 
@@ -177,7 +181,7 @@ export function parseTriage(text: string, context: TriageContext, itemId: number
   if ([reason, goal, question, ...acceptance].some((entry) => entry && credentialShaped(entry))) return null;
   return {
     verdict, directory, alternatives, confidence: value.confidence as TriageResult['confidence'],
-    reason, goal, acceptance, question, project, duplicateOf,
+    reason, goal, acceptance, question, project, duplicateOf, worktree: typeof value.worktree === 'boolean' ? value.worktree : null,
   };
 }
 

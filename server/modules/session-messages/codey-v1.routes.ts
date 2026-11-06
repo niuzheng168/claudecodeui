@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import { codeyInboundMessagesDb, sessionsDb } from '@/modules/database/index.js';
 import { applyClaudeArchiveChanges } from '@/modules/providers/index.js';
 import { deliverSessionMessage } from '@/modules/session-messages/services/session-message-delivery.service.js';
-import { startSession } from '@/modules/session-messages/services/session-start.service.js';
+import { continueSession, lastReply, startOptions, startSession } from '@/modules/session-messages/services/session-start.service.js';
 import type { SessionMessageResult } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
@@ -44,7 +44,7 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
   const router = express.Router();
 
   router.get('/info', (_req: Request, res: Response) => {
-    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive', 'session-start'] }));
+    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn'] }));
   });
 
   /**
@@ -92,8 +92,14 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
       }
       const body = (req.body ?? {}) as Record<string, unknown>;
       const invalidStart = (message: string) => new AppError(message, { code: 'SESSION_START_INVALID', statusCode: 400 });
-      if (Object.keys(body).some((key) => !['startId', 'path', 'provider', 'text', 'branch', 'workbenchProjectId'].includes(key))) {
+      if (Object.keys(body).some((key) => !['startId', 'path', 'provider', 'text', 'branch', 'workbenchProjectId', 'model', 'effort', 'permissionMode'].includes(key))) {
         throw invalidStart('The request has unsupported fields.');
+      }
+      for (const name of ['model', 'effort', 'permissionMode'] as const) {
+        const value = body[name];
+        if (value !== undefined && value !== null && (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value))) {
+          throw invalidStart(`${name} is invalid.`);
+        }
       }
       if (typeof body.startId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(body.startId)) throw invalidStart('startId is invalid.');
       if (typeof body.path !== 'string' || !body.path.trim() || body.path.length > 1024) throw invalidStart('path is invalid.');
@@ -126,6 +132,9 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
           path: body.path, provider: body.provider, text: body.text,
           branch: typeof body.branch === 'string' && body.branch ? body.branch : null,
           workbenchProjectId: typeof body.workbenchProjectId === 'string' ? body.workbenchProjectId : null,
+          model: typeof body.model === 'string' ? body.model : null,
+          effort: typeof body.effort === 'string' ? body.effort : null,
+          permissionMode: typeof body.permissionMode === 'string' ? body.permissionMode : null,
         }, { userId, runtime });
       } catch (error) {
         codeyInboundMessagesDb.release(key);
@@ -135,6 +144,75 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
       res.json(createApiSuccessResponse(result));
     }),
   );
+
+  /** What a start may choose here: each agent's models, efforts and permission modes (codey/docs/codey-ado-intake.md §7). */
+  router.get('/sessions/start-options', asyncHandler(async (req: Request, res: Response) => {
+    if (!Number.isInteger(Number((req as AuthenticatedRequest).user?.id))) {
+      throw new AppError('Starting sessions needs a Codey-managed node.', { code: 'SESSION_START_UNAVAILABLE', statusCode: 403 });
+    }
+    res.json(createApiSuccessResponse({ agents: await startOptions((provider) => runtime.hasRuntime(provider)) }));
+  }));
+
+  /** The session's reply to its last user message and whether it is still working, for a diagnosis the Portal reads. */
+  router.get('/sessions/:sessionId/last-reply', asyncHandler(async (req: Request, res: Response) => {
+    if (!Number.isInteger(Number((req as AuthenticatedRequest).user?.id))) {
+      throw new AppError('Reading sessions needs a Codey-managed node.', { code: 'SESSION_TURN_UNAVAILABLE', statusCode: 403 });
+    }
+    const id = String(req.params.sessionId ?? '');
+    if (!SESSION_ID.test(id)) throw invalid('sessionId is invalid.');
+    res.json(createApiSuccessResponse(await lastReply(id, runtime)));
+  }));
+
+  /** The owner's own message as one more turn of an idle session, once per turnId; options as for a start. */
+  router.post('/sessions/:sessionId/turn', asyncHandler(async (req: Request, res: Response) => {
+    const userId = Number((req as AuthenticatedRequest).user?.id);
+    if (!Number.isInteger(userId)) {
+      throw new AppError('Continuing sessions needs a Codey-managed node.', { code: 'SESSION_TURN_UNAVAILABLE', statusCode: 403 });
+    }
+    const id = String(req.params.sessionId ?? '');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const invalidTurn = (message: string) => new AppError(message, { code: 'SESSION_TURN_INVALID', statusCode: 400 });
+    if (!SESSION_ID.test(id)) throw invalidTurn('sessionId is invalid.');
+    if (Object.keys(body).some((key) => !['turnId', 'text', 'model', 'effort', 'permissionMode'].includes(key))) {
+      throw invalidTurn('The request has unsupported fields.');
+    }
+    if (typeof body.turnId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(body.turnId)) throw invalidTurn('turnId is invalid.');
+    if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > MAX_TEXT_CHARS) {
+      throw invalidTurn(`text must be 1–${MAX_TEXT_CHARS} characters.`);
+    }
+    for (const name of ['model', 'effort', 'permissionMode'] as const) {
+      const value = body[name];
+      if (value !== undefined && value !== null && (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value))) {
+        throw invalidTurn(`${name} is invalid.`);
+      }
+    }
+    const key = `turn:${body.turnId}`;
+    const claim = codeyInboundMessagesDb.claim(key, 'session-turn');
+    if (claim.state === 'done') {
+      res.json(createApiSuccessResponse(claim.result));
+      return;
+    }
+    if (claim.state !== 'new') {
+      throw new AppError(claim.state === 'in_progress' ? 'This turn is being started.'
+        : 'This machine stopped while starting this turn; it may or may not have run.', {
+        code: claim.state === 'in_progress' ? 'SESSION_TURN_IN_PROGRESS' : 'SESSION_TURN_UNCONFIRMED', statusCode: 409,
+      });
+    }
+    let result;
+    try {
+      result = await continueSession({
+        sessionId: id, text: body.text,
+        model: typeof body.model === 'string' ? body.model : null,
+        effort: typeof body.effort === 'string' ? body.effort : null,
+        permissionMode: typeof body.permissionMode === 'string' ? body.permissionMode : null,
+      }, { userId, runtime });
+    } catch (error) {
+      codeyInboundMessagesDb.release(key);
+      throw error;
+    }
+    codeyInboundMessagesDb.complete(key, result);
+    res.json(createApiSuccessResponse(result));
+  }));
 
   /** A session by its CloudCLI or provider session ID, as the Portal records it for a grant. */
   router.get('/sessions/:sessionId', (req: Request, res: Response) => {

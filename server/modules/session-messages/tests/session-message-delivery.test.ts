@@ -14,7 +14,7 @@ import { closeConnection, initializeDatabase, sessionDraftsDb, sessionsDb, userD
 import { providerModelsService } from '@/modules/providers/index.js';
 import { createCodeyV1Routes } from '@/modules/session-messages/codey-v1.routes.js';
 import { crossSessionMessage } from '@/modules/session-messages/services/claude-peer-message.service.js';
-import { startSession } from '@/modules/session-messages/services/session-start.service.js';
+import { continueSession, lastReply, startSession } from '@/modules/session-messages/services/session-start.service.js';
 import {
   deliverSessionMessage,
   parseSessionAddress,
@@ -235,7 +235,7 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
   await withRoutes(async ({ root, post, get }) => {
     sessionsDb.createAppSession('app-1', 'codex', root, 'Review');
     sessionsDb.assignProviderSessionId('app-1', 'thread-1');
-    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive', 'session-start'] });
+    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn'] });
     const session = (await get('/sessions/thread-1')).body.data;
     assert.equal(session.sessionId, 'app-1');
     assert.equal(session.providerSessionId, 'thread-1');
@@ -330,12 +330,93 @@ test('a started session runs its first message as the user typed it, in a new wo
   });
 });
 
+test('a start may choose the model, effort and permission mode this machine offers', async () => {
+  await withNode(async ({ userId, root }) => {
+    const runs: RunCall[] = [];
+    const agent = (models: { value: string; efforts: string[] }[], permissionModes: string[]) => ({
+      available: true, defaultModel: models[0].value, permissionModes, defaultPermissionMode: null,
+      models: models.map((model) => ({ ...model, label: model.value, description: '', defaultEffort: model.efforts.at(-1) ?? null })),
+    });
+    const options = async () => ({
+      claude: agent([{ value: 'claude-opus-5.5', efforts: ['low', 'high', 'max'] }, { value: 'claude-haiku-5.5', efforts: [] }], ['default', 'bypassPermissions', 'plan']),
+      codex: agent([{ value: 'gpt-6.1-sol', efforts: ['low', 'max'] }], ['default', 'bypassPermissions', 'plan']),
+    });
+    const dependencies = {
+      directory: async (requested: string) => requested, register: async () => {},
+      createWorktree: async () => { throw new Error('no worktree here'); },
+      runTurn: (await import('@/modules/websocket/index.js')).runDetachedChatTurn, options,
+    };
+    const base = { path: root, provider: 'claude' as const, text: 'Fix it', branch: null, workbenchProjectId: null };
+    await startSession({ ...base, model: 'claude-opus-5.5', effort: 'high', permissionMode: 'plan' }, { userId, runtime: runtime(runs) }, dependencies);
+    assert.deepEqual([runs[0].options.model, runs[0].options.effort, runs[0].options.permissionMode], ['claude-opus-5.5', 'high', 'plan']);
+    await startSession({ ...base, provider: 'codex', effort: 'low' }, { userId, runtime: runtime(runs) }, dependencies);
+    assert.equal(runs[1].options.effort, 'low', 'an effort alone is checked against the default model');
+    for (const [bad, message] of [
+      [{ model: 'gpt-6.1-sol' }, /no claude model/], [{ model: 'claude-haiku-5.5', effort: 'high' }, /effort high/],
+      [{ permissionMode: 'auto' }, /permission mode auto/],
+    ] as const) {
+      await assert.rejects(startSession({ ...base, ...bad }, { userId, runtime: runtime(runs) }, dependencies), { code: 'SESSION_START_INVALID', message });
+    }
+    assert.equal(runs.length, 2, 'a refused choice starts nothing');
+  });
+});
+
+test('an idle session takes one more turn as typed, with a checked model; its last reply reads back as text', async () => {
+  await withNode(async ({ userId, root }) => {
+    const runs: RunCall[] = [];
+    const options = async () => ({
+      claude: { available: true, defaultModel: 'claude-opus-5.5', permissionModes: ['default', 'bypassPermissions', 'plan'], defaultPermissionMode: null,
+        models: [{ value: 'claude-opus-5.5', label: 'Opus', description: '', efforts: ['high'], defaultEffort: 'high' }] },
+      codex: { available: true, defaultModel: null, permissionModes: [], defaultPermissionMode: null, models: [] },
+    });
+    const runTurn = (await import('@/modules/websocket/index.js')).runDetachedChatTurn;
+    const started = await startSession({ path: root, provider: 'claude', text: '诊断 #7', branch: null, workbenchProjectId: null },
+      { userId, runtime: runtime(runs) }, { directory: async (value: string) => value, register: async () => {}, createWorktree: async () => { throw new Error('none'); }, runTurn });
+    chatRunRegistry.clearAll();
+    await continueSession({ sessionId: started.sessionId, text: '按诊断方案执行', permissionMode: 'bypassPermissions' }, { userId, runtime: runtime(runs) }, { runTurn, options });
+    assert.equal(runs[1].command, '按诊断方案执行', 'the owner\'s message is not wrapped');
+    assert.equal(runs[1].options.permissionMode, 'bypassPermissions');
+    chatRunRegistry.clearAll();
+    await assert.rejects(continueSession({ sessionId: started.sessionId, text: 'x', model: 'gpt-6.1-sol' }, { userId, runtime: runtime(runs) }, { runTurn, options }),
+      { code: 'SESSION_START_INVALID' });
+    await assert.rejects(continueSession({ sessionId: started.sessionId, text: 'x' }, { userId, runtime: runtime(runs, { busy: true }) }, { runTurn, options }),
+      { code: 'SESSION_TURN_BUSY' });
+    await assert.rejects(continueSession({ sessionId: 'nope', text: 'x' }, { userId, runtime: runtime(runs) }, { runTurn, options }), { code: 'SESSION_TURN_NO_SESSION' });
+
+    const message = (role: 'user' | 'assistant', kind: string, content: string, timestamp: string) =>
+      ({ id: timestamp, sessionId: started.sessionId, provider: 'claude', role, kind, content, timestamp }) as never;
+    const reply = await lastReply(started.sessionId, runtime(runs), async () => ({ messages: [
+      message('user', 'text', '诊断 #7', 't1'), message('assistant', 'text', 'old', 't2'), message('user', 'text', '再看看', 't3'),
+      message('assistant', 'tool_use', 'grep', 't4'), message('user', 'tool_result', 'match', 't5'), message('assistant', 'text', '根因在重试', 't6'),
+      message('assistant', 'text', '<diagnosis>{}</diagnosis>', 't7'),
+    ] }));
+    assert.deepEqual(reply, { sessionId: started.sessionId, busy: false, text: '根因在重试\n\n<diagnosis>{}</diagnosis>', at: 't7' });
+  });
+});
+
+test('the turn and last-reply routes check their input; an unknown session is a 404', async () => {
+  const runs: RunCall[] = [];
+  await withRoutes(async ({ postTo, get }) => {
+    const turn = { turnId: 'turn-0123456789', text: '按诊断方案执行' };
+    for (const bad of [{ ...turn, turnId: 'x' }, { ...turn, text: '' }, { ...turn, extra: 1 }, { ...turn, model: '' }]) {
+      assert.equal((await postTo('/sessions/s-1/turn', bad)).status, 400, JSON.stringify(bad));
+    }
+    const missing = await postTo('/sessions/s-1/turn', turn);
+    assert.equal(missing.body.error.code, 'SESSION_TURN_NO_SESSION');
+    assert.equal((await postTo('/sessions/s-1/turn', turn)).body.error.code, 'SESSION_TURN_NO_SESSION', 'a refused turn may be sent again');
+    assert.equal((await get('/sessions/s-1/last-reply')).status, 404);
+    assert.equal((await get('/sessions/a%20b/last-reply')).status, 400);
+    assert.equal(runs.length, 0);
+  }, runs);
+});
+
 test('the session start route validates its input and lets a refused start be retried', async () => {
   const runs: RunCall[] = [];
   await withRoutes(async ({ postTo }) => {
     const start = { startId: 'start-0123456789', path: '/etc/codey', provider: 'claude', text: 'Fix it', branch: 'codey/wi-7' };
     for (const bad of [{ ...start, startId: 'x' }, { ...start, provider: 'cursor' }, { ...start, text: '' }, { ...start, extra: 1 },
-      { ...start, workbenchProjectId: 'nope' }, { ...start, path: '' }]) {
+      { ...start, workbenchProjectId: 'nope' }, { ...start, path: '' }, { ...start, model: '' }, { ...start, effort: 3 },
+      { ...start, permissionMode: 'x'.repeat(201) }]) {
       assert.equal((await postTo('/sessions/start', bad)).status, 400, JSON.stringify(bad).slice(0, 80));
     }
     const refused = await postTo('/sessions/start', start);

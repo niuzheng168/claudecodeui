@@ -21,7 +21,8 @@ const item: TriageWorkItem = {
 };
 const answer = (value: Record<string, unknown>) => JSON.stringify({
   verdict: 'actionable', directory: 0, alternatives: [1, 0, 9], confidence: 'high', reason: '最近的会话在处理启动重试。',
-  goal: '让启动重试有退避', acceptance: ['重试间隔指数增长'], question: null, project: null, duplicateOf: null, ...value,
+  goal: '让启动重试有退避', acceptance: ['重试间隔指数增长'], question: null, project: null, duplicateOf: null,
+  worktree: true, ...value,
 });
 
 test('the strict schema requires every field the parser reads', () => {
@@ -45,6 +46,12 @@ test('answers are checked against the directories, projects and open items they 
   assert.deepEqual(notOurs.acceptance, []);
   assert.equal(parseTriage(answer({ reason: 'use token=abcdef123456' }), context, 7), null);
   assert.equal(parseTriage('not json', context, 7), null);
+});
+
+test('the worktree suggestion is kept only as a yes or no', () => {
+  assert.equal(parseTriage(answer({}), context, 7)!.worktree, true);
+  assert.equal(parseTriage(answer({ worktree: false }), context, 7)!.worktree, false);
+  assert.equal(parseTriage(answer({ worktree: 'yes' }), context, 7)!.worktree, null);
 });
 
 test('the input redacts credentials, numbers the directories and shrinks long text to fit', () => {
@@ -74,6 +81,8 @@ test('the model request is tool-free strict JSON; failures and invalid answers a
   });
   const result = await triageWorkItem(item, context, dependencies(() => reply(answer({}))));
   assert.equal(result.verdict, 'actionable');
+  assert.equal(result.worktree, true);
+  assert.ok(requests[0].text.format.schema.required.includes('worktree'));
   assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].tool_choice, 'none');
   assert.equal(requests[0].store, false);
