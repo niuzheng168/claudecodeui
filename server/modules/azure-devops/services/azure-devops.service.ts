@@ -25,7 +25,11 @@ export type AzureDevOpsUpdateInput = AzureDevOpsScope & {
   removeTags?: string[];
   /** `creator` assigns the item back to whoever opened it. */
   assignTo?: string;
+  /** Moves the item to its type's state of that category (`Completed`: Closed, Done; `Removed`), unless it is closed already. */
+  close?: 'completed' | 'removed';
 };
+/** ADO's state categories that `close` moves an item to, and that count as closed already. */
+const CLOSE_CATEGORY = { completed: 'Completed', removed: 'Removed' } as const;
 
 function failure(message: string, statusCode = 502, code = 'ADO_REQUEST_FAILED') {
   return new AppError(message, { statusCode, code });
@@ -126,7 +130,8 @@ type Request = (suffix: string, options?: { method?: string; body?: unknown; pat
 
 /**
  * Owner-only Azure DevOps access through this node's `az login`. Reads queries
- * and items; writes only comments, tags and the assignee of one item at a time.
+ * and items; writes only comments, tags, the assignee and a closing state of
+ * one item at a time.
  */
 export class AzureDevOpsService {
   private active = 0;
@@ -154,7 +159,7 @@ export class AzureDevOpsService {
           if (response.status === 404) throw failure('查询或工单不存在，或当前 Azure 身份无权查看。', 404, 'ADO_NOT_FOUND');
           if (response.status === 429) throw failure('ADO 请求过于频繁，请稍后重试。', 429, 'ADO_RATE_LIMIT');
           if (patch && [409, 412].includes(response.status)) throw failure('工单刚被别人修改过，请刷新后重试。', 409, 'ADO_CONFLICT');
-          if (patch && response.status === 400) throw failure('ADO 拒绝了这次修改，可能是指派的用户无效或工单不允许修改这些字段。', 400, 'ADO_UPDATE_INVALID');
+          if (patch && response.status === 400) throw failure('ADO 拒绝了这次修改，可能是指派的用户无效，或工单不允许修改这些字段、改成这个状态。', 400, 'ADO_UPDATE_INVALID');
           if (response.status === 400) throw failure('ADO 无法执行此查询；请检查查询条件和需要团队上下文的宏。', 400, 'ADO_QUERY_INVALID');
           throw failure('Azure DevOps 暂时不可用，请稍后重试。');
         }
@@ -291,13 +296,28 @@ export class AzureDevOpsService {
   }
 
   /**
-   * Writes a comment, tag changes and/or the assignee in one JSON Patch that
-   * tests the revision it was computed from, so a concurrent edit is not lost.
+   * Writes a comment, tag changes, the assignee and/or a closing state in one
+   * JSON Patch that tests the revision it was computed from, so a concurrent
+   * edit is not lost.
    */
   async update(input: AzureDevOpsUpdateInput) {
     return this.session(input, async request => {
-      const current = await request(`workitems/${input.id}?fields=System.Tags,System.CreatedBy`);
+      const current = await request(`workitems/${input.id}?fields=System.Tags,System.CreatedBy,System.WorkItemType,System.State`);
       const fields: Json = current.fields ?? {};
+      // Each process names its states; their categories are the same everywhere.
+      let state = '';
+      if (input.close) {
+        const type = text(fields['System.WorkItemType'], 100);
+        const states: Json[] = type ? ((await request(`workitemtypes/${encodeURIComponent(type)}/states`)).value ?? []) : [];
+        const category = (name: unknown) => states.find(entry => entry?.name === name)?.category;
+        const target = states.find(entry => entry?.category === CLOSE_CATEGORY[input.close!] && typeof entry.name === 'string');
+        if (!target) {
+          const kind = type ? `${type} ` : '这种';
+          throw failure(input.close === 'removed' ? `${kind}工单没有「已移除」类的状态，请改成完成或不改状态。`
+            : `读不到${kind}工单的完成状态，请在 ADO 里手动关闭，或不改状态。`, 400, 'ADO_UPDATE_INVALID');
+        }
+        if (!Object.values(CLOSE_CATEGORY).includes(category(fields['System.State']))) state = text(target.name, 100);
+      }
       const remove = new Set((input.removeTags ?? []).map(tag => tag.toLowerCase()));
       const existing = tags(fields['System.Tags']);
       const next = existing.filter(tag => !remove.has(tag.toLowerCase()));
@@ -314,9 +334,10 @@ export class AzureDevOpsService {
         if (!assignee) throw failure('读不到工单创建者，无法指派回去；请在退回时指定指派给谁。', 400, 'ADO_UPDATE_INVALID');
         operations.push({ op: 'add', path: '/fields/System.AssignedTo', value: assignee });
       }
+      if (state) operations.push({ op: 'add', path: '/fields/System.State', value: state });
       if (operations.length === 1) return { contract: 1, id: current.id, rev: current.rev, changed: false };
       const updated = await request(`workitems/${input.id}`, { method: 'PATCH', body: operations, patch: true });
-      return { contract: 1, id: updated.id, rev: updated.rev, changed: true };
+      return { contract: 1, id: updated.id, rev: updated.rev, changed: true, ...(state ? { state } : {}) };
     });
   }
 }

@@ -227,6 +227,36 @@ test('update writes one JSON Patch that tests the revision, edits tags case-inse
   assert.equal((await unchanged.update({ ...scope, id: '7', removeTags: ['codey_A'] })).changed, false);
 });
 
+test('closing moves the item to its type\'s state of that category, and leaves a closed one as it is', async () => {
+  const states = { value: [
+    { name: 'New', category: 'Proposed' }, { name: 'Active', category: 'InProgress' }, { name: 'Resolved', category: 'Resolved' },
+    { name: 'Closed', category: 'Completed' }, { name: 'Removed', category: 'Removed' },
+  ] };
+  const service = (state: string, types = states) => {
+    const calls: { url: string; options: RequestInit }[] = [];
+    return { calls, service: new AzureDevOpsService({ token: async () => 'test-only', fetch: (async (url, options) => {
+      calls.push({ url: String(url), options: options! });
+      if (options?.method === 'PATCH') return json({ id: 7, rev: 6 });
+      if (String(url).includes('/workitemtypes/')) return json(types);
+      return json({ id: 7, rev: 5, fields: { 'System.WorkItemType': 'User Story', 'System.State': state } });
+    }) as typeof fetch }) };
+  };
+  const done = service('Active');
+  assert.deepEqual(await done.service.update({ ...scope, id: '7', comment: '[codey] status=ignored', close: 'completed' }),
+    { contract: 1, id: 7, rev: 6, changed: true, state: 'Closed' });
+  assert.match(done.calls[1].url, /\/_apis\/wit\/workitemtypes\/User%20Story\/states\?api-version=7\.1$/);
+  const operations = JSON.parse(String(done.calls[2].options.body));
+  assert.deepEqual(operations.at(-1), { op: 'add', path: '/fields/System.State', value: 'Closed' });
+  const removed = service('New');
+  assert.equal((await removed.service.update({ ...scope, id: '7', close: 'removed' })).state, 'Removed');
+  const already = service('Removed');
+  assert.deepEqual(await already.service.update({ ...scope, id: '7', close: 'completed' }), { contract: 1, id: 7, rev: 5, changed: false },
+    'someone closed it already: not reopened into another closed state');
+  const noRemoved = service('Active', { value: states.value.filter(entry => entry.category !== 'Removed') });
+  await assert.rejects(noRemoved.service.update({ ...scope, id: '7', close: 'removed' }), { code: 'ADO_UPDATE_INVALID' });
+  assert.equal(noRemoved.calls.some(call => call.options.method === 'PATCH'), false);
+});
+
 test('items, item, update and triage routes reject unbounded input before touching ADO', async t => {
   const calls: string[] = [];
   const service = {
@@ -246,18 +276,19 @@ test('items, item, update and triage routes reject unbounded input before touchi
   const post = (path: string, value: unknown) => fetch(`${base}/${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value),
   });
-  assert.deepEqual(await (await fetch(`${base}/info`)).json(), { contract: 1, features: ['read', 'items', 'item', 'triage', 'update'] });
+  assert.deepEqual(await (await fetch(`${base}/info`)).json(), { contract: 1, features: ['read', 'items', 'item', 'triage', 'update', 'close'] });
   for (const [path, input] of [
     ['items', { ...scope, queryId: "x' OR 1=1" }], ['items', { ...scope, ids: [] }], ['items', { ...scope, ids: ['7'] }],
     ['items', { ...scope, ids: Array.from({ length: 201 }, (_, i) => i + 1) }], ['items', { ...scope, ids: [7], queryId: '11111111-2222-3333-4444-555555555555' }],
     ['update', { ...scope, id: '7', addTags: ['a', 'b', 'c', 'd', 'e'] }], ['update', { ...scope, id: '7', assignTo: 'someone' }],
     ['update', { ...scope, id: '7', comment: 'x'.repeat(4001) }], ['update', { ...scope, id: '7', fields: {} }],
+    ['update', { ...scope, id: '7', close: 'Closed' }],
     ['triage', { ...scope, id: '7', context: { project: { name: 'P' }, directories: 'nope' } }],
     ['item', { ...scope, id: '0' }],
   ] as const) assert.equal((await post(path, input)).status, 400, JSON.stringify(input));
   assert.deepEqual(calls, []);
   assert.equal((await post('items', { ...scope, ids: [7, 7] })).status, 200);
-  assert.equal((await post('update', { ...scope, id: '7', comment: 'ok', assignTo: 'dev@example.test' })).status, 200);
+  assert.equal((await post('update', { ...scope, id: '7', comment: 'ok', assignTo: 'dev@example.test', close: 'completed' })).status, 200);
   const triaged = await post('triage', { ...scope, id: '7', context: { project: { name: 'P', description: '' }, directories: [], otherProjects: [], openWorkItems: [] } });
   const body = await triaged.json() as { item: Record<string, unknown>; result: { verdict: string } };
   assert.equal(body.item.description, undefined);

@@ -9,7 +9,7 @@ import type { AzureDevOpsItemsInput, AzureDevOpsScope, AzureDevOpsUpdateInput } 
 import { readTriageContext, triageWorkItem } from './services/work-item-triage.service.js';
 
 /** What the Portal checks before using the intake routes (codey/docs/codey-ado-intake.md §8). */
-const FEATURES = ['read', 'items', 'item', 'triage', 'update'];
+const FEATURES = ['read', 'items', 'item', 'triage', 'update', 'close'];
 const TAG = /^[A-Za-z0-9_.-]{1,64}$/;
 const ITEM_ID = /^[1-9]\d{0,9}$/;
 const QUERY_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -63,13 +63,15 @@ function tagList(value: unknown): string[] | undefined {
 }
 
 function update(value: unknown): AzureDevOpsUpdateInput {
-  const input = body(value, ['organization', 'project', 'id', 'comment', 'addTags', 'removeTags', 'assignTo']);
+  const input = body(value, ['organization', 'project', 'id', 'comment', 'addTags', 'removeTags', 'assignTo', 'close']);
   if (input.comment !== undefined && (typeof input.comment !== 'string' || !input.comment.trim() || input.comment.length > 4000)) throw invalid();
   if (input.assignTo !== undefined && (typeof input.assignTo !== 'string' || (input.assignTo !== 'creator' && !EMAIL.test(input.assignTo)))) throw invalid();
+  if (input.close !== undefined && input.close !== 'completed' && input.close !== 'removed') throw invalid();
   return {
     ...scope(input), id: itemId(input.id),
     ...(input.comment ? { comment: input.comment as string } : {}),
     ...(input.assignTo ? { assignTo: input.assignTo as string } : {}),
+    ...(input.close ? { close: input.close as AzureDevOpsUpdateInput['close'] } : {}),
     addTags: tagList(input.addTags), removeTags: tagList(input.removeTags),
   };
 }
