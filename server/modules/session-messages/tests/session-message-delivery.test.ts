@@ -347,8 +347,9 @@ test('a start may choose the model, effort and permission mode this machine offe
       runTurn: (await import('@/modules/websocket/index.js')).runDetachedChatTurn, options,
     };
     const base = { path: root, provider: 'claude' as const, text: 'Fix it', branch: null, workbenchProjectId: null };
-    await startSession({ ...base, model: 'claude-opus-5.5', effort: 'high', permissionMode: 'plan' }, { userId, runtime: runtime(runs) }, dependencies);
+    const chosen = await startSession({ ...base, model: 'claude-opus-5.5', effort: 'high', permissionMode: 'plan' }, { userId, runtime: runtime(runs) }, dependencies);
     assert.deepEqual([runs[0].options.model, runs[0].options.effort, runs[0].options.permissionMode], ['claude-opus-5.5', 'high', 'plan']);
+    assert.deepEqual([chosen.model, chosen.effort], ['claude-opus-5.5', 'high'], 'the start says what its first turn runs with');
     await startSession({ ...base, provider: 'codex', effort: 'low' }, { userId, runtime: runtime(runs) }, dependencies);
     assert.equal(runs[1].options.effort, 'low', 'an effort alone is checked against the default model');
     for (const [bad, message] of [
@@ -373,8 +374,10 @@ test('an idle session takes one more turn as typed, with a checked model; its la
     const started = await startSession({ path: root, provider: 'claude', text: '诊断 #7', branch: null, workbenchProjectId: null },
       { userId, runtime: runtime(runs) }, { directory: async (value: string) => value, register: async () => {}, createWorktree: async () => { throw new Error('none'); }, runTurn });
     chatRunRegistry.clearAll();
-    await continueSession({ sessionId: started.sessionId, text: '按诊断方案执行', permissionMode: 'bypassPermissions' }, { userId, runtime: runtime(runs) }, { runTurn, options });
+    const turn = await continueSession({ sessionId: started.sessionId, text: '按诊断方案执行', permissionMode: 'bypassPermissions', effort: 'high' },
+      { userId, runtime: runtime(runs) }, { runTurn, options });
     assert.equal(runs[1].command, '按诊断方案执行', 'the owner\'s message is not wrapped');
+    assert.equal(turn.effort, 'high', 'the turn says what it runs with');
     assert.equal(runs[1].options.permissionMode, 'bypassPermissions');
     chatRunRegistry.clearAll();
     await assert.rejects(continueSession({ sessionId: started.sessionId, text: 'x', model: 'gpt-6.1-sol' }, { userId, runtime: runtime(runs) }, { runTurn, options }),

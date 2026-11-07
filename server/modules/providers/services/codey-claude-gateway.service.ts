@@ -2,9 +2,9 @@ import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/ind
 import { AppError, readObjectRecord } from '@/shared/index.js';
 
 const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-// Managed Codex runs at max by default. Claude matches it, stepping down only
-// for models the gateway does not offer max on.
-const PREFERRED_DEFAULT_EFFORTS = ['max', 'xhigh', 'high'];
+// Managed Claude and Codex run at xhigh by default (the user's choice, 2026-11-06):
+// a model the gateway does not offer xhigh on steps down to high, then up to max.
+const PREFERRED_DEFAULT_EFFORTS = ['xhigh', 'high', 'max'];
 
 // Claude Code's own default window, and the range it clamps
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW to.

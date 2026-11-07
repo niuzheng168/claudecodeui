@@ -151,7 +151,7 @@ export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
       label: 'GPT-6.1 Sol (922K context)',
       description: 'Current Codey Codex model with a 922,000-token prompt context.',
       effort: {
-        default: 'max',
+        default: 'xhigh',
         values: [
           { value: 'low' },
           { value: 'medium' },
@@ -166,7 +166,7 @@ export const CODEY_MANAGED_CODEX_MODELS: ProviderModelsDefinition = {
       label: 'GPT-6 Astra (872K context)',
       description: 'Use GPT-6 Astra directly when supported by your upstream account.',
       effort: {
-        default: 'max',
+        default: 'xhigh',
         values: [
           { value: 'low' },
           { value: 'medium' },

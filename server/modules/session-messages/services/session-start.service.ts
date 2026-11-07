@@ -77,7 +77,16 @@ export type SessionStartInput = {
   permissionMode?: string | null;
 };
 
-export type SessionStartResult = { sessionId: string; provider: string; path: string; branch: string | null };
+/** `model` and `effort` are what the first turn runs with, the machine's defaults included; null when the turn names none. */
+export type SessionStartResult = { sessionId: string; provider: string; path: string; branch: string | null; model: string | null; effort: string | null };
+
+/** The model and effort a turn's options name. */
+function ranWith(options: Record<string, unknown>): { model: string | null; effort: string | null } {
+  return {
+    model: typeof options.model === 'string' && options.model ? options.model : null,
+    effort: typeof options.effort === 'string' && options.effort ? options.effort : null,
+  };
+}
 
 type Dependencies = {
   directory: (requested: string) => Promise<string>;
@@ -158,7 +167,7 @@ export async function startSession(
     ...(input.workbenchProjectId ? { workbenchProjectId: input.workbenchProjectId } : {}),
   };
   await runTurn(dependencies.runTurn, { sessionId, userId, content: input.text, options }, runtime, 'SESSION_START_FAILED');
-  return { sessionId, provider: input.provider, path, branch };
+  return { sessionId, provider: input.provider, path, branch, ...ranWith(options) };
 }
 
 /** Starts a turn and resolves once it runs; a turn that fails to get going is an error. */
@@ -190,7 +199,7 @@ export async function continueSession(
   input: SessionTurnInput,
   { userId, runtime }: { userId: number; runtime: ProviderRuntimeGateway },
   dependencies: Pick<Dependencies, 'runTurn' | 'options'> = defaults,
-): Promise<{ sessionId: string; provider: string }> {
+): Promise<{ sessionId: string; provider: string; model: string | null; effort: string | null }> {
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) throw new AppError('No such session on this machine.', { code: 'SESSION_TURN_NO_SESSION', statusCode: 404 });
   const provider = session.provider as LLMProvider;
@@ -204,7 +213,7 @@ export async function continueSession(
     dependencies.options ?? startOptions);
   const options = { ...await turnOptions(provider, input.sessionId), ...chosen };
   await runTurn(dependencies.runTurn, { sessionId: input.sessionId, userId, content: input.text, options }, runtime, 'SESSION_TURN_FAILED');
-  return { sessionId: input.sessionId, provider };
+  return { sessionId: input.sessionId, provider, ...ranWith(options) };
 }
 
 const MAX_REPLY_CHARS = 32_000;

@@ -31,7 +31,7 @@ test('Codey-managed nodes expose the current upstream model ID and context', () 
     ],
   );
   for (const option of catalog.OPTIONS) {
-    assert.equal(option.effort?.default, 'max');
+    assert.equal(option.effort?.default, 'xhigh');
     assert.deepEqual(
       option.effort?.values.map(({ value }) => value),
       ['low', 'medium', 'high', 'xhigh', 'max'],

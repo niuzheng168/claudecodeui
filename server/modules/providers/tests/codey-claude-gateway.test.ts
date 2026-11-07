@@ -110,20 +110,20 @@ test('catalog retains exact gateway model IDs and native Messages capabilities',
   assert.deepEqual(models.OPTIONS.map(option => option.value), [model.id]);
   assert.equal(models.OPTIONS[0].label, 'Claude Opus 5.5 (1M context)');
   assert.deepEqual(models.OPTIONS[0].effort, {
-    default: 'max', values: ['low', 'high', 'max'].map(value => ({ value })),
-  });
+    default: 'high', values: ['low', 'high', 'max'].map(value => ({ value })),
+  }, 'without xhigh on offer, the default steps down to high');
   assert.equal(models.OPTIONS[0].contextWindow, 1_000_000);
 });
 
-test('the default effort is the highest of max, xhigh and high the model offers', async () => {
+test('the default effort is xhigh, else high, else max, else the first the model offers', async () => {
   const data = [
-    ['low', 'medium', 'high', 'xhigh', 'max'], ['low', 'high', 'xhigh'], ['high', 'medium'], ['medium', 'low'],
+    ['low', 'medium', 'high', 'xhigh', 'max'], ['low', 'high', 'xhigh'], ['high', 'medium'], ['medium', 'max'], ['medium', 'low'],
   ].map((efforts, index) => ({
     id: `claude-${index}`, supported_endpoints: ['/v1/messages'],
     capabilities: { supports: { reasoning_effort: efforts } },
   }));
   const models = await gateway(managed, (async () => Response.json({ data })) as typeof fetch).getModels();
-  assert.deepEqual(models.OPTIONS.map(option => option.effort?.default), ['max', 'xhigh', 'high', 'medium']);
+  assert.deepEqual(models.OPTIONS.map(option => option.effort?.default), ['xhigh', 'xhigh', 'high', 'max', 'medium']);
 });
 
 test('only a positive integer catalog window is reported', async () => {
