@@ -15,6 +15,7 @@ type Approval = {
   publicRequest: AnyRecord;
   writer: ProviderRuntimeWriter;
   timer: ReturnType<typeof setTimeout>;
+  receivedAt: Date;
 };
 
 function emit(writer: ProviderRuntimeWriter, value: AnyRecord): void {
@@ -33,7 +34,7 @@ export class CodexStdioPermissions {
   readonly gateway: ProviderRuntimePermissionGateway = {
     resolve: (id, decision) => this.resolve(id, decision),
     listPending: (sessionId) => [...this.pending.values()]
-      .filter((item) => item.sessionId === sessionId).map((item) => item.publicRequest),
+      .filter((item) => item.sessionId === sessionId).map((item) => ({ ...item.publicRequest, receivedAt: item.receivedAt })),
   };
 
   handle(
@@ -80,7 +81,7 @@ export class CodexStdioPermissions {
     } : params;
     const publicRequest = { requestId, toolName, input, sessionId, provider: 'codex' as const };
     const timer = setTimeout(() => this.resolve(requestId, { allow: false }), 5 * 60_000);
-    this.pending.set(requestId, { sessionId, client, nativeId, method, params, publicRequest, writer, timer });
+    this.pending.set(requestId, { sessionId, client, nativeId, method, params, publicRequest, writer, timer, receivedAt: new Date() });
     emit(writer, createNormalizedMessage({ ...publicRequest, kind: 'permission_request' }));
   }
 

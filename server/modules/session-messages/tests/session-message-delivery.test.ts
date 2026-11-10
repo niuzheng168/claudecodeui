@@ -97,6 +97,9 @@ test('an idle session starts a turn with the message; a busy one queues it', asy
     const runs: RunCall[] = [];
     const started = await deliverSessionMessage(input('idle'), { userId, runtime: runtime(runs), nodeId: NODE });
     assert.equal(started.status, 'started');
+    const run = chatRunRegistry.getRun('idle');
+    assert.equal(started.runId, run?.id, 'the result names the run the message started');
+    assert.deepEqual(run?.origin, { messageId: 'message-0001', user: null, relation: 'owner' });
     assert.equal(runs.length, 1);
     assert.equal(runs[0].command, sessionMessageContent(input('idle')));
     assert.equal(runs[0].options.permissionMode !== undefined, true, 'a Claude turn gets the managed default mode');
@@ -104,14 +107,17 @@ test('an idle session starts a turn with the message; a busy one queues it', asy
 
     sessionsDb.createAppSession('busy', 'codex', root, 'Busy');
     chatRunRegistry.startRun({ appSessionId: 'busy', provider: 'codex', providerSessionId: null, connection: null, userId });
-    const queued = await deliverSessionMessage(input('busy'), { userId, runtime: runtime(runs), nodeId: NODE });
+    const fromAlice = { ...input('busy'), relation: 'other_user' as const, from: { ...FROM, machine: null, user: 'alice' } };
+    const queued = await deliverSessionMessage(fromAlice, { userId, runtime: runtime(runs), nodeId: NODE });
     assert.equal(queued.status, 'queued');
+    assert.equal(queued.runId, undefined, 'a queued message has no run yet');
     // Delivered twice (a retried request): queued once.
-    await deliverSessionMessage(input('busy'), { userId, runtime: runtime(runs), nodeId: NODE });
+    await deliverSessionMessage(fromAlice, { userId, runtime: runtime(runs), nodeId: NODE });
     const draft = sessionDraftsDb.getDrafts(userId).find((entry) => entry.scope === 'busy');
-    const queue = draft?.queuedMessage as Array<{ id: string; content: string }>;
+    const queue = draft?.queuedMessage as Array<{ id: string; content: string; origin: unknown }>;
     assert.deepEqual(queue.map((entry) => entry.id), ['message-0001']);
-    assert.equal(queue[0].content, sessionMessageContent(input('busy')));
+    assert.equal(queue[0].content, sessionMessageContent(fromAlice));
+    assert.deepEqual(queue[0].origin, { messageId: 'message-0001', user: 'alice', relation: 'other_user' }, 'the run it starts later names it');
     assert.equal(runs.length, 1, 'nothing ran in the busy session');
   });
 });
@@ -201,12 +207,12 @@ async function withRoutes(runTest: (context: {
   post: (body: unknown) => Promise<RouteResponse>;
   postTo: (path: string, body: unknown) => Promise<RouteResponse>;
   get: (path: string) => Promise<RouteResponse>;
-}) => Promise<void>, runs: RunCall[]) {
+}) => Promise<void>, runs: RunCall[], gateway?: unknown) {
   await withNode(async ({ userId, root }) => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => { (req as unknown as { user: { id: number } }).user = { id: userId }; next(); });
-    app.use('/api/codey/v1', createCodeyV1Routes({ runtime: runtime(runs), environment: { CODEY_PORTAL_NODE_ID: NODE } }));
+    app.use('/api/codey/v1', createCodeyV1Routes({ runtime: (gateway ?? runtime(runs)) as never, environment: { CODEY_PORTAL_NODE_ID: NODE } }));
     app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       const error = err as { statusCode?: number; code?: string; message?: string };
       res.status(error.statusCode ?? 500).json({ success: false, error: { code: error.code, message: error.message } });
@@ -235,7 +241,9 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
   await withRoutes(async ({ root, post, get }) => {
     sessionsDb.createAppSession('app-1', 'codex', root, 'Review');
     sessionsDb.assignProviderSessionId('app-1', 'thread-1');
-    assert.deepEqual((await get('/info')).body.data, { contract: 1, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn'] });
+    assert.deepEqual((await get('/info')).body.data, {
+      contract: 1, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn', 'session-live'],
+    });
     const session = (await get('/sessions/thread-1')).body.data;
     assert.equal(session.sessionId, 'app-1');
     assert.equal(session.providerSessionId, 'thread-1');
@@ -251,6 +259,8 @@ test('the Portal\'s node API reports its contract, resolves sessions, and delive
     assert.equal(first.body.data.status, 'started');
     assert.equal(first.body.data.sessionId, 'app-1');
     assert.equal(first.body.data.providerSessionId, 'thread-1');
+    assert.equal(first.body.data.runId, chatRunRegistry.getRun('app-1')?.id);
+    assert.deepEqual(chatRunRegistry.getRun('app-1')?.origin, { messageId: message.messageId, user: 'alice', relation: 'other_user' });
     assert.match(runs[0].command, /user="alice"/);
     assert.ok(runs[0].command.includes('Your user reviewed it and approved passing it to you.'));
     const again = await post(message);
@@ -435,4 +445,195 @@ test('the session start route validates its input and lets a refused start be re
     assert.equal((await postTo('/sessions/start', start)).body.error.code, 'SESSION_START_INVALID_PATH', 'not reported as in progress');
     assert.equal(runs.length, 0);
   }, runs);
+});
+
+/** A runtime with the live view's parts: approvals, background work, and a Stop that may not confirm. */
+function liveRuntime() {
+  const state = {
+    pending: [] as unknown[],
+    resolved: [] as Array<{ requestId: string; decision: Record<string, unknown> }>,
+    aborts: [] as Array<{ sessionId: string; options: unknown }>,
+    abortConfirms: true,
+    background: false,
+  };
+  const gateway = {
+    hasRuntime: () => true,
+    run: async () => {},
+    abort: async (_provider: string, sessionId: string, options: unknown) => {
+      state.aborts.push({ sessionId, options });
+      return state.abortConfirms;
+    },
+    hasBackgroundWork: () => state.background,
+    getPendingApprovalsForSession: () => state.pending,
+    resolveToolApproval: (requestId: string, decision: Record<string, unknown>) => {
+      state.resolved.push({ requestId, decision });
+      state.pending = state.pending.filter((request) => (request as { requestId?: string }).requestId !== requestId);
+    },
+  };
+  return { state, gateway };
+}
+
+const ORIGIN = { messageId: 'msg_0123456789abcdef', user: 'alice', relation: 'other_user' as const };
+
+function startMessageRun(sessionId: string, userId: number, origin: typeof ORIGIN | null = ORIGIN) {
+  const run = chatRunRegistry.startRun({ appSessionId: sessionId, provider: 'claude', providerSessionId: null, connection: null, userId });
+  assert.ok(run);
+  run.origin = origin;
+  return run;
+}
+
+function sendEvents(run: { writer: { send(message: unknown): void } }, count: number) {
+  for (let index = 0; index < count; index += 1) {
+    run.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'claude-live', content: `part ${index}` });
+  }
+}
+
+test('the live view reads the session\'s run in pages, from its start for another run, and after it ends', async () => {
+  const { state, gateway } = liveRuntime();
+  await withRoutes(async ({ userId, root, get }) => {
+    sessionsDb.createAppSession('live-1', 'claude', root, 'Shared');
+    sessionsDb.assignProviderSessionId('live-1', 'claude-live');
+    assert.deepEqual((await get('/sessions/live-1/live')).body.data, {
+      sessionId: 'live-1', provider: 'claude', run: null, events: [], reset: false, more: false, background: false, pendingPermissions: [],
+    });
+    assert.equal((await get('/sessions/claude-live/live')).body.error.code, 'SESSION_MESSAGE_NO_SESSION', 'only CloudCLI\'s session ID');
+    assert.equal((await get('/sessions/nope/live')).status, 404);
+
+    const run = startMessageRun('live-1', userId);
+    sendEvents(run, 3);
+    state.background = true;
+    state.pending = [
+      { requestId: 'req-1', toolName: 'AskUserQuestion', input: { questions: [] }, context: { x: 1 }, sessionId: 'live-1', receivedAt: new Date(1_000) },
+      { requestId: 'req-2', toolName: 'Bash', input: { command: 'ls' }, sessionId: 'live-1', provider: 'codex' },
+      { toolName: 'no id' },
+    ];
+    const live = (await get('/sessions/live-1/live')).body.data;
+    assert.deepEqual(live.run, {
+      id: run.id, status: 'running', startedAt: run.startedAt, completedAt: null, outcome: null, lastSeq: 3, canInterrupt: true, origin: ORIGIN,
+    });
+    assert.deepEqual(live.events.map((event: { seq: number; runId: string; sessionId: string }) => [event.seq, event.runId, event.sessionId]),
+      [[1, run.id, 'live-1'], [2, run.id, 'live-1'], [3, run.id, 'live-1']]);
+    assert.equal(live.background, true);
+    assert.deepEqual(live.pendingPermissions, [
+      { requestId: 'req-1', toolName: 'AskUserQuestion', input: { questions: [] }, receivedAt: 1_000 },
+      { requestId: 'req-2', toolName: 'Bash', input: { command: 'ls' }, receivedAt: null },
+    ]);
+
+    const seqs = async (query: string) => (await get(`/sessions/live-1/live?${query}`)).body.data.events.map((event: { seq: number }) => event.seq);
+    assert.deepEqual(await seqs(`afterSeq=2&runId=${run.id}`), [3]);
+    assert.deepEqual(await seqs('afterSeq=2&runId=run-00000000-gone'), [1, 2, 3], 'another run: from this one\'s start');
+    assert.deepEqual(await seqs('afterSeq=2'), [1, 2, 3]);
+
+    sendEvents(run, 600);
+    const page = (await get(`/sessions/live-1/live?afterSeq=3&runId=${run.id}`)).body.data;
+    assert.equal(page.events.length, 500);
+    assert.equal(page.more, true);
+    const rest = (await get(`/sessions/live-1/live?afterSeq=503&runId=${run.id}`)).body.data;
+    assert.equal(rest.events.length, 100);
+    assert.equal(rest.more, false);
+    assert.equal(rest.reset, false);
+    sendEvents(run, 5_000);
+    assert.equal((await get(`/sessions/live-1/live?afterSeq=503&runId=${run.id}`)).body.data.reset, true, 'events after 503 were dropped');
+
+    run.writer.sendComplete({ exitCode: 0, aborted: true });
+    const ended = (await get(`/sessions/live-1/live?afterSeq=5603&runId=${run.id}`)).body.data;
+    assert.deepEqual(ended.events.map((event: { kind: string }) => event.kind), ['complete']);
+    assert.equal(ended.run.status, 'completed');
+    assert.equal(ended.run.outcome, 'interrupted');
+    assert.equal(ended.run.canInterrupt, false);
+    assert.equal(typeof ended.run.completedAt, 'number');
+
+    for (const bad of ['afterSeq=-1', 'afterSeq=1.5', 'afterSeq=', 'afterSeq=1&afterSeq=2', 'runId=short', `runId=${'x'.repeat(81)}`, 'since=1']) {
+      assert.equal((await get(`/sessions/live-1/live?${bad}`)).status, 400, bad);
+    }
+
+    // Large events (tool output, screenshots) come in pages the Portal can read.
+    sessionsDb.createAppSession('live-big', 'claude', root, 'Large');
+    const big = startMessageRun('live-big', userId);
+    for (let index = 0; index < 30; index += 1) {
+      big.writer.send({ kind: 'tool_result', provider: 'claude', sessionId: 'x', content: 'x'.repeat(400_000) });
+    }
+    const first = (await get(`/sessions/live-big/live?runId=${big.id}`)).body.data;
+    assert.ok(first.events.length > 0 && first.events.length < 30, `${first.events.length} events`);
+    assert.equal(first.more, true);
+    const second = (await get(`/sessions/live-big/live?runId=${big.id}&afterSeq=${first.events.at(-1).seq}`)).body.data;
+    assert.equal(first.events.length + second.events.length, 30);
+    assert.equal(second.more, false);
+  }, [], gateway);
+});
+
+test('another user can stop only the running turn their message started', async () => {
+  const { state, gateway } = liveRuntime();
+  await withRoutes(async ({ userId, root, postTo }) => {
+    sessionsDb.createAppSession('live-2', 'claude', root, 'Shared');
+    const abort = (body: unknown) => postTo('/sessions/live-2/abort', body);
+    const turn = { runId: 'run-00000000-none', messageId: ORIGIN.messageId };
+    assert.equal((await abort(turn)).body.error.code, 'NO_ACTIVE_RUN');
+    assert.equal((await postTo('/sessions/nope/abort', turn)).body.error.code, 'SESSION_MESSAGE_NO_SESSION');
+
+    const owners = startMessageRun('live-2', userId, null);
+    assert.equal((await abort({ ...turn, runId: owners.id })).body.error.code, 'ABORT_FORBIDDEN', 'the owner\'s own turn');
+    owners.writer.sendComplete({ exitCode: 0 });
+
+    const run = startMessageRun('live-2', userId);
+    for (const bad of [{ ...turn, runId: run.id, extra: 1 }, { runId: run.id }, { ...turn, runId: 7 }, { ...turn, runId: run.id, messageId: 'x' }]) {
+      assert.equal((await abort(bad)).status, 400, JSON.stringify(bad));
+    }
+    const stale = await abort(turn);
+    assert.deepEqual([stale.status, stale.body.error.code], [409, 'ABORT_STALE_RUN']);
+    const forbidden = await abort({ runId: run.id, messageId: 'msg_1123456789abcdef' });
+    assert.deepEqual([forbidden.status, forbidden.body.error.code], [403, 'ABORT_FORBIDDEN']);
+    assert.equal(state.aborts.length, 0);
+
+    state.abortConfirms = false;
+    const unconfirmed = await abort({ ...turn, runId: run.id });
+    assert.deepEqual([unconfirmed.status, unconfirmed.body.error.code], [409, 'ABORT_UNCONFIRMED']);
+    assert.equal(run.status, 'running', 'an unconfirmed stop leaves the run going');
+
+    state.abortConfirms = true;
+    const stopped = await abort({ ...turn, runId: run.id });
+    assert.deepEqual([stopped.status, stopped.body.data], [200, { stopped: true }]);
+    assert.deepEqual(state.aborts.at(-1), { sessionId: 'live-2', options: { allowExternalTurn: false } });
+    assert.equal(run.status, 'completed');
+    assert.equal(run.outcome, 'interrupted');
+    assert.equal(run.events.at(-1)?.kind, 'complete');
+  }, [], gateway);
+});
+
+test('another user answers only a waiting request of their own turn, once, and edits only a question\'s answers', async () => {
+  const { state, gateway } = liveRuntime();
+  await withRoutes(async ({ userId, root, postTo }) => {
+    sessionsDb.createAppSession('live-3', 'claude', root, 'Shared');
+    const answer = (requestId: string, body: unknown) => postTo(`/sessions/live-3/permissions/${requestId}`, body);
+    const decision = { runId: 'run-00000000-none', messageId: ORIGIN.messageId, allow: true };
+    assert.equal((await answer('req-1', decision)).body.error.code, 'NO_ACTIVE_RUN');
+
+    const run = startMessageRun('live-3', userId);
+    state.pending = [
+      { requestId: 'req-1', toolName: 'AskUserQuestion', input: { questions: [{ question: 'Which?' }] }, sessionId: 'live-3', receivedAt: new Date() },
+      { requestId: 'req-2', toolName: 'Bash', input: { command: 'ls' }, sessionId: 'live-3', receivedAt: new Date() },
+    ];
+    const mine = { ...decision, runId: run.id };
+    assert.equal((await answer('req-1', decision)).body.error.code, 'ABORT_STALE_RUN');
+    assert.equal((await answer('req-1', { ...mine, messageId: 'msg_1123456789abcdef' })).body.error.code, 'ABORT_FORBIDDEN');
+    const gone = await answer('req-9', mine);
+    assert.deepEqual([gone.status, gone.body.error.code], [404, 'PERMISSION_NOT_PENDING']);
+    for (const [requestId, bad] of [
+      ['req-1', { ...mine, allow: 'yes' }], ['req-1', { ...mine, rememberEntry: 'Bash(ls:*)' }], ['req-1', { ...mine, updatedInput: [] }],
+      ['req-1', { ...mine, message: 'x'.repeat(4_001) }], ['req 1', mine], ['req-2', { ...mine, updatedInput: { command: 'rm -rf ~' } }],
+    ] as const) {
+      assert.equal((await answer(requestId, bad)).status, 400, JSON.stringify(bad).slice(0, 80));
+    }
+    assert.equal(state.resolved.length, 0);
+
+    const answers = { questions: [{ question: 'Which?' }], answers: { 'Which?': 'The first' } };
+    const answered = await answer('req-1', { ...mine, updatedInput: answers });
+    assert.deepEqual([answered.status, answered.body.data], [200, { resolved: true }]);
+    assert.equal((await answer('req-1', mine)).body.error.code, 'PERMISSION_NOT_PENDING', 'answered already');
+    assert.equal((await answer('req-2', { ...mine, allow: false, message: 'Not now' })).status, 200);
+    assert.deepEqual(state.resolved, [
+      { requestId: 'req-1', decision: { allow: true, updatedInput: answers } },
+      { requestId: 'req-2', decision: { allow: false, message: 'Not now' } },
+    ]);
+  }, [], gateway);
 });

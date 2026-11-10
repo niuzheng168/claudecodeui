@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 
 import { codeyInboundMessagesDb, sessionsDb } from '@/modules/database/index.js';
 import { applyClaudeArchiveChanges } from '@/modules/providers/index.js';
+import { abortSessionRun, answerSessionPermission, readSessionLive } from '@/modules/session-messages/services/session-live.service.js';
 import { deliverSessionMessage } from '@/modules/session-messages/services/session-message-delivery.service.js';
 import { continueSession, lastReply, startOptions, startSession } from '@/modules/session-messages/services/session-start.service.js';
 import type { SessionMessageResult } from '@/modules/session-messages/services/session-message-delivery.service.js';
@@ -16,6 +17,10 @@ export const CODEY_NODE_CONTRACT = 1;
 const MAX_TEXT_CHARS = 32_000;
 const MAX_ARCHIVE_SESSIONS = 100;
 const SESSION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
+const MESSAGE_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const RUN_ID = /^[A-Za-z0-9_-]{8,80}$/;
+const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const MAX_PERMISSION_MESSAGE_CHARS = 4_000;
 const ADDRESS = /^codey:\/\/n-[a-f0-9]{24}\/[A-Za-z0-9._:-]{1,160}$/;
 const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
 const STATUS: Record<SessionMessageResult['status'], string> = { started: 'started', queued: 'queued', delivered: 'handed_off' };
@@ -44,7 +49,7 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
   const router = express.Router();
 
   router.get('/info', (_req: Request, res: Response) => {
-    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn'] }));
+    res.json(createApiSuccessResponse({ contract: CODEY_NODE_CONTRACT, features: ['messages', 'sessions', 'session-archive', 'session-start', 'session-start-options', 'session-turn', 'session-live'] }));
   });
 
   /**
@@ -213,6 +218,69 @@ export function createCodeyV1Routes({ runtime, environment = process.env }: {
     codeyInboundMessagesDb.complete(key, result);
     res.json(createApiSuccessResponse(result));
   }));
+
+  /**
+   * A session shared with another user, as their page follows it
+   * (codey/docs/codey-shared-sessions.md §4): the run and its events after
+   * `afterSeq`, and stopping or answering the run that user's message started.
+   */
+  const invalidLive = (message: string) => new AppError(message, { code: 'SESSION_LIVE_INVALID', statusCode: 400 });
+  const liveSession = (req: Request): string => {
+    if (!Number.isInteger(Number((req as AuthenticatedRequest).user?.id))) {
+      throw new AppError('Shared sessions need a Codey-managed node.', { code: 'SESSION_LIVE_UNAVAILABLE', statusCode: 403 });
+    }
+    const id = String(req.params.sessionId ?? '');
+    if (!SESSION_ID.test(id)) throw invalidLive('sessionId is invalid.');
+    return id;
+  };
+  const liveTurn = (body: Record<string, unknown>, fields: string[]) => {
+    if (Object.keys(body).some((key) => !fields.includes(key))) throw invalidLive('The request has unsupported fields.');
+    if (typeof body.runId !== 'string' || !RUN_ID.test(body.runId)) throw invalidLive('runId is invalid.');
+    if (typeof body.messageId !== 'string' || !MESSAGE_ID.test(body.messageId)) throw invalidLive('messageId is invalid.');
+    return { runId: body.runId, messageId: body.messageId };
+  };
+
+  router.get('/sessions/:sessionId/live', (req: Request, res: Response) => {
+    const id = liveSession(req);
+    const query = req.query as Record<string, unknown>;
+    if (Object.keys(query).some((key) => key !== 'afterSeq' && key !== 'runId')) throw invalidLive('The request has unsupported parameters.');
+    const { afterSeq, runId } = query;
+    if (afterSeq !== undefined && (typeof afterSeq !== 'string' || !/^\d{1,15}$/.test(afterSeq))) {
+      throw invalidLive('afterSeq must be a non-negative integer.');
+    }
+    if (runId !== undefined && (typeof runId !== 'string' || !RUN_ID.test(runId))) throw invalidLive('runId is invalid.');
+    res.json(createApiSuccessResponse(readSessionLive(id, {
+      afterSeq: afterSeq === undefined ? 0 : Number(afterSeq),
+      runId: typeof runId === 'string' ? runId : null,
+    }, runtime)));
+  });
+
+  router.post('/sessions/:sessionId/abort', asyncHandler(async (req: Request, res: Response) => {
+    const id = liveSession(req);
+    const turn = liveTurn((req.body ?? {}) as Record<string, unknown>, ['runId', 'messageId']);
+    res.json(createApiSuccessResponse(await abortSessionRun(id, turn, runtime)));
+  }));
+
+  router.post('/sessions/:sessionId/permissions/:requestId', (req: Request, res: Response) => {
+    const id = liveSession(req);
+    const requestId = String(req.params.requestId ?? '');
+    if (!REQUEST_ID.test(requestId)) throw invalidLive('requestId is invalid.');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const turn = liveTurn(body, ['runId', 'messageId', 'allow', 'updatedInput', 'message']);
+    if (typeof body.allow !== 'boolean') throw invalidLive('allow must be true or false.');
+    const { updatedInput, message } = body;
+    if (updatedInput !== undefined && (!updatedInput || typeof updatedInput !== 'object' || Array.isArray(updatedInput))) {
+      throw invalidLive('updatedInput must be an object.');
+    }
+    if (message !== undefined && (typeof message !== 'string' || message.length > MAX_PERMISSION_MESSAGE_CHARS)) {
+      throw invalidLive(`message must be text of at most ${MAX_PERMISSION_MESSAGE_CHARS} characters.`);
+    }
+    res.json(createApiSuccessResponse(answerSessionPermission(id, requestId, {
+      ...turn, allow: body.allow,
+      ...(updatedInput !== undefined ? { updatedInput: updatedInput as Record<string, unknown> } : {}),
+      ...(message !== undefined ? { message: message as string } : {}),
+    }, runtime)));
+  });
 
   /** A session by its CloudCLI or provider session ID, as the Portal records it for a grant. */
   router.get('/sessions/:sessionId', (req: Request, res: Response) => {

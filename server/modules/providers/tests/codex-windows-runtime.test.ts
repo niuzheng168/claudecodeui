@@ -314,6 +314,8 @@ test('owned approvals are one-shot and cannot approve another desktop/client or 
     permissions.handle(client, 'app', 'native', 'item/commandExecution/requestApproval', params, 0, writer);
     const requestId = messages.at(-1)!.requestId;
     assert.equal(permissions.gateway.listPending('app').length, 1);
+    assert.ok((permissions.gateway.listPending('app')[0] as AnyRecord).receivedAt instanceof Date, 'when it arrived, as Claude says');
+    assert.equal(messages.at(-1)!.receivedAt, undefined, 'not part of the request event');
     assert.equal(permissions.gateway.listPending('someone-else').length, 0);
     assert.throws(() => permissions.gateway.resolve(requestId, { allow: true, rememberEntry: '*' }), { code: 'CODEX_APPROVAL_EDIT_UNSUPPORTED' });
     permissions.gateway.resolve(requestId, { allow: true });

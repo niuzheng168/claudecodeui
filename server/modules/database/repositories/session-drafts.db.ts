@@ -83,6 +83,28 @@ function sameMessage(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(normalized(left), normalized(right));
 }
 
+/**
+ * A queue as the browser writes it, with each entry's `origin` taken from the
+ * stored entry of the same id rather than from the browser. The origin names
+ * the session message an entry sends (session-message-delivery.service.ts),
+ * which decides who may stop its run; the owner can edit or reorder such an
+ * entry without losing it, but cannot give one to any other entry.
+ */
+function withStoredOrigins(queuedMessage: unknown, stored: unknown[]): unknown {
+  const origins = new Map<string, unknown>();
+  for (const value of stored) {
+    const record = value as { id?: unknown; origin?: unknown } | null;
+    if (typeof record?.id === 'string' && record.origin !== undefined) origins.set(record.id, record.origin);
+  }
+  const entry = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const { origin: _ignored, ...record } = value as Record<string, unknown>;
+    const origin = typeof record.id === 'string' ? origins.get(record.id) : undefined;
+    return origin === undefined ? record : { ...record, origin };
+  };
+  return Array.isArray(queuedMessage) ? queuedMessage.map(entry) : entry(queuedMessage);
+}
+
 /** User drafts, scheduled delivery and WebSocket steering share these atomic per-receipt operations. */
 export const sessionDraftsDb = {
   /**
@@ -276,19 +298,27 @@ export const sessionDraftsDb = {
       return;
     }
 
-    db.prepare(
-      `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
-       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(user_id, draft_scope) DO UPDATE SET
-         draft_text = excluded.draft_text,
-         queued_message = excluded.queued_message,
-         updated_at = CURRENT_TIMESTAMP`
-    ).run(
-      userId,
-      scope,
-      draft.text,
-      draft.queuedMessage === null ? null : JSON.stringify(draft.queuedMessage)
-    );
+    db.transaction(() => {
+      let queuedMessage = draft.queuedMessage;
+      if (queuedMessage !== null) {
+        const row = db.prepare('SELECT queued_message FROM session_drafts WHERE user_id = ? AND draft_scope = ?')
+          .get(userId, scope) as { queued_message: string | null } | undefined;
+        queuedMessage = withStoredOrigins(queuedMessage, queueEntries(row?.queued_message ?? null));
+      }
+      db.prepare(
+        `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, draft_scope) DO UPDATE SET
+           draft_text = excluded.draft_text,
+           queued_message = excluded.queued_message,
+           updated_at = CURRENT_TIMESTAMP`
+      ).run(
+        userId,
+        scope,
+        draft.text,
+        queuedMessage === null ? null : JSON.stringify(queuedMessage)
+      );
+    })();
   },
 
   deleteDraft(userId: number, scope: string): void {

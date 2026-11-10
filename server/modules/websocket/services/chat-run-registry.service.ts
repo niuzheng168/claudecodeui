@@ -15,6 +15,36 @@ type ChatRunStatus = 'running' | 'completed';
 export type ChatRunOutcome = 'completed' | 'failed' | 'interrupted';
 
 /**
+ * The session message that started a run (codey/docs/codey-shared-sessions.md
+ * §3): the Portal's message ID, the sending user's name and whether that user
+ * is this machine's owner. The Portal lets another user stop or answer a run
+ * only when it started from that user's message.
+ */
+export type ChatRunOrigin = {
+  messageId: string;
+  user: string | null;
+  relation: 'owner' | 'other_user';
+};
+
+/** A stored origin (a queue entry's), or null when it is missing or malformed. */
+export function readChatRunOrigin(value: unknown): ChatRunOrigin | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.messageId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(record.messageId)) {
+    return null;
+  }
+  if (record.user !== null && (typeof record.user !== 'string' || !record.user || record.user.length > 160)) {
+    return null;
+  }
+  if (record.relation !== 'owner' && record.relation !== 'other_user') {
+    return null;
+  }
+  return { messageId: record.messageId, user: record.user, relation: record.relation };
+}
+
+/**
  * One live (or recently finished) provider run for a single app session.
  *
  * State notes — why each mutable field is essential:
@@ -41,6 +71,8 @@ type ChatRun = {
   startedAt: number;
   completedAt: number | null;
   outcome: ChatRunOutcome | null;
+  /** The session message this run sends, or null for the owner's own turn (composer, schedule, observation). */
+  origin: ChatRunOrigin | null;
 };
 
 /**
@@ -246,6 +278,7 @@ export const chatRunRegistry = {
       startedAt: Date.now(),
       completedAt: null,
       outcome: null,
+      origin: null,
     };
 
     run.writer = new ChatSessionWriter({
@@ -354,6 +387,32 @@ export const chatRunRegistry = {
     }
 
     return run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+  },
+
+  /**
+   * One page of the session's buffered run events after `afterSeq`, for a
+   * reader that polls instead of subscribing (the Portal's shared-session
+   * page). Unlike `chat.subscribe` it also reads a completed run, so the
+   * reader sees its `complete`. `reset` means events after `afterSeq` were
+   * already dropped from the buffer: only a history refresh fills that gap.
+   */
+  readEvents(appSessionId: string, afterSeq: number, limit: number): {
+    events: NormalizedMessage[];
+    more: boolean;
+    reset: boolean;
+  } {
+    const run = runs.get(appSessionId);
+    if (!run) {
+      return { events: [], more: false, reset: false };
+    }
+
+    const firstSeq = run.events[0]?.seq;
+    const after = run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+    return {
+      events: after.slice(0, limit),
+      more: after.length > limit,
+      reset: typeof firstSeq === 'number' && firstSeq > afterSeq + 1,
+    };
   },
 
   /**

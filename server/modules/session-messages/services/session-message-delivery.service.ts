@@ -11,7 +11,7 @@ import {
   sendToClaudeProcess,
 } from '@/modules/session-messages/services/claude-peer-message.service.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
-import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
+import type { ChatRunOrigin, ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/index.js';
 
@@ -67,6 +67,8 @@ export type SessionMessageResult = {
   providerSessionId: string | null;
   provider: string;
   title: string | null;
+  /** The run a started message began; null when it was already gone by the time the start was confirmed. */
+  runId?: string | null;
 };
 
 const PROVIDER_NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', gemini: 'Gemini', opencode: 'OpenCode' };
@@ -146,8 +148,15 @@ function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): bool
   return chatRunRegistry.isProcessing(sessionId) || runtime.hasBackgroundWork?.(sessionId) === true;
 }
 
+/** Which message a run it starts sends, so the Portal can tell whose turn that run is. */
+function messageOrigin(input: SessionMessageInput): ChatRunOrigin {
+  return { messageId: input.messageId, user: input.from.user ?? null, relation: input.relation ?? 'owner' };
+}
+
 function queueMessage(userId: number, sessionId: string, input: SessionMessageInput, content: string, options: Record<string, unknown>): void {
-  sessionDraftsDb.appendQueuedMessage(userId, sessionId, { id: input.messageId, content, options, attachments: [] });
+  sessionDraftsDb.appendQueuedMessage(userId, sessionId, {
+    id: input.messageId, content, options, attachments: [], origin: messageOrigin(input),
+  });
 }
 
 /** Errors a run reported before it got going, or null while it runs or once it finished cleanly. */
@@ -225,7 +234,8 @@ export async function deliverSessionMessage(
 
   const startedAt = Date.now();
   const outcome: { refused: string | null } = { refused: null };
-  const run = runDetachedChatTurn({ sessionId, userId, content, options }, { runtime })
+  const origin = messageOrigin(input);
+  const run = runDetachedChatTurn({ sessionId, userId, content, options, origin }, { runtime })
     .then((value) => { if (!value.started) outcome.refused = value.error; })
     .catch((error: unknown) => { outcome.refused = error instanceof Error ? error.message : String(error); });
   // A refusal is settled synchronously enough to be seen right away; only a
@@ -242,7 +252,10 @@ export async function deliverSessionMessage(
   if (failure) {
     throw new AppError(failure, { code: 'SESSION_MESSAGE_UNDELIVERABLE', statusCode: 409 });
   }
-  return { ...result, status: 'started' };
+  // The session's run, unless a quick turn already ended and a later one took its place.
+  const started = chatRunRegistry.getRun(sessionId);
+  const runId = started && started.startedAt >= startedAt && started.origin?.messageId === origin.messageId ? started.id : null;
+  return { ...result, status: 'started', runId };
 }
 
 export function parseSessionAddress(value: unknown): { nodeId: string; sessionId: string } | null {

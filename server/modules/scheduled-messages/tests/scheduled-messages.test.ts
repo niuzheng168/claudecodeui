@@ -135,6 +135,52 @@ test('a queued message is sent by the server without a browser connection', asyn
   });
 });
 
+test('a queued session message starts a run that names it; a malformed origin names nothing', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const origin = { messageId: 'msg_0123456789abcdef', user: 'alice', relation: 'other_user' };
+    sessionDraftsDb.appendQueuedMessage(userId, SESSION_ID, { id: origin.messageId, content: 'from alice', options: {}, attachments: [], origin });
+    sessionDraftsDb.appendQueuedMessage(userId, SESSION_ID, {
+      id: 'msg_1123456789abcdef', content: 'forged', options: {}, attachments: [], origin: { messageId: 'x', user: 'bob', relation: 'other_user' },
+    });
+    const runs: RunCall[] = [];
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+    assert.deepEqual(chatRunRegistry.getRun(SESSION_ID)?.origin, origin);
+    assert.equal(runs[0].options.origin, undefined, 'the origin is not a run option');
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+    assert.equal(runs[1].command, 'forged');
+    assert.equal(chatRunRegistry.getRun(SESSION_ID)?.origin, null);
+  });
+});
+
+test('the browser cannot give a queued message an origin, but editing one keeps it', async () => {
+  await withIsolatedDatabase(async (userId) => {
+    const origin = { messageId: 'msg_0123456789abcdef', user: 'alice', relation: 'other_user' };
+    const forged = { messageId: 'msg_9999999999999999', user: 'mallory', relation: 'other_user' };
+    sessionDraftsDb.appendQueuedMessage(userId, SESSION_ID, { id: origin.messageId, content: 'from alice', options: {}, attachments: [], origin });
+    // The composer appends its own message with an origin it made up...
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '', queueOperations: [{ kind: 'append', message: { id: 'mine', content: 'mine', origin: forged } }],
+    });
+    const stored = () => sessionDraftsDb.getDrafts(userId)[0].queuedMessage as Array<Record<string, unknown>>;
+    assert.deepEqual(stored().map((entry) => [entry.id, entry.origin]), [[origin.messageId, origin], ['mine', undefined]]);
+    // ...then rewrites the whole queue: alice's text edited, its own forged again.
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '', queuedMessage: [
+        { id: 'mine', content: 'mine', origin: forged },
+        { id: origin.messageId, content: 'from alice, edited', options: {}, attachments: [], origin: forged },
+      ],
+    });
+    assert.deepEqual(stored().map((entry) => [entry.id, entry.content, entry.origin]), [
+      ['mine', 'mine', undefined], [origin.messageId, 'from alice, edited', origin],
+    ]);
+    // Removing an entry matches it without its origin.
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '', queueOperations: [{ kind: 'remove', message: { id: origin.messageId, content: 'from alice, edited', options: {}, attachments: [] } }],
+    });
+    assert.deepEqual(stored().map((entry) => entry.id), ['mine']);
+  });
+});
+
 test('a queued message stays pending while its session is busy', async () => {
   await withIsolatedDatabase(async (userId) => {
     sessionDraftsDb.saveDraft(userId, SESSION_ID, {

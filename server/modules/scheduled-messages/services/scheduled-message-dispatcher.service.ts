@@ -1,6 +1,6 @@
 import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
-import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
+import { chatRunRegistry, readChatRunOrigin, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 import { readObjectRecord } from '@/shared/index.js';
 import { readQueuedChatMessage } from '@/shared/utils.js';
@@ -44,6 +44,9 @@ async function sendClaimedQueuedMessage(
       userId: candidate.userId,
       content: message.content,
       options: { ...message.options, attachments: message.attachments },
+      // A session message queued behind a busy turn names the message it
+      // sends (session-message-delivery.service.ts), so its run does too.
+      origin: readChatRunOrigin(readObjectRecord(candidate.queuedMessage)?.origin),
     },
     { runtime },
   );

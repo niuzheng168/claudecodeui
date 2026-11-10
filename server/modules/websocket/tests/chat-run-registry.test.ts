@@ -226,6 +226,39 @@ test('replayEvents returns only events after the requested seq', async () => {
   });
 });
 
+test('readEvents pages a run\'s events, says when more wait or some were dropped, and reads a finished run', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-pages', 'claude', '/workspace/demo');
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-pages', provider: 'claude', providerSessionId: null, connection: null, userId: null,
+    });
+    assert.ok(run);
+    assert.equal(run.origin, null, 'a run nobody named a message for has no origin');
+    assert.deepEqual(chatRunRegistry.readEvents('app-run-pages', 0, 10), { events: [], more: false, reset: false });
+
+    for (let index = 1; index <= 5_003; index += 1) {
+      run.writer.send({ kind: 'stream_delta', provider: 'claude', sessionId: 'x', content: String(index) });
+    }
+    // The buffer keeps the newest 5000: seq 4 onwards.
+    const fromStart = chatRunRegistry.readEvents('app-run-pages', 0, 500);
+    assert.equal(fromStart.events.length, 500);
+    assert.equal(fromStart.events[0].seq, 4);
+    assert.equal(fromStart.more, true);
+    assert.equal(fromStart.reset, true, 'seq 1–3 are gone');
+    assert.equal(chatRunRegistry.readEvents('app-run-pages', 3, 500).reset, false);
+
+    const tail = chatRunRegistry.readEvents('app-run-pages', 5_000, 500);
+    assert.deepEqual(tail.events.map((event) => event.seq), [5_001, 5_002, 5_003]);
+    assert.equal(tail.more, false);
+    assert.equal(tail.reset, false);
+
+    run.writer.sendComplete({ exitCode: 0 });
+    const finished = chatRunRegistry.readEvents('app-run-pages', 5_003, 500);
+    assert.deepEqual(finished.events.map((event) => event.kind), ['complete']);
+    assert.equal(chatRunRegistry.readEvents('elsewhere', 0, 500).events.length, 0);
+  });
+});
+
 test('attachConnection adds a socket without cutting off the ones already watching', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-5', 'opencode', '/workspace/demo');

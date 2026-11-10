@@ -6,6 +6,7 @@ import type { WebSocket } from 'ws';
 import { sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import type { ChatRunOrigin } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
   getGlobalImageAssetsDir,
@@ -907,6 +908,8 @@ export async function runDetachedChatTurn(
      * land mid-run, so the timer outranks whatever is running.
      */
     interruptActiveRun?: boolean;
+    /** The session message this turn sends; recorded on the run before its first event. */
+    origin?: ChatRunOrigin | null;
   },
   dependencies: ChatWebSocketDependencies,
 ): Promise<{ started: boolean; error: string | null }> {
@@ -946,6 +949,7 @@ export async function runDetachedChatTurn(
     dependencies,
     {},
     (run, attachments) => {
+      run.origin = input.origin ?? null;
       // An interactive send shows its own message the moment it is typed; a
       // turn the server sends on its own has nobody to do that. Without this
       // row a queued or scheduled message left the queue card and was then
