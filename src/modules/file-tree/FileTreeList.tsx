@@ -1,12 +1,17 @@
 import type { DragEvent, ReactNode, RefObject } from 'react';
 
-import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
+import type { FileTreeDirectoryStatus, FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
 import FileTreeNode from '@/modules/file-tree/FileTreeNode';
+import FileTreeStatusRow from '@/modules/file-tree/FileTreeStatusRow';
+import { ROOT_FOLDER_KEY } from '@/modules/file-tree/hooks/useFileTreeData';
 
 type FileTreeListProps = {
   items: FileTreeNodeType[];
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
+  // Folders whose entries are loading, failed to load, or were cut short, by
+  // path; the project root's under ROOT_FOLDER_KEY.
+  directoryStatuses: ReadonlyMap<string, FileTreeDirectoryStatus>;
   onItemClick: (item: FileTreeNodeType) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
@@ -37,6 +42,7 @@ export default function FileTreeList({
   items,
   viewMode,
   expandedDirs,
+  directoryStatuses,
   onItemClick,
   renderFileIcon,
   formatFileSize,
@@ -59,6 +65,8 @@ export default function FileTreeList({
   renameInputRef,
   operationLoading,
 }: FileTreeListProps) {
+  const rootStatus = directoryStatuses.get(ROOT_FOLDER_KEY);
+
   return (
     <div>
       {items.map((item) => (
@@ -68,6 +76,7 @@ export default function FileTreeList({
           level={0}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
+          directoryStatuses={directoryStatuses}
           onItemClick={onItemClick}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}
@@ -91,6 +100,7 @@ export default function FileTreeList({
           operationLoading={operationLoading}
         />
       ))}
+      {rootStatus && <FileTreeStatusRow status={rootStatus} level={0} />}
     </div>
   );
 }

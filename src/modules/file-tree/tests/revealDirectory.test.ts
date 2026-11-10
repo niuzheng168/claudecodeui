@@ -13,6 +13,9 @@ import type { FileTreeNode } from '@/shared/types';
 
 const ROOT = '/home/odoo/workspace/personal';
 
+// The paths only; `complete` is covered by its own test below.
+const revealPaths = (...args: Parameters<typeof directoryRevealPaths>) => directoryRevealPaths(...args).paths;
+
 const files = [
   {
     type: 'directory',
@@ -37,40 +40,40 @@ const files = [
 ] as unknown as FileTreeNode[];
 
 test('a relative reference resolves against the project root', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'decisions/'), [`${ROOT}/decisions`]);
+  assert.deepEqual(revealPaths(files, ROOT, 'decisions/'), [`${ROOT}/decisions`]);
 });
 
 test('every ancestor of a nested reference is expanded, root first', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'src/modules/'), [
+  assert.deepEqual(revealPaths(files, ROOT, 'src/modules/'), [
     `${ROOT}/src`,
     `${ROOT}/src/modules`,
   ]);
 });
 
 test('an absolute reference inside the project resolves to the same paths', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, `${ROOT}/src/modules`), [
+  assert.deepEqual(revealPaths(files, ROOT, `${ROOT}/src/modules`), [
     `${ROOT}/src`,
     `${ROOT}/src/modules`,
   ]);
 });
 
 test('a sibling directory that merely shares the root prefix expands nothing', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, `${ROOT}-backup/src`), []);
+  assert.deepEqual(revealPaths(files, ROOT, `${ROOT}-backup/src`), []);
 });
 
 test('a path outside the project, and the root itself, expand nothing', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, '/etc/ssl'), []);
-  assert.deepEqual(directoryRevealPaths(files, ROOT, ROOT), []);
+  assert.deepEqual(revealPaths(files, ROOT, '/etc/ssl'), []);
+  assert.deepEqual(revealPaths(files, ROOT, ROOT), []);
 });
 
 test('expansion stops at the last level the tree actually holds', () => {
   // `dist/` is gitignored, so the tree never listed it.
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'src/dist/assets/'), [`${ROOT}/src`]);
-  assert.deepEqual(directoryRevealPaths(files, ROOT, 'README.md/'), []);
+  assert.deepEqual(revealPaths(files, ROOT, 'src/dist/assets/'), [`${ROOT}/src`]);
+  assert.deepEqual(revealPaths(files, ROOT, 'README.md/'), []);
 });
 
 test('windows separators and a ./ prefix are levelled before matching', () => {
-  assert.deepEqual(directoryRevealPaths(files, ROOT, './src/modules'), [
+  assert.deepEqual(revealPaths(files, ROOT, './src/modules'), [
     `${ROOT}/src`,
     `${ROOT}/src/modules`,
   ]);
@@ -84,7 +87,21 @@ test('windows separators and a ./ prefix are levelled before matching', () => {
       children: [],
     },
   ] as unknown as FileTreeNode[];
-  assert.deepEqual(directoryRevealPaths(windowsFiles, windowsRoot, 'C:\\Users\\odoo\\personal\\src'), [
+  assert.deepEqual(revealPaths(windowsFiles, windowsRoot, 'C:\\Users\\odoo\\personal\\src'), [
     'C:\\Users\\odoo\\personal\\src',
   ]);
+});
+
+test('a walk that reaches a folder not loaded yet is incomplete until it loads', () => {
+  const lazyFiles = [
+    { type: 'directory', name: 'src', path: `${ROOT}/src` },
+  ] as unknown as FileTreeNode[];
+  assert.deepEqual(directoryRevealPaths(lazyFiles, ROOT, 'src/modules/'), {
+    paths: [`${ROOT}/src`],
+    complete: false,
+  });
+  // The folder itself needs no entries to be revealed.
+  assert.deepEqual(directoryRevealPaths(lazyFiles, ROOT, 'src/'), { paths: [`${ROOT}/src`], complete: true });
+  // A loaded level that lacks the next folder ends the walk for good.
+  assert.deepEqual(directoryRevealPaths(files, ROOT, 'src/dist/assets/'), { paths: [`${ROOT}/src`], complete: true });
 });

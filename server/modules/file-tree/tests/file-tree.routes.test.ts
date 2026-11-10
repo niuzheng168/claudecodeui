@@ -22,6 +22,7 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     openFile: unexpectedOperation,
     saveTextFile: unexpectedOperation,
     listProjectFiles: unexpectedOperation,
+    listDirectory: unexpectedOperation,
     searchProjectFiles: unexpectedOperation,
     createEntry: unexpectedOperation,
     renameEntry: unexpectedOperation,
@@ -98,9 +99,39 @@ test('project files route requests gitignore filtering when explicitly enabled',
   assert.deepEqual(inputs, [['project-1', { respectGitignore: true }]]);
 });
 
+test('folder route lists the project root, or the folder named by `path`', async () => {
+  const inputs: Parameters<FileTreeServices['listDirectory']>[] = [];
+  const listed = { entries: [], truncated: true };
+  const services = createFakeServices({
+    listDirectory: async (...input) => {
+      inputs.push(input);
+      return listed;
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const childrenUrl = `${baseUrl}/api/file-tree/projects/project-1/files/children`;
+    const response = await fetch(`${childrenUrl}?respectGitignore=true`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), listed);
+
+    await fetch(`${childrenUrl}?${new URLSearchParams({ path: '/workspace/app/src 设计', respectGitignore: 'true' })}`);
+    await fetch(`${childrenUrl}?path=`);
+  });
+
+  assert.deepEqual(inputs, [
+    ['project-1', { path: null, respectGitignore: true }],
+    ['project-1', { path: '/workspace/app/src 设计', respectGitignore: true }],
+    ['project-1', { path: null, respectGitignore: false }],
+  ]);
+});
+
 test('file search route forwards the query, a bounded limit and refresh', async () => {
   const inputs: Parameters<FileTreeServices['searchProjectFiles']>[] = [];
-  const found = { files: [{ name: 'Button.tsx', path: 'src/Button.tsx' }], truncated: false };
+  const found = {
+    files: [{ name: 'Button.tsx', path: 'src/Button.tsx', absolutePath: '/workspace/app/src/Button.tsx' }],
+    truncated: false,
+  };
   const services = createFakeServices({
     searchProjectFiles: async (...input) => {
       inputs.push(input);

@@ -1253,7 +1253,13 @@ export type DirectoryRevealRequest = {
   path: string;
 };
 
-/** One file or directory entry in a project's file listing, with directories carrying their loaded `children`; used across the file tree for rendering, searching and filtering. */
+/** What the file tree shows below an open folder besides its entries: that they are still loading, that they could not be read, or that the server listed only the first `shown` of them. */
+export type FileTreeDirectoryStatus =
+  | { state: 'loading' }
+  | { state: 'failed'; error: string }
+  | { state: 'truncated'; shown: number };
+
+/** One file or directory entry in a project's file listing, with directories carrying their loaded `children` (absent until the folder is loaded); used across the file tree for rendering, searching and filtering. */
 export type FileTreeNode = {
   name: string;
   type: FileTreeItemType;

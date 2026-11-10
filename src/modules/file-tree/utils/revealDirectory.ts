@@ -17,13 +17,15 @@ const isAbsolutePath = (value: string): boolean => /^(\/|[A-Za-z]:\/)/.test(valu
  * (`decisions/`, as the model wrote it) while every node is keyed by the
  * absolute path the server built with its own platform separator. Expansion
  * stops at the last level actually present, so a folder hidden by `.gitignore`
- * or below the walk depth still opens as far as the tree goes.
+ * still opens as far as the tree goes. `complete` is false while it stopped at
+ * a folder whose entries are not loaded yet: expanding it loads them, and the
+ * walk can then go further.
  */
 export function directoryRevealPaths(
   files: FileTreeNode[],
   projectPath: string,
   reference: string,
-): string[] {
+): { paths: string[]; complete: boolean } {
   const root = normalizePath(projectPath);
   const target = normalizePath(reference);
 
@@ -32,21 +34,24 @@ export function directoryRevealPaths(
     if (!target.startsWith(`${root}/`)) {
       // Either the project root itself (nothing to expand) or a path outside
       // it — `/workspace/apple` must not be read as a child of `/workspace/app`.
-      return [];
+      return { paths: [], complete: true };
     }
     relative = target.slice(root.length + 1);
   }
 
   const paths: string[] = [];
-  let level = files;
+  let level: FileTreeNode[] | undefined = files;
   for (const segment of relative.split('/').filter(Boolean)) {
-    const directory = level.find((node) => node.type === 'directory' && node.name === segment);
+    if (!level) {
+      return { paths, complete: false };
+    }
+    const directory: FileTreeNode | undefined = level.find((node) => node.type === 'directory' && node.name === segment);
     if (!directory) {
       break;
     }
     paths.push(directory.path);
-    level = directory.children ?? [];
+    level = directory.children;
   }
 
-  return paths;
+  return { paths, complete: true };
 }

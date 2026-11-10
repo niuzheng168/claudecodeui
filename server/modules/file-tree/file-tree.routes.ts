@@ -183,6 +183,13 @@ export function createFileTreeRouter(
     }));
   }, logger));
 
+  router.get('/projects/:projectId/files/children', createRouteHandler(async (request, response) => {
+    response.json(await services.listDirectory(readProjectId(request), {
+      path: readOptionalString(request.query.path) || null,
+      respectGitignore: request.query.respectGitignore === 'true',
+    }));
+  }, logger));
+
   router.get('/projects/:projectId/files/search', createRouteHandler(async (request, response) => {
     response.json(await services.searchProjectFiles(readProjectId(request), {
       query: readOptionalString(request.query.q) ?? '',

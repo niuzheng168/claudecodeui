@@ -1749,13 +1749,24 @@ export type FileTreeServices = {
     options?: { respectGitignore: boolean },
   ): Promise<FileTreeNode[]>;
   /**
+   * The entries of one folder of the project (its root when `path` is null),
+   * without their `children`, for the file tree that loads a folder when it
+   * is opened. Filtered like `listProjectFiles`; a folder of more than 10,000
+   * entries lists that many and is `truncated`.
+   */
+  listDirectory(projectId: string, options: { path: string | null; respectGitignore: boolean }): Promise<{
+    entries: FileTreeNode[];
+    truncated: boolean;
+  }>;
+  /**
    * Files whose path relative to the project contains `query`, ignoring case,
-   * best matches first, for the chat composer's `@` list. Unlike
-   * `listProjectFiles` it has no 10,000 entry limit. `refresh` lists the
-   * project again instead of reusing the list from its last search.
+   * best matches first, for the chat composer's `@` list and the file tree's
+   * search. Unlike `listProjectFiles` it has no 10,000 entry limit. `refresh`
+   * lists the project again instead of reusing the list from its last search.
    */
   searchProjectFiles(projectId: string, options: { query: string; limit: number; refresh: boolean }): Promise<{
-    files: Array<{ name: string; path: string }>;
+    /** `path` is relative to the project, `/`-separated; `absolutePath` is the path the file tree knows the file by. */
+    files: Array<{ name: string; path: string; absolutePath: string }>;
     /** The project had more files than are searched, so a match may be missing. */
     truncated: boolean;
   }>;

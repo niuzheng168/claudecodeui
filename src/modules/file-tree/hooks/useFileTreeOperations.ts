@@ -23,6 +23,8 @@ export type UseFileTreeOperationsOptions = {
   selectedProject: Project | null;
   onRefresh: () => void;
   showToast: (message: string, type: 'success' | 'error') => void;
+  // The entries of a folder the tree has not loaded, for downloading it whole.
+  readFolderEntries: (folderPath: string) => Promise<FileTreeNode[]>;
 };
 
 export type UseFileTreeOperationsResult = {
@@ -64,6 +66,7 @@ export function useFileTreeOperations({
   selectedProject,
   onRefresh,
   showToast,
+  readFolderEntries,
 }: UseFileTreeOperationsOptions): UseFileTreeOperationsResult {
   const { t } = useTranslation();
 
@@ -295,19 +298,16 @@ export function useFileTreeOperations({
         // Store raw bytes in the archive so binary files stay intact.
         const fileBytes = await response.arrayBuffer();
         zip.file(fullPath, fileBytes);
-      } else if (node.type === 'directory' && node.children) {
-        // Recursively process children
-        for (const child of node.children) {
+      } else if (node.type === 'directory') {
+        // Recursively process children, listing the folders never opened
+        for (const child of node.children ?? await readFolderEntries(node.path)) {
           await collectFiles(child, fullPath);
         }
       }
     };
 
-    // If the folder has children, process them
-    if (folder.children && folder.children.length > 0) {
-      for (const child of folder.children) {
-        await collectFiles(child, '');
-      }
+    for (const child of folder.children ?? await readFolderEntries(folder.path)) {
+      await collectFiles(child, '');
     }
 
     // Generate ZIP file
@@ -315,7 +315,7 @@ export function useFileTreeOperations({
     triggerBrowserDownload(zipBlob, `${folder.name}.zip`);
 
     showToast(t('fileTree.toast.folderDownloaded', 'Folder downloaded as ZIP'), 'success');
-  }, [selectedProject, showToast, t, triggerBrowserDownload]);
+  }, [selectedProject, showToast, t, triggerBrowserDownload, readFolderEntries]);
 
   // Download file or folder. Declared after the two helpers it dispatches to so
   // it does not read them before initialization; both are memoized on

@@ -403,9 +403,14 @@ export const api = {
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
   getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
-  // `{ files: [{ name, path }], truncated }`: files whose relative path contains
-  // the query, best first, from a project of any size. `refresh` lists the
-  // project again rather than reusing the list of its last search.
+  // `{ entries, truncated }`: one folder's entries without their children, the
+  // project root's when `directoryPath` is null. `truncated` when the folder
+  // has more entries than the server lists.
+  listDirectory: (projectId: string, directoryPath: string | null, options: ApiRequestOptions = {}) =>
+    get(`/api/file-tree/projects/${projectId}/files/children${query({ path: directoryPath, respectGitignore: true })}`, options),
+  // `{ files: [{ name, path, absolutePath }], truncated }`: files whose relative
+  // path contains the query, best first, from a project of any size. `refresh`
+  // lists the project again rather than reusing the list of its last search.
   searchFiles: (
     projectId: string,
     { query: searchQuery, limit, refresh }: { query: string; limit: number; refresh: boolean },

@@ -38,6 +38,7 @@ const COMMON_WORKSPACE_DIRECTORY_NAMES = [
 // File Tree consumes this guard when recursively listing a project so a very
 // broad workspace (for example, a user's home directory) cannot exhaust the
 // server heap before the browser has a chance to switch to a narrower project.
+// Listing one folder stops at as many entries and says the rest was left out.
 const MAXIMUM_FILE_TREE_ENTRIES = 10_000;
 
 // File search lists no more than this many files of a project (or files and
@@ -94,6 +95,16 @@ function includeEntryByFallbackDirectoryNames(entryPath: string, isDirectory: bo
 
 function createFileTreeError(message: string, statusCode: number, code: string): AppError {
   return new AppError(message, { statusCode, code });
+}
+
+/** Folders first, then by name, the order every listing is shown in. */
+function sortFileTreeNodes(items: FileTreeNode[]): FileTreeNode[] {
+  return items.sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === 'directory' ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
 }
 
 function readErrorCode(error: unknown): string | null {
@@ -304,16 +315,17 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
   /**
    * Streams one directory and keeps only the entries the tree will show.
    *
-   * Entries are filtered and charged against the shared budget one at a time,
-   * so a pathologically large directory stops the walk at the cap instead of
-   * being read into memory in full first.
+   * Entries are filtered and charged against the budget one at a time, so a
+   * pathologically large directory is abandoned at the cap instead of being
+   * read into memory in full first. `truncated` says an entry was left out.
    */
   async function collectVisibleEntries(
     directoryPath: string,
     includeEntry: FileTreeEntryFilter,
     remainingEntries: { value: number },
-  ): Promise<FileTreeDirectoryEntry[]> {
+  ): Promise<{ entries: FileTreeDirectoryEntry[]; truncated: boolean }> {
     const visibleEntries: FileTreeDirectoryEntry[] = [];
+    let truncated = false;
 
     await acquire();
     try {
@@ -324,33 +336,66 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         }
 
         // Charged after visibility filtering so ignored entries never consume
-        // the budget. Every recursive branch shares one counter, so the cap
-        // applies to the whole tree rather than per directory.
+        // the budget. A recursive walk shares one counter across its branches,
+        // so the cap applies to the whole tree rather than per directory.
         if (remainingEntries.value <= 0) {
-          throw createFileTreeError(
-            `Project file tree exceeds the ${MAXIMUM_FILE_TREE_ENTRIES.toLocaleString()} entry limit. Choose a narrower project directory or add ignore rules.`,
-            413,
-            'FILE_TREE_TOO_LARGE',
-          );
+          truncated = true;
+          break;
         }
         remainingEntries.value -= 1;
         visibleEntries.push(entry);
       }
     } catch (error) {
-      // The entry cap is a caller-visible outcome, not an unreadable directory.
-      if (error instanceof AppError) {
-        throw error;
-      }
       const errorCode = readErrorCode(error);
       if (errorCode !== 'EACCES' && errorCode !== 'EPERM') {
         dependencies.logger.error(`Error reading directory "${directoryPath}"`, error);
       }
-      return [];
+      return { entries: [], truncated: false };
     } finally {
       release();
     }
 
-    return visibleEntries;
+    return { entries: visibleEntries, truncated };
+  }
+
+  /** The tree item for one directory entry, its metadata read without following a symlink. */
+  async function describeEntry(directoryPath: string, entry: FileTreeDirectoryEntry): Promise<FileTreeNode> {
+    const itemPath = path.join(directoryPath, entry.name);
+    const item: FileTreeNode = {
+      name: entry.name,
+      path: itemPath,
+      type: entry.isDirectory() ? 'directory' : 'file',
+      size: 0,
+      modified: null,
+      permissions: '000',
+      permissionsRwx: '---------',
+    };
+
+    try {
+      await acquire();
+      try {
+        const stats = await fileSystem.lstat(itemPath);
+        const ownerPermissions = (stats.mode >> 6) & 7;
+        const groupPermissions = (stats.mode >> 3) & 7;
+        const otherPermissions = stats.mode & 7;
+
+        item.size = stats.size;
+        item.modified = stats.mtime.toISOString();
+        item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
+        item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
+          + permissionBitsToRwx(groupPermissions)
+          + permissionBitsToRwx(otherPermissions);
+        if (stats.isSymbolicLink()) {
+          item.isSymlink = true;
+        }
+      } finally {
+        release();
+      }
+    } catch {
+      // Metadata failures should not hide an otherwise readable tree entry.
+    }
+
+    return item;
   }
 
   async function buildFileTree(
@@ -360,53 +405,31 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
     includeEntry: FileTreeEntryFilter = includeEntryByFallbackDirectoryNames,
     remainingEntries = { value: MAXIMUM_FILE_TREE_ENTRIES },
   ): Promise<FileTreeNode[]> {
-    const visibleEntries = await collectVisibleEntries(directoryPath, includeEntry, remainingEntries);
+    const { entries: visibleEntries, truncated } = await collectVisibleEntries(
+      directoryPath,
+      includeEntry,
+      remainingEntries,
+    );
+    if (truncated) {
+      throw createFileTreeError(
+        `Project file tree exceeds the ${MAXIMUM_FILE_TREE_ENTRIES.toLocaleString()} entry limit. Choose a narrower project directory or add ignore rules.`,
+        413,
+        'FILE_TREE_TOO_LARGE',
+      );
+    }
 
     const items = await Promise.all(visibleEntries.map(async (entry): Promise<FileTreeNode> => {
-      const itemPath = path.join(directoryPath, entry.name);
-      const item: FileTreeNode = {
-        name: entry.name,
-        path: itemPath,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: 0,
-        modified: null,
-        permissions: '000',
-        permissionsRwx: '---------',
-      };
-
-      try {
-        await acquire();
-        try {
-          const stats = await fileSystem.lstat(itemPath);
-          const ownerPermissions = (stats.mode >> 6) & 7;
-          const groupPermissions = (stats.mode >> 3) & 7;
-          const otherPermissions = stats.mode & 7;
-
-          item.size = stats.size;
-          item.modified = stats.mtime.toISOString();
-          item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
-          item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
-            + permissionBitsToRwx(groupPermissions)
-            + permissionBitsToRwx(otherPermissions);
-          if (stats.isSymbolicLink()) {
-            item.isSymlink = true;
-          }
-        } finally {
-          release();
-        }
-      } catch {
-        // Metadata failures should not hide an otherwise readable tree entry.
-      }
+      const item = await describeEntry(directoryPath, entry);
 
       // Skip recursing into pseudo-filesystems and other system-critical
       // directories (e.g. /proc, /sys) — they're never valid project roots,
       // and /proc in particular can contain thousands of virtual entries
       // that make traversal from a broad root (e.g. "/") pathologically slow.
-      const isForbiddenSystemDir = FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(itemPath));
+      const isForbiddenSystemDir = FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(item.path));
 
       if (entry.isDirectory() && currentDepth < maximumDepth && !isForbiddenSystemDir) {
         item.children = await buildFileTree(
-          itemPath,
+          item.path,
           maximumDepth,
           currentDepth + 1,
           includeEntry,
@@ -417,12 +440,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return item;
     }));
 
-    return items.sort((left, right) => {
-      if (left.type !== right.type) {
-        return left.type === 'directory' ? -1 : 1;
-      }
-      return left.name.localeCompare(right.name);
-    });
+    return sortFileTreeNodes(items);
   }
 
   /**
@@ -758,6 +776,49 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return buildFileTree(projectRoot, 10, 0, includeEntry);
     },
 
+    async listDirectory(projectId, options) {
+      const projectRoot = await resolveProjectRoot(projectId);
+      try {
+        await fileSystem.access(projectRoot);
+      } catch {
+        throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
+      }
+
+      const directoryPath = options.path ? resolvePathInsideProject(projectRoot, options.path) : projectRoot;
+      let isDirectory: boolean;
+      try {
+        // The tree shows a symlink as a file and never opens it, so a folder
+        // reached through one is refused rather than listed wherever it points.
+        const canonicalRoot = await fileSystem.realpath(projectRoot);
+        const canonicalDirectory = await fileSystem.realpath(directoryPath);
+        if (!isPathInsideDirectory(canonicalRoot, canonicalDirectory, true)) {
+          throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+        }
+        isDirectory = (await fileSystem.stat(canonicalDirectory)).isDirectory();
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        mapFileSystemError(error, {
+          ENOENT: { message: 'Folder not found', statusCode: 404 },
+          ENOTDIR: { message: 'Path is not a directory', statusCode: 400 },
+          EACCES: { message: 'Permission denied', statusCode: 403 },
+          EPERM: { message: 'Permission denied', statusCode: 403 },
+        });
+      }
+      if (!isDirectory) {
+        throw createFileTreeError('Path is not a directory', 400, 'NOT_A_DIRECTORY');
+      }
+
+      const includeEntry = await readEntryFilter(projectRoot, options.respectGitignore)
+        ?? includeEntryByFallbackDirectoryNames;
+      const { entries, truncated } = await collectVisibleEntries(
+        directoryPath,
+        includeEntry,
+        { value: MAXIMUM_FILE_TREE_ENTRIES },
+      );
+      const items = await Promise.all(entries.map((entry) => describeEntry(directoryPath, entry)));
+      return { entries: sortFileTreeNodes(items), truncated };
+    },
+
     async searchProjectFiles(projectId, options) {
       const projectRoot = await resolveProjectRoot(projectId);
       try {
@@ -794,7 +855,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return {
         files: best.map(({ index }) => {
           const filePath = listing.paths[index];
-          return { name: filePath.slice(filePath.lastIndexOf('/') + 1), path: filePath };
+          return {
+            name: filePath.slice(filePath.lastIndexOf('/') + 1),
+            path: filePath,
+            absolutePath: path.join(projectRoot, filePath),
+          };
         }),
         truncated: listing.truncated,
       };

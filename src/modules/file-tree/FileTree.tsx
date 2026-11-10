@@ -11,7 +11,13 @@ import { useFileTreeOperations } from '@/modules/file-tree/hooks/useFileTreeOper
 import { useFileTreeSearch } from '@/modules/file-tree/hooks/useFileTreeSearch';
 import { useFileTreeViewMode } from '@/modules/file-tree/hooks/useFileTreeViewMode';
 import { useFileTreeUpload } from '@/modules/file-tree/hooks/useFileTreeUpload';
-import type { DirectoryRevealRequest, FileTreeImageSelection, FileTreeNode,Project } from '@/shared/types';
+import type {
+  DirectoryRevealRequest,
+  FileTreeDirectoryStatus,
+  FileTreeImageSelection,
+  FileTreeNode,
+  Project,
+} from '@/shared/types';
 import { formatFileSize, formatRelativeTime, isImageFile } from '@/modules/file-tree/utils/fileTreeUtils';
 import { directoryRevealPaths } from '@/modules/file-tree/utils/revealDirectory';
 import { ScrollArea, Input } from '@/shared/ui';
@@ -22,6 +28,9 @@ import FileTreeLoadingState from '@/modules/file-tree/FileTreeLoadingState';
 import FileTreeUploadProgress from '@/modules/file-tree/FileTreeUploadProgress';
 import ImageViewer from '@/modules/file-tree/ImageViewer';
 
+
+// A search shows its own results, which carry no folder statuses.
+const NO_DIRECTORY_STATUSES: ReadonlyMap<string, FileTreeDirectoryStatus> = new Map();
 
 type FileTreeProps = {
   selectedProject: Project | null;
@@ -52,13 +61,37 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     }
   }, [toast]);
 
-  const { files, loading, error, refreshFiles } = useFileTreeData(selectedProject);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
-  const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
+  const {
     files,
+    loading,
+    error,
+    refreshFiles,
+    loadsFolders,
+    directoryStatuses,
+    readFolderEntries,
+  } = useFileTreeData(selectedProject, expandedDirs);
+  const {
+    searchQuery,
+    setSearchQuery,
+    filteredFiles,
+    searchPending,
+    searchLimited,
+    refreshSearch,
+  } = useFileTreeSearch({
+    projectId: selectedProject?.projectId,
+    files,
+    searchOnServer: loadsFolders,
     expandDirectories,
   });
+
+  // A refresh, whether asked for or after a change made here, also searches
+  // again so the results show the change.
+  const refreshAll = useCallback(() => {
+    refreshFiles();
+    refreshSearch();
+  }, [refreshFiles, refreshSearch]);
 
   // The reveal request already served, so a later tree refresh does not fold
   // the folders open again over a collapse the user has since made.
@@ -66,32 +99,36 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
 
   // Expand every ancestor between the project root and the requested folder.
   // A request that arrives before the tree finds nothing to expand and is
-  // retried when `files` lands.
+  // retried when `files` lands. Expanding a folder loads it, so a deeper
+  // folder is reached one level per load.
   useEffect(() => {
     const projectRoot = selectedProject?.path || selectedProject?.fullPath;
     if (!revealDirectory || !projectRoot || revealedRef.current === revealDirectory) {
       return;
     }
-    const paths = directoryRevealPaths(files, projectRoot, revealDirectory.path);
+    const { paths, complete } = directoryRevealPaths(files, projectRoot, revealDirectory.path);
     if (paths.length === 0) {
       return;
     }
-    revealedRef.current = revealDirectory;
+    if (complete) {
+      revealedRef.current = revealDirectory;
+    }
     expandDirectories(paths);
   }, [revealDirectory, selectedProject?.path, selectedProject?.fullPath, expandDirectories, files]);
 
   // File operations
   const operations = useFileTreeOperations({
     selectedProject,
-    onRefresh: refreshFiles,
+    onRefresh: refreshAll,
     showToast,
+    readFolderEntries,
   });
 
   // File upload (drag and drop). `treeRef` is pulled out of the returned object
   // so the remaining plain values are not treated as render-time ref reads.
   const { treeRef, ...upload } = useFileTreeUpload({
     selectedProject,
-    onRefresh: refreshFiles,
+    onRefresh: refreshAll,
     showToast,
   });
   const operationLoading = operations.operationLoading || upload.operationLoading;
@@ -217,7 +254,7 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
         onUploadFiles={upload.handleFileSelect}
         onNewFile={() => operations.handleStartCreate('', 'file')}
         onNewFolder={() => operations.handleStartCreate('', 'directory')}
-        onRefresh={refreshFiles}
+        onRefresh={refreshAll}
         onCollapseAll={collapseAll}
         loading={loading}
         operationLoading={operationLoading}
@@ -267,8 +304,11 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
           filteredFiles={filteredFiles}
           error={error}
           searchQuery={searchQuery}
+          searchPending={searchPending}
+          searchLimited={searchLimited}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
+          directoryStatuses={searchQuery.trim() ? NO_DIRECTORY_STATUSES : directoryStatuses}
           onItemClick={handleItemClick}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}
@@ -280,7 +320,7 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
           onCopyPath={operations.handleCopyPath}
           onDownload={operations.handleDownload}
           onUpload={handleUploadToFolder}
-          onRefresh={refreshFiles}
+          onRefresh={refreshAll}
           dropTarget={upload.dropTarget}
           onItemDragOver={upload.handleItemDragOver}
           // Pass rename state and handlers for inline editing

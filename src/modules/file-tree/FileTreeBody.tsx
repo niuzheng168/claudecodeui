@@ -2,7 +2,7 @@ import type { DragEvent, ReactNode, RefObject } from 'react';
 import { AlertTriangle, Folder, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { FileTreeNode, FileTreeViewMode } from '@/shared/types';
+import type { FileTreeDirectoryStatus, FileTreeNode, FileTreeViewMode } from '@/shared/types';
 import FileTreeEmptyState from '@/modules/file-tree/FileTreeEmptyState';
 import FileTreeList from '@/modules/file-tree/FileTreeList';
 
@@ -11,8 +11,13 @@ type FileTreeBodyProps = {
   filteredFiles: FileTreeNode[];
   error?: string | null;
   searchQuery: string;
+  // The server has not answered the search yet.
+  searchPending?: boolean;
+  // The search found more files than are shown.
+  searchLimited?: boolean;
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
+  directoryStatuses: ReadonlyMap<string, FileTreeDirectoryStatus>;
   onItemClick: (item: FileTreeNode) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
@@ -44,8 +49,11 @@ export default function FileTreeBody({
   filteredFiles,
   error,
   searchQuery,
+  searchPending,
+  searchLimited,
   viewMode,
   expandedDirs,
+  directoryStatuses,
   onItemClick,
   renderFileIcon,
   formatFileSize,
@@ -84,6 +92,10 @@ export default function FileTreeBody({
           title={t('fileTree.noFilesFound')}
           description={t('fileTree.checkProjectPath')}
         />
+      ) : filteredFiles.length === 0 && searchQuery && searchPending ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">
+          {t('fileTree.searching', 'Searching...')}
+        </div>
       ) : filteredFiles.length === 0 && searchQuery ? (
         <FileTreeEmptyState
           icon={Search}
@@ -91,32 +103,40 @@ export default function FileTreeBody({
           description={t('fileTree.tryDifferentSearch')}
         />
       ) : (
-        <FileTreeList
-          items={filteredFiles}
-          viewMode={viewMode}
-          expandedDirs={expandedDirs}
-          onItemClick={onItemClick}
-          renderFileIcon={renderFileIcon}
-          formatFileSize={formatFileSize}
-          formatRelativeTime={formatRelativeTime}
-          onRename={onRename}
-          onDelete={onDelete}
-          onNewFile={onNewFile}
-          onNewFolder={onNewFolder}
-          onCopyPath={onCopyPath}
-          onDownload={onDownload}
-          onUpload={onUpload}
-          onRefresh={onRefresh}
-          dropTarget={dropTarget}
-          onItemDragOver={onItemDragOver}
-          renamingItem={renamingItem}
-          renameValue={renameValue}
-          setRenameValue={setRenameValue}
-          handleConfirmRename={handleConfirmRename}
-          handleCancelRename={handleCancelRename}
-          renameInputRef={renameInputRef}
-          operationLoading={operationLoading}
-        />
+        <>
+          <FileTreeList
+            items={filteredFiles}
+            viewMode={viewMode}
+            expandedDirs={expandedDirs}
+            directoryStatuses={directoryStatuses}
+            onItemClick={onItemClick}
+            renderFileIcon={renderFileIcon}
+            formatFileSize={formatFileSize}
+            formatRelativeTime={formatRelativeTime}
+            onRename={onRename}
+            onDelete={onDelete}
+            onNewFile={onNewFile}
+            onNewFolder={onNewFolder}
+            onCopyPath={onCopyPath}
+            onDownload={onDownload}
+            onUpload={onUpload}
+            onRefresh={onRefresh}
+            dropTarget={dropTarget}
+            onItemDragOver={onItemDragOver}
+            renamingItem={renamingItem}
+            renameValue={renameValue}
+            setRenameValue={setRenameValue}
+            handleConfirmRename={handleConfirmRename}
+            handleCancelRename={handleCancelRename}
+            renameInputRef={renameInputRef}
+            operationLoading={operationLoading}
+          />
+          {searchQuery && searchLimited && (
+            <p className="px-1 py-2 text-xs text-muted-foreground">
+              {t('fileTree.searchLimited', 'Only the best matches are shown. Refine the search to find others.')}
+            </p>
+          )}
+        </>
       )}
     </>
   );

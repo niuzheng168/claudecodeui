@@ -3,15 +3,18 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen, Upload } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
-import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
+import type { FileTreeDirectoryStatus, FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
 import { Input } from '@/shared/ui';
 import FileContextMenu from '@/modules/file-tree/FileContextMenu';
+import FileTreeStatusRow from '@/modules/file-tree/FileTreeStatusRow';
 
 type FileTreeNodeProps = {
   item: FileTreeNodeType;
   level: number;
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
+  // Folders whose entries are loading, failed to load, or were cut short, by path.
+  directoryStatuses: ReadonlyMap<string, FileTreeDirectoryStatus>;
   onItemClick: (item: FileTreeNodeType) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
@@ -78,6 +81,7 @@ export default function FileTreeNode({
   level,
   viewMode,
   expandedDirs,
+  directoryStatuses,
   onItemClick,
   renderFileIcon,
   formatFileSize,
@@ -104,6 +108,7 @@ export default function FileTreeNode({
   const isDirectory = item.type === 'directory';
   const isOpen = isDirectory && expandedDirs.has(item.path);
   const hasChildren = Boolean(isDirectory && item.children && item.children.length > 0);
+  const directoryStatus = isDirectory ? directoryStatuses.get(item.path) : undefined;
   const isRenaming = renamingItem?.path === item.path;
   const dragTargetPath = isDirectory ? item.path : getParentDirectoryPath(item.path);
   const isDropTarget = isDirectory && dropTarget === item.path;
@@ -190,7 +195,8 @@ export default function FileTreeNode({
             <span className={nameClassName}>{item.name}</span>
           </div>
           <div className="col-span-2 text-sm tabular-nums text-muted-foreground">
-            {item.type === 'file' ? formatFileSize(item.size) : ''}
+            {/* A search result carries no size. */}
+            {item.type === 'file' && typeof item.size === 'number' ? formatFileSize(item.size) : ''}
           </div>
           <div className="col-span-3 text-sm text-muted-foreground">{formatRelativeTime(item.modified)}</div>
           <div className="col-span-2 font-mono text-sm text-muted-foreground">{item.permissionsRwx || ''}</div>
@@ -202,7 +208,7 @@ export default function FileTreeNode({
             <span className={nameClassName}>{item.name}</span>
           </div>
           <div className="ml-2 flex flex-shrink-0 items-center gap-3 text-sm text-muted-foreground">
-            {item.type === 'file' && (
+            {item.type === 'file' && typeof item.size === 'number' && (
               <>
                 <span className="tabular-nums">{formatFileSize(item.size)}</span>
                 <span className="font-mono">{item.permissionsRwx}</span>
@@ -243,7 +249,7 @@ export default function FileTreeNode({
         rowContent
       )}
 
-      {isDirectory && isOpen && hasChildren && (
+      {isDirectory && isOpen && (hasChildren || directoryStatus) && (
         <div className="relative">
           <span
             className="absolute bottom-0 top-0 border-l border-border/40"
@@ -257,6 +263,7 @@ export default function FileTreeNode({
               level={level + 1}
               viewMode={viewMode}
               expandedDirs={expandedDirs}
+              directoryStatuses={directoryStatuses}
               onItemClick={onItemClick}
               renderFileIcon={renderFileIcon}
               formatFileSize={formatFileSize}
@@ -280,6 +287,7 @@ export default function FileTreeNode({
               operationLoading={operationLoading}
             />
           ))}
+          {directoryStatus && <FileTreeStatusRow status={directoryStatus} level={level + 1} />}
         </div>
       )}
     </div>

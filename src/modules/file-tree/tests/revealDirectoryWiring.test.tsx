@@ -23,8 +23,18 @@ const tree = [
   },
 ];
 
+// A node from before folders were listed one at a time: it serves its app page
+// for the folder route, so the whole tree is loaded. lazyFileTree.test.tsx
+// covers revealing in a tree that loads its folders.
 vi.mock('@/shared/api', () => ({
   api: {
+    listDirectory: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    }),
     getFiles: async () => ({ ok: true, json: async () => tree }),
   },
 }));
