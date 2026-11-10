@@ -362,7 +362,15 @@
   "message": {
     "editAndResend": "編輯並重新傳送",
     "forkFromHere": "從此處分支",
-    "answeredBy": "由 {{model}} 回答"
+    "answeredBy": "由 {{model}} 回答",
+    "sender": {
+      "fromUser": "來自 {{user}}",
+      "fromMachine": "來自 {{machine}} 上的工作階段",
+      "fromSession": "來自另一個工作階段",
+      "fromApi": "透過 Codey API 傳送",
+      "me": "我",
+      "owner": "{{user}}"
+    }
   },
   "composer": {
     "collapseInput": "收起輸入框",

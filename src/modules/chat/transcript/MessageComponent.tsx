@@ -14,6 +14,7 @@ import StreamingMarkdown from '@/modules/chat/transcript/StreamingMarkdown';
 import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
 import MessageModelLabel from '@/modules/chat/transcript/MessageModelLabel';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
+import MessageSenderBadge from '@/modules/chat/transcript/MessageSenderBadge';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
 import { TranscriptProjectContext } from '@/modules/chat/context/TranscriptProjectContext';
@@ -45,8 +46,9 @@ type MessageComponentProps = {
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
 /**
- * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
- * transcript entry — user turn, assistant turn, or a tool call and its result.
+ * Rendered by chat's TranscriptRows and ToolGroupContainer (and the transcript
+ * export) to draw one transcript entry — user turn, assistant turn, or a tool
+ * call and its result.
  */
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
@@ -119,6 +121,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
         /* User turn on the right: claude.ai-style attachment cards above the bubble */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">
+            <MessageSenderBadge sender={message.sender} />
             {message.images && message.images.length > 0 && (
               <ChatMessageImages
                 images={message.images}

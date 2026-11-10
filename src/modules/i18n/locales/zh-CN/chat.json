@@ -425,7 +425,15 @@
   "message": {
     "editAndResend": "编辑并重新发送",
     "forkFromHere": "从此处派生",
-    "answeredBy": "由 {{model}} 回答"
+    "answeredBy": "由 {{model}} 回答",
+    "sender": {
+      "fromUser": "来自 {{user}}",
+      "fromMachine": "来自 {{machine}} 上的会话",
+      "fromSession": "来自另一个会话",
+      "fromApi": "通过 Codey API 发送",
+      "me": "我",
+      "owner": "{{user}}"
+    }
   },
   "composer": {
     "collapseInput": "收起输入框",
@@ -558,5 +566,51 @@
     "customModelsOnlyHint": "在所有模型选择器中隐藏 {{provider}} 的内置模型，并将您的第一个模型设为默认模型。在您添加模型之前，内置模型仍会显示。",
     "builtInModelsHidden": "开启“仅使用我的模型”时，这些模型不会出现在模型选择器中。",
     "customModelsOnlyFailed": "无法更改此设置。"
+  },
+  "sharedSession": {
+    "header": {
+      "untitled": "共享的会话",
+      "sharedBy": "{{owner}} 共享给你",
+      "modeConfirm": "消息需要 {{owner}} 确认",
+      "modeAuto": "消息直接交给 agent",
+      "expires": "有效期至 {{date}}"
+    },
+    "status": {
+      "offline": "{{owner}} 的机器现在连不上，下面是上次读到的对话。",
+      "unsupported": "{{owner}} 的机器上 Codey 版本较旧：对话每隔几秒刷新一次，不能实时查看，也不能在这里停止或批准。",
+      "pollFailed": "读取最新状态失败：{{error}}",
+      "waitingForOwner": "等 {{owner}} 处理：这一轮在等只有 {{owner}} 能批准的请求。"
+    },
+    "ended": {
+      "title": "这个共享已经结束",
+      "body": "共享可能已被取消，或者已经过期。"
+    },
+    "signedOut": {
+      "title": "Codey 登录已过期",
+      "reload": "重新加载"
+    },
+    "invalid": "页面缺少参数，请从 Workbench 重新打开。",
+    "history": {
+      "empty": "还没有消息。",
+      "failed": "读取对话失败：{{error}}",
+      "retry": "重试"
+    },
+    "composer": {
+      "placeholder": "给 {{owner}} 的 agent 发消息…",
+      "send": "发送",
+      "sendFailed": "没有发出：{{error}}",
+      "noAddress": "现在还不能给这个会话发消息。"
+    },
+    "stopFailed": "停止失败：{{error}}",
+    "permissionFailed": "回答失败：{{error}}",
+    "outbox": {
+      "awaitingConfirmation": "等 {{owner}} 确认",
+      "queued": "排队中",
+      "delivered": "已送达",
+      "declined": "{{owner}} 没有接受这条消息",
+      "expired": "已过期，没有送达",
+      "failed": "没有送达",
+      "dismiss": "关闭"
+    }
   }
 }

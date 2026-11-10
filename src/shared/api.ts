@@ -152,6 +152,32 @@ export function readApiErrorMessage(body: unknown): string | null {
   return readable ?? null;
 }
 
+/**
+ * Reads a Codey Portal API response: the JSON body, or null for a 204. A
+ * failure (`{ error: { code, message } }`) throws an ApiRequestError carrying
+ * the code and the HTTP status — a 401 means the Portal login expired, and a
+ * 404 that the resource is gone or was never the caller's.
+ *
+ * Used by the shared-session module for the endpoints in `api.sharedSession`.
+ */
+export async function readPortalJson<T>(response: Response): Promise<T | null> {
+  if (response.status === 204) {
+    return null;
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = body && typeof body === 'object' ? (body as { error?: unknown }).error : null;
+    const payload = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : {};
+    throw new ApiRequestError(
+      typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message
+        : `Request failed (${response.status})`,
+      { code: typeof payload.code === 'string' ? payload.code : undefined, status: response.status },
+    );
+  }
+  return body as T;
+}
+
 const get = (url: string, options: ApiRequestOptions = {}) => authenticatedFetch(url, options);
 
 const withBody =
@@ -190,6 +216,33 @@ export const sessionMessagesUrl = (
   })}`;
 };
 
+/**
+ * A request to the Codey Portal's own API rather than to this node: an
+ * absolute path that never takes the node deployment prefix, authenticated
+ * by the Portal login cookie (the browser adds the Origin a write needs) and
+ * never by a CloudCLI bearer token.
+ */
+const portalFetch = (
+  url: string,
+  { method = 'GET', body, headers = {} }: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
+): Promise<Response> => fetch(url, {
+  method,
+  credentials: 'same-origin',
+  cache: 'no-store',
+  headers: {
+    Accept: 'application/json',
+    ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    ...headers,
+  },
+  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+});
+
+/** `POST /api/v1/messages` beside a grant's API root (`…/api/v1/shared/<grantId>`), so a Portal served under a prefix keeps it. */
+const portalMessagesUrl = (sharedApiRoot: string): string => {
+  const messagesUrl = sharedApiRoot.replace(/\/shared\/[^/]+\/?$/, '/messages');
+  return messagesUrl === sharedApiRoot ? '/api/v1/messages' : messagesUrl;
+};
+
 const fileContentPath = (projectId: string, filePath: string) =>
   `/api/file-tree/projects/${projectId}/files/content${query({ path: filePath })}`;
 
@@ -201,6 +254,33 @@ const pluginAssetPath = (pluginName: string, assetFile: string) =>
 // import a named method instead of assembling URLs of their own.
 
 export const api = {
+  // A session another Codey user shared with this reader (codey
+  // docs/codey-shared-sessions.md §5). Every path hangs off the grant's API
+  // root, `/api/v1/shared/<grantId>`, which the Portal hands the page; read
+  // the responses with readPortalJson.
+  sharedSession: {
+    info: (apiRoot: string) => portalFetch(apiRoot),
+    /** The current run and its events after `afterSeq` when `runId` is still the current run; from its start otherwise. */
+    live: (apiRoot: string, position: { runId?: string | null; afterSeq?: number } = {}) =>
+      portalFetch(`${apiRoot}/live${query(position.runId
+        ? { afterSeq: position.afterSeq ?? 0, runId: position.runId }
+        : {})}`),
+    stop: (apiRoot: string, runId: string) =>
+      portalFetch(`${apiRoot}/stop`, { method: 'POST', body: { runId } }),
+    answerPermission: (
+      apiRoot: string,
+      requestId: string,
+      answer: { runId: string; allow: boolean; updatedInput?: unknown; message?: string },
+    ) => portalFetch(`${apiRoot}/permissions/${encodeURIComponent(requestId)}`, { method: 'POST', body: answer }),
+    /** The Idempotency-Key makes a retried send land once. */
+    sendMessage: (apiRoot: string, message: { to: string; text: string }, idempotencyKey: string) =>
+      portalFetch(portalMessagesUrl(apiRoot), {
+        method: 'POST',
+        body: message,
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+  },
+
   // Auth endpoints (no token required)
   auth: {
     portalSession: () => fetch('/portal-auth/session', { cache: 'no-store', credentials: 'same-origin' }),

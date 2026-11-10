@@ -29,7 +29,7 @@ export type PromptInputProps = {
   status?: PromptInputStatus;
 } & React.FormHTMLAttributes<HTMLFormElement>;
 
-/** Composer form shell, used by ChatComposer. */
+/** Composer form shell, used by ChatComposer and the shared-session module's composer. */
 export const PromptInput = React.forwardRef<HTMLFormElement, PromptInputProps>(
   ({ className, status = 'ready', children, ...props }, ref) => {
     const contextValue = React.useMemo(() => ({ status }), [status]);
@@ -71,7 +71,7 @@ PromptInputHeader.displayName = 'PromptInputHeader';
 
 /* ─── PromptInputBody ────────────────────────────────────────────── */
 
-/** Wrapper around the composer textarea, used by ChatComposer. */
+/** Wrapper around the composer textarea, used by ChatComposer and the shared-session module's composer. */
 export const PromptInputBody = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
@@ -87,7 +87,7 @@ PromptInputBody.displayName = 'PromptInputBody';
 
 /* ─── PromptInputTextarea ────────────────────────────────────────── */
 
-/** Auto-growing message textarea, used by ChatComposer. */
+/** Auto-growing message textarea, used by ChatComposer and the shared-session module's composer. */
 export const PromptInputTextarea = React.forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
@@ -106,7 +106,7 @@ PromptInputTextarea.displayName = 'PromptInputTextarea';
 
 /* ─── PromptInputFooter ──────────────────────────────────────────── */
 
-/** Row below the composer textarea, used by ChatComposer. */
+/** Row below the composer textarea, used by ChatComposer and the shared-session module's composer. */
 export const PromptInputFooter = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
@@ -122,7 +122,7 @@ PromptInputFooter.displayName = 'PromptInputFooter';
 
 /* ─── PromptInputTools ───────────────────────────────────────────── */
 
-/** Left-hand tool cluster in the composer footer, used by ChatComposer. */
+/** Left-hand tool cluster in the composer footer, used by ChatComposer and the shared-session module's composer. */
 export const PromptInputTools = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
@@ -193,7 +193,7 @@ PromptInputButton.displayName = 'PromptInputButton';
 
 export type PromptInputSubmitProps = React.ButtonHTMLAttributes<HTMLButtonElement>;
 
-/** Send/stop button of the composer, used by ChatComposer. */
+/** Send/stop button of the composer, used by ChatComposer and the shared-session module's composer. */
 export const PromptInputSubmit = React.forwardRef<HTMLButtonElement, PromptInputSubmitProps>(
   ({ className, children, ...props }, ref) => {
     // The status comes from the PromptInput root, which is the only place it is set.

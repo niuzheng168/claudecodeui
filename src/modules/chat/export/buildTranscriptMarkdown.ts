@@ -87,6 +87,19 @@ function renderToolCall(
 }
 
 /**
+ * Who a user turn is from, for its heading: "You" unless it arrived in a
+ * `<codey-session-message>` envelope from another user or session, whose
+ * body is all the message content holds.
+ */
+function describeUserTurnAuthor(message: ChatMessage): string {
+  const sender = message.sender;
+  if (!sender) return 'You';
+  if (sender.user) return `From ${sender.user}`;
+  if (sender.machine) return `From a session on ${sender.machine}`;
+  return sender.address ? 'From another session' : 'You, through the Codey API';
+}
+
+/**
  * Renders a transcript as Markdown that reads well in a plain text editor and
  * on any Markdown host, with tool calls, diffs and thinking blocks intact.
  */
@@ -109,7 +122,7 @@ export function buildTranscriptMarkdown(input: BuildTranscriptMarkdownInput): st
     }
 
     if (message.type === 'user') {
-      sections.push(`### You`);
+      sections.push(`### ${describeUserTurnAuthor(message)}`);
       sections.push('', readString(message.content));
       if (message.images?.length) {
         sections.push('', `_${message.images.length} image attachment(s)_`);

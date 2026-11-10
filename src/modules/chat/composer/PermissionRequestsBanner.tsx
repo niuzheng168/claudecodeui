@@ -23,12 +23,19 @@ type PermissionRequestsBannerProps = {
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
   ) => void;
-  handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  /**
+   * Saves an allow rule for "Allow & remember". Absent where no rule can be
+   * kept — a session shared by another user, whose settings are not the
+   * reader's — which leaves only "Deny" and "Allow once".
+   */
+  handleGrantToolPermission?: (suggestion: { entry: string; toolName: string }) => { success: boolean };
 };
 
 /**
  * Rendered by chat's ChatComposer above the input to surface pending tool
- * permission requests and their allow/deny/remember actions.
+ * permission requests and their allow/deny/remember actions, and by the
+ * shared-session module (through the chat barrel) for the approvals a shared
+ * session's owner lets the reader answer.
  */
 export default function PermissionRequestsBanner({
   pendingPermissionRequests,
@@ -110,18 +117,20 @@ export default function PermissionRequestsBanner({
               >
                 Deny
               </ConfirmationAction>
-              <ConfirmationAction
-                variant="outline"
-                onClick={() => {
-                  if (permissionEntry && !alreadyAllowed) {
-                    handleGrantToolPermission({ entry: permissionEntry, toolName: request.toolName });
-                  }
-                  handlePermissionDecision(matchingRequestIds, { allow: true, rememberEntry: permissionEntry });
-                }}
-                disabled={!permissionEntry}
-              >
-                {rememberLabel}
-              </ConfirmationAction>
+              {handleGrantToolPermission && (
+                <ConfirmationAction
+                  variant="outline"
+                  onClick={() => {
+                    if (permissionEntry && !alreadyAllowed) {
+                      handleGrantToolPermission({ entry: permissionEntry, toolName: request.toolName });
+                    }
+                    handlePermissionDecision(matchingRequestIds, { allow: true, rememberEntry: permissionEntry });
+                  }}
+                  disabled={!permissionEntry}
+                >
+                  {rememberLabel}
+                </ConfirmationAction>
+              )}
               <ConfirmationAction
                 variant="default"
                 onClick={() => handlePermissionDecision(request.requestId, { allow: true })}

@@ -14,7 +14,8 @@ export type LazyRowObserver = {
 
 /**
  * One shared IntersectionObserver for every LazyMessageRow of a transcript,
- * rooted at its scroll container. Returns null where IntersectionObserver does
+ * rooted at its scroll container. Used by chat's ChatMessagesPane and by the
+ * shared-session module (through the chat barrel) for TranscriptRows. Returns null where IntersectionObserver does
  * not exist (jsdom), which keeps every row permanently mounted — the
  * pre-existing behavior.
  */

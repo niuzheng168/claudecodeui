@@ -3,7 +3,7 @@
  * Converts NormalizedMessage[] from the session store into ChatMessage[] for the UI.
  */
 
-import type { ChatMessage, LiveTaskStatus, NormalizedMessage, SubagentActivity } from '@/shared/types';
+import type { ChatMessage, LiveTaskStatus, MessageSender, NormalizedMessage, SubagentActivity } from '@/shared/types';
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
@@ -69,6 +69,72 @@ function parseTaskNotification(content: string): ParsedTaskNotification | null {
     status: statusMatch?.[1]?.trim() || 'completed',
     summary: summaryMatch?.[1]?.trim() || 'Background task finished',
     result,
+  };
+}
+
+type ParsedSessionMessageEnvelope = {
+  body: string;
+  sender: MessageSender;
+};
+
+/** The opening tag: `<codey-session-message` and only `name="value"` attributes, as the node writes it. */
+const SESSION_MESSAGE_OPENING_TAG = /^<codey-session-message((?:\s+[a-z][a-z-]*="[^"<>\r\n]*")*)\s*>/;
+const SESSION_MESSAGE_ATTRIBUTE = /([a-z][a-z-]*)="([^"]*)"/g;
+const SESSION_MESSAGE_CLOSING_TAG = '</codey-session-message>';
+/** How the node escapes a closing tag inside the body so it cannot end the envelope early. */
+const ESCAPED_SESSION_MESSAGE_CLOSING_TAG = /<\\\/codey-session-message/gi;
+
+/**
+ * Parses the `<codey-session-message from=… user=… machine=… agent=…>`
+ * envelope a message from another Codey user or another session arrives in
+ * (the node's session-message delivery writes it, then an English note to the
+ * agent after the closing tag).
+ *
+ * Only an envelope that opens the content counts, and the body ends at the
+ * first closing tag: the node escapes any closing tag inside the body, so an
+ * envelope quoted in the middle of a message, or one that is never closed,
+ * stays plain text. The note after the closing tag is for the agent and is
+ * dropped.
+ */
+function parseSessionMessageEnvelope(content: string): ParsedSessionMessageEnvelope | null {
+  const text = content.trimStart();
+  const openingTag = SESSION_MESSAGE_OPENING_TAG.exec(text);
+  if (!openingTag) {
+    return null;
+  }
+
+  const closingIndex = text.indexOf(SESSION_MESSAGE_CLOSING_TAG, openingTag[0].length);
+  if (closingIndex === -1) {
+    return null;
+  }
+
+  const attributes = new Map<string, string>();
+  for (const [, name, value] of openingTag[1].matchAll(SESSION_MESSAGE_ATTRIBUTE)) {
+    attributes.set(name, value);
+  }
+  // The node always names the sender's address (or `unknown`); without it
+  // this is somebody's look-alike markup, not an envelope.
+  if (!attributes.has('from')) {
+    return null;
+  }
+
+  const readAttribute = (name: string) => attributes.get(name)?.trim() || null;
+  const from = readAttribute('from');
+  const body = text
+    .slice(openingTag[0].length, closingIndex)
+    // The node puts the body on lines of its own between the tags.
+    .replace(/^\r?\n/, '')
+    .replace(/\r?\n$/, '')
+    .replace(ESCAPED_SESSION_MESSAGE_CLOSING_TAG, '</codey-session-message');
+
+  return {
+    body,
+    sender: {
+      address: from && from !== 'unknown' ? from : null,
+      user: readAttribute('user'),
+      machine: readAttribute('machine'),
+      agent: readAttribute('agent'),
+    },
   };
 }
 
@@ -427,13 +493,17 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               });
             }
           } else {
+            // A message from another user or session shows its own words and
+            // who sent them, not the envelope and the note to the agent.
+            const envelope = parseSessionMessageEnvelope(content);
             converted.push({
               type: 'user',
-              content,
+              content: envelope ? envelope.body : content,
               timestamp: msg.timestamp,
               images,
               files,
               ...sharedMetadata,
+              ...(envelope ? { sender: envelope.sender } : {}),
             });
           }
         } else {

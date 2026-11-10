@@ -471,9 +471,29 @@ export type SubagentInfo = {
   activityCount?: number;
 };
 
+/**
+ * Who sent a user turn that reached the agent wrapped in a
+ * `<codey-session-message>` envelope: another Codey user, another of the
+ * owner's sessions, or the owner through the Codey API. Parsed from the
+ * envelope's attributes by chat's normalizedToChatMessages and drawn as a
+ * badge above the bubble; the transcript export names the sender with it.
+ */
+export type MessageSender = {
+  /** `codey://<node>/<session>` of the sending session; null when the envelope says `unknown`. */
+  address: string | null;
+  /** The sending Codey user's name, present only when another user sent it. */
+  user: string | null;
+  /** The machine of the owner's other session that sent it; never given for another user's machine. */
+  machine: string | null;
+  /** The sending session's agent as the envelope names it, such as `Codex`. */
+  agent: string | null;
+};
+
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
   type: string;
+  /** Set on a user turn that arrived in a `<codey-session-message>` envelope; its content is then the envelope's body alone. */
+  sender?: MessageSender;
   /** Confirmed source row identity used to restore a transcript viewport, not to mutate history. */
   sourceId?: string;
   /** Opaque identity allocated for one Codex send, shared by its optimistic echo and native input. Not an edit anchor or a retry token. */
@@ -2164,3 +2184,103 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+// ---------------------------
+
+//----------------- CODEY SHARED SESSIONS ------------
+
+/** How a message the viewer sends to a shared session reaches its agent: the owner confirms it first, or it goes straight in. */
+export type SharedSessionMode = 'confirm' | 'auto';
+
+/** Who answers tool approvals in a shared session's turns: only the owner, or also the viewer in the turns their messages started. */
+export type SharedSessionApprovals = 'owner' | 'user';
+
+/**
+ * The page parameters the Portal injects as `window.__CODEY_SHARED_SESSION__`
+ * when it serves a session another Codey user shared with the viewer (codey
+ * `docs/codey-shared-sessions.md` §6). main.tsx loads the shared-session
+ * module instead of the app when they are present; that module validates them
+ * and reads everything else through the Portal endpoints below.
+ */
+export type SharedSessionRuntime = {
+  grantId: string;
+  /** The grant's Portal API root, `/api/v1/shared/<grantId>`. */
+  api: string;
+  /** `codey://<node>/<session>`: the `to` of every message the viewer sends; null until `GET <api>` names it. */
+  address: string | null;
+  /** The CloudCLI session id; also the id the Portal's history proxy and the live events carry. */
+  sessionId: string;
+  provider: LLMProvider;
+  title: string | null;
+  /** The owner's Codey user name. */
+  owner: string;
+  /** The viewer's own Codey user name. */
+  viewer: string | null;
+  mode: SharedSessionMode;
+  approvals: SharedSessionApprovals;
+  expiresAt: string | null;
+};
+
+/** `GET <api>`: the grant, the session it opens and both users' names; the shared page refreshes its parameters from it. */
+export type SharedSessionInfo = {
+  grant: { mode?: string; approvals?: string; expiresAt?: string | null; [key: string]: unknown };
+  session: { address?: string | null; sessionId?: string; provider?: string | null; title?: string | null };
+  owner?: string | null;
+  viewer?: string | null;
+};
+
+/** The shared session's current turn, or one that ended in the last few minutes, as `GET <api>/live` reports it. */
+export type SharedSessionRun = {
+  id: string;
+  /** `running` while the turn is in flight; anything else means it ended. */
+  status: string;
+  /** Epoch milliseconds on the owner's machine. */
+  startedAt: number | null;
+  completedAt: number | null;
+  outcome: string | null;
+  /** The highest event sequence number the turn has produced so far. */
+  lastSeq: number;
+  /** Set when another user's message started the turn (`mine` when that user is the viewer); null for the owner's own turns. */
+  startedBy: { user: string | null; mine: boolean } | null;
+  /** The viewer may stop this turn: it is running and their own message started it. */
+  canStop: boolean;
+};
+
+/** A tool approval or question in the viewer's own turn that the owner lets them answer, from `GET <api>/live`. */
+export type SharedSessionPermission = {
+  requestId: string;
+  toolName: string;
+  input?: unknown;
+  receivedAt?: number | string | null;
+};
+
+/** One of the viewer's recent messages to the shared session and where it stands; the transcript may not show it yet. */
+export type SharedSessionOutgoingMessage = {
+  id: string;
+  text: string;
+  /** `awaiting_confirmation`, `pending`, `started`, `queued`, `handed_off`, `declined`, `failed` or `expired`. */
+  status: string;
+  error: { code?: string; message?: string } | null;
+  createdAt: string;
+};
+
+/** `GET <api>/live`: the run, its events after the caller's position and the viewer's own pending work; the shared page polls it. */
+export type SharedSessionLive = {
+  /** False when the owner's machine has no `session-live` yet: the page can only re-read history. */
+  supported: boolean;
+  /** False when the owner's machine cannot be reached; everything else is then empty. */
+  online: boolean;
+  run: SharedSessionRun | null;
+  /** The chat websocket's NormalizedMessage frames, each with `seq` and `runId`. */
+  events: ServerEvent[];
+  /** The events between the caller's position and these were dropped: history has to be re-read. */
+  reset: boolean;
+  /** More events are waiting; poll again at once. */
+  more: boolean;
+  /** The turn ended but tasks it launched keep running. */
+  background: boolean;
+  permissions: SharedSessionPermission[];
+  /** A turn waits for an approval only the owner can give. */
+  waitingForOwner: boolean;
+  messages: SharedSessionOutgoingMessage[];
+};

@@ -71,8 +71,8 @@ function getToolGroupIcon(icon: string | undefined, toolName: string): string {
 }
 
 /**
- * Rendered by chat's ChatMessagesPane to collapse a run of consecutive tool
- * calls into a single expandable group in the transcript.
+ * Rendered by chat's TranscriptRows (and the transcript export) to collapse a
+ * run of consecutive tool calls into a single expandable group in the transcript.
  */
 function ToolGroupContainer({
   group,

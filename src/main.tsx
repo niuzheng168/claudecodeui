@@ -2,7 +2,6 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { scan } from 'react-scan'
 
-import App from '@/App'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 import { getPageTitle, withDeploymentBasePath } from '@/shared/utils'
@@ -20,20 +19,35 @@ document.title = getPageTitle(null, null)
 // `localStorage.setItem('react-scan', 'on')` and reload.
 scan({ enabled: import.meta.env.DEV && localStorage.getItem('react-scan') === 'on' })
 
-// Register service worker for PWA + Web Push support
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register(withDeploymentBasePath('/sw.js')).catch(err => {
-    console.warn('Service worker registration failed:', err);
-  });
-}
-
 const rootElement = document.getElementById('root')
 if (!rootElement) {
   throw new Error('Unable to mount the app: #root is missing from the document')
 }
 
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+// The Codey Portal serves a session another user shared with the reader from
+// this same template and sets these page parameters (codey
+// docs/codey-shared-sessions.md §6). That page is only the shared session: no
+// service worker, no router, and none of the workspace app is loaded.
+const sharedSession = (window as Window & { __CODEY_SHARED_SESSION__?: unknown }).__CODEY_SHARED_SESSION__
+
+if (sharedSession) {
+  void import('@/modules/shared-session').then(({ mountSharedSessionPage }) => {
+    mountSharedSessionPage(rootElement, sharedSession)
+  })
+} else {
+  // Register service worker for PWA + Web Push support
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register(withDeploymentBasePath('/sw.js')).catch(err => {
+      console.warn('Service worker registration failed:', err);
+    });
+  }
+
+  // The app is its own chunk so the shared-session page does not download it.
+  void import('@/App').then(({ default: App }) => {
+    ReactDOM.createRoot(rootElement).render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+    )
+  })
+}

@@ -690,4 +690,7 @@ function ChatInterface({
   );
 }
 
-export default React.memo(ChatInterface);
+// Marked pure so a page that imports the chat barrel without rendering this
+// component (the shared-session page) does not download it and the composer
+// state behind it.
+export default /*#__PURE__*/ React.memo(ChatInterface);

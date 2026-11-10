@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useMemo } from 'react';
+import { memo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { BackgroundTaskSummary,
@@ -9,24 +9,13 @@ import type { BackgroundTaskSummary,
   LLMProvider,
   ProviderModelActions,
   ProviderModelsDefinition } from '@/shared/types';
-import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
-import { groupConsecutiveTools, isToolGroupItem } from '@/modules/chat/utils/toolGrouping';
 import { useLazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
-import LazyMessageRow from '@/modules/chat/transcript/LazyMessageRow';
-import MessageComponent from '@/modules/chat/transcript/MessageComponent';
 import ProviderSelectionEmptyState from '@/modules/chat/transcript/ProviderSelectionEmptyState';
 import type { NewSessionWorktree } from '@/modules/chat/hooks/useNewSessionWorktree';
-import ToolGroupContainer from '@/modules/chat/transcript/ToolGroupContainer';
+import TranscriptRows from '@/modules/chat/transcript/TranscriptRows';
 import LoadAllMessagesOverlay from '@/modules/chat/transcript/LoadAllMessagesOverlay';
 import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 import { BackgroundTasksStrip } from '@/modules/chat/transcript/BackgroundTasksStrip';
-
-/**
- * How many of the newest rows mount with real content on the first commit,
- * before the lazy-row observer has had a chance to report what is actually
- * near the viewport. Covers a bit more than one screen of typical rows.
- */
-const INITIAL_MOUNTED_TAIL_ROWS = 30;
 
 type ChatMessagesPaneProps = {
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -88,16 +77,6 @@ type ChatMessagesPaneProps = {
 };
 
 /**
- * Keys for the rows inside a collapsed tool group. They only have to be unique
- * among that group's own rows (ToolGroupContainer disambiguates repeats), so
- * they do not depend on the pane's per-render key map — and being a module
- * function, the prop keeps its identity, which is what lets
- * memo(ToolGroupContainer) skip a group on a stream tick that did not touch it.
- */
-const getGroupedMessageKey = (message: ChatMessage): string =>
-  getIntrinsicMessageKey(message) ?? 'message-generated';
-
-/**
  * Rendered by chat's ChatInterface as the scrolling transcript: the message
  * list and tool groups, the export menu, the provider empty state and the
  * load-all-history overlay.
@@ -155,43 +134,6 @@ function ChatMessagesPane({
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const lazyRows = useLazyRowObserver(scrollContainerRef);
-  const groupedVisibleMessages = useMemo(
-    () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
-    [visibleMessages, showThinking],
-  );
-
-  // Stable, deterministic keys for the messages rendered this pass.
-  //
-  // A server refresh can replace source records with equivalent new objects, so
-  // object identity is not a durable React key across pagination or hydration.
-  // Deriving keys from this render's ordered messages (intrinsic key,
-  // disambiguated by occurrence index on collision) preserves existing DOM
-  // nodes and component state when older history is prepended.
-  const messageKeyMap = useMemo(() => {
-    const keys = new WeakMap<ChatMessage, string>();
-    const occurrences = new Map<string, number>();
-    const assign = (message: ChatMessage) => {
-      const intrinsicKey = getIntrinsicMessageKey(message) ?? 'message-generated';
-      const seen = occurrences.get(intrinsicKey) ?? 0;
-      occurrences.set(intrinsicKey, seen + 1);
-      keys.set(message, seen === 0 ? intrinsicKey : `${intrinsicKey}__${seen}`);
-    };
-    for (const item of groupedVisibleMessages) {
-      if (isToolGroupItem(item)) {
-        item.messages.forEach(assign);
-      } else {
-        assign(item);
-      }
-    }
-    return keys;
-  }, [groupedVisibleMessages]);
-
-  const getMessageKey = useCallback(
-    (message: ChatMessage) =>
-      messageKeyMap.get(message) ?? getIntrinsicMessageKey(message) ?? 'message-generated',
-    [messageKeyMap],
-  );
-
   return (
     <div
       ref={scrollContainerRef}
@@ -303,75 +245,20 @@ function ChatMessagesPane({
             onLoadAllMessages={loadAllMessages}
           />
 
-          {(() => {
-            let prevMessage: ChatMessage | null = null;
-            const rowCount = groupedVisibleMessages.length;
-
-            return groupedVisibleMessages.map((item, index) => {
-              // Rows near the tail mount their content on first commit so the
-              // initial scroll-to-bottom measures real heights; older rows
-              // start as placeholders and mount when scrolled toward.
-              const initiallyNearViewport = index >= rowCount - INITIAL_MOUNTED_TAIL_ROWS;
-
-              if (isToolGroupItem(item)) {
-                const groupPrevMessage = prevMessage;
-                prevMessage = item.messages[item.messages.length - 1] || prevMessage;
-
-                return (
-                  <LazyMessageRow
-                    key={`tool-group-${getMessageKey(item.messages[0])}`}
-                    lazyRows={lazyRows}
-                    timestamp={item.timestamp}
-                    messageId={item.messages[0]?.sourceId}
-                    initiallyNearViewport={initiallyNearViewport}
-                  >
-                    <ToolGroupContainer
-                      group={item}
-                      prevMessage={groupPrevMessage}
-                      createDiff={createDiff}
-                      getMessageKey={getGroupedMessageKey}
-                      onFileOpen={onFileOpen}
-                      onShowSettings={onShowSettings}
-                      onGrantToolPermission={onGrantToolPermission}
-                      showRawParameters={showRawParameters}
-                      showThinking={showThinking}
-                      selectedProject={selectedProject}
-                      provider={provider}
-                      onForkFromMessage={onForkFromMessage}
-                    />
-                  </LazyMessageRow>
-                );
-              }
-
-              const messagePrevMessage = prevMessage;
-              prevMessage = item;
-
-              return (
-                <LazyMessageRow
-                  key={getMessageKey(item)}
-                  lazyRows={lazyRows}
-                  timestamp={item.timestamp}
-                  messageId={item.sourceId}
-                  initiallyNearViewport={initiallyNearViewport}
-                >
-                  <MessageComponent
-                    message={item}
-                    prevMessage={messagePrevMessage}
-                    createDiff={createDiff}
-                    onFileOpen={onFileOpen}
-                    onShowSettings={onShowSettings}
-                    onGrantToolPermission={onGrantToolPermission}
-                    showRawParameters={showRawParameters}
-                    showThinking={showThinking}
-                    selectedProject={selectedProject}
-                    provider={provider}
-                    onEditMessage={onEditMessage}
-                    onForkFromMessage={onForkFromMessage}
-                  />
-                </LazyMessageRow>
-              );
-            });
-          })()}
+          <TranscriptRows
+            messages={visibleMessages}
+            lazyRows={lazyRows}
+            createDiff={createDiff}
+            onFileOpen={onFileOpen}
+            onShowSettings={onShowSettings}
+            onGrantToolPermission={onGrantToolPermission}
+            showRawParameters={showRawParameters}
+            showThinking={showThinking}
+            selectedProject={selectedProject}
+            provider={provider}
+            onEditMessage={onEditMessage}
+            onForkFromMessage={onForkFromMessage}
+          />
         </>
       )}
       </div>

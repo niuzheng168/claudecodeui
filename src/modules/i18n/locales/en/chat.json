@@ -494,7 +494,15 @@
   "message": {
     "editAndResend": "Edit and resend",
     "forkFromHere": "Fork from here",
-    "answeredBy": "Answered by {{model}}"
+    "answeredBy": "Answered by {{model}}",
+    "sender": {
+      "fromUser": "From {{user}}",
+      "fromMachine": "From a session on {{machine}}",
+      "fromSession": "From another session",
+      "fromApi": "Sent through the Codey API",
+      "me": "Me",
+      "owner": "{{user}}"
+    }
   },
   "export": {
     "trigger": "Export conversation",
@@ -596,5 +604,51 @@
     "customModelsOnlyHint": "Hide the built-in {{provider}} models from every model picker and make your first model the default. Built-in models stay listed until you add a model.",
     "builtInModelsHidden": "Hidden from model pickers while “Use only my models” is on.",
     "customModelsOnlyFailed": "Unable to change this setting."
+  },
+  "sharedSession": {
+    "header": {
+      "untitled": "Shared session",
+      "sharedBy": "{{owner}} shared this with you",
+      "modeConfirm": "Your messages wait for {{owner}} to confirm",
+      "modeAuto": "Your messages go straight to the agent",
+      "expires": "Until {{date}}"
+    },
+    "status": {
+      "offline": "{{owner}}'s machine cannot be reached right now. This is the conversation as last read.",
+      "unsupported": "{{owner}}'s machine runs an older Codey: the conversation refreshes every few seconds, and turns cannot be followed live, stopped or approved here.",
+      "pollFailed": "Could not check for updates: {{error}}",
+      "waitingForOwner": "Waiting for {{owner}}: this turn needs an approval only {{owner}} can give."
+    },
+    "ended": {
+      "title": "This shared session is no longer available",
+      "body": "The share was withdrawn or has expired."
+    },
+    "signedOut": {
+      "title": "Your Codey login has expired",
+      "reload": "Reload"
+    },
+    "invalid": "This page is missing its parameters. Open it again from the Workbench.",
+    "history": {
+      "empty": "No messages yet.",
+      "failed": "The conversation could not be loaded: {{error}}",
+      "retry": "Retry"
+    },
+    "composer": {
+      "placeholder": "Message {{owner}}'s agent…",
+      "send": "Send",
+      "sendFailed": "Not sent: {{error}}",
+      "noAddress": "Messages cannot be sent to this session yet."
+    },
+    "stopFailed": "Could not stop the turn: {{error}}",
+    "permissionFailed": "Could not answer: {{error}}",
+    "outbox": {
+      "awaitingConfirmation": "Waiting for {{owner}} to confirm",
+      "queued": "Queued",
+      "delivered": "Delivered",
+      "declined": "{{owner}} declined this message",
+      "expired": "Expired before it was delivered",
+      "failed": "Not delivered",
+      "dismiss": "Dismiss"
+    }
   }
 }

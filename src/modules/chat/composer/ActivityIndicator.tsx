@@ -51,7 +51,8 @@ function describeScheduledTasks(tasks: ScheduledTaskSummary[], t: TFunction): st
  * has tasks scheduled to wake it later is drawn the same way, naming them.
  *
  * Rendered by chat's ChatComposer above the input so the user can see and
- * interrupt the in-flight turn without leaving the composer.
+ * interrupt the in-flight turn without leaving the composer, and by the
+ * shared-session module (through the chat barrel) above its own composer.
  */
 export default function ActivityIndicator({ activity, onAbort, isInputFocused = false }: ActivityIndicatorProps) {
   const { t } = useTranslation('chat');
