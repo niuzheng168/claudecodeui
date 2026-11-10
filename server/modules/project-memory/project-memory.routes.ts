@@ -15,7 +15,7 @@ export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerR
     }
     next();
   });
-  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true,archiveWithoutMemory:true,sessionBriefs:true},integration:memoryIntegrationStatus()}));
+  router.get('/info',(_req,res)=>res.json({contract:3,features:{noteDrafts:true,noteProposals:true,archiveWithoutMemory:true,sessionBriefs:true},integration:memoryIntegrationStatus()}));
   router.post('/briefs', asyncHandler(async (req, res) => {
     const owner = accountId(req);
     if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
@@ -38,6 +38,20 @@ export function createProjectMemoryRoutes(service = projectMemoryStore, isOwnerR
     }
     if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 16384) throw new AppError('Note too large.', {statusCode:413});
     res.json(operation === 'preview' ? await service.previewNote(owner, project, req.body) : await service.confirmNote(owner, project, req.body));
+  }));
+  // Notes agents propose from their sessions (memory_note), kept until the user reviews or drops them.
+  router.post('/projects/:project/proposals', asyncHandler(async (req, res) => {
+    const owner = accountId(req), project = String(req.params.project);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
+    if (!/^p-[a-f0-9]{16}$/.test(project)) throw new AppError('Invalid project.', {statusCode:400});
+    if (Buffer.byteLength(JSON.stringify(req.body ?? {})) > 16384) throw new AppError('Note too large.', {statusCode:413});
+    res.status(201).json(await service.proposeNote(owner, project, req.body));
+  }));
+  router.delete('/projects/:project/proposals/:proposal', asyncHandler(async (req, res) => {
+    const owner = accountId(req), project = String(req.params.project);
+    if (!owner) throw new AppError('Verified account identity required.', {statusCode:403});
+    if (!/^p-[a-f0-9]{16}$/.test(project)) throw new AppError('Invalid project.', {statusCode:400});
+    res.json(await service.dismissProposal(owner, project, String(req.params.proposal)));
   }));
   // A dedicated bounded transcript route avoids shipping tool outputs, reasoning or secrets to Portal.
   router.post('/sessions/:sessionId/material', asyncHandler(async (req, res) => {

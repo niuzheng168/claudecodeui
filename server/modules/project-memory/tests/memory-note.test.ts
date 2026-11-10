@@ -182,6 +182,70 @@ test('confirmation remains atomic when quota rejects the batch, and automatic jo
   }), { statusCode: 409 });
 });
 
+const SOURCE = { nodeId: `n-${'c'.repeat(24)}`, provider: 'claude', sessionId: 'session-1' };
+
+test('a session proposal waits outside knowledge until the user reviews it as a draft; confirming settles it', async t => {
+  const f = await fixture(t);
+  const proposed = await f.service.proposeNote('alice', PROJECT, { text: '生产环境使用 PostgreSQL', source: SOURCE });
+  assert.match(proposed.proposalId, /^[a-f0-9]{32}$/);
+  assert.deepEqual([proposed.waiting, proposed.replayed], [1, false]);
+  const again = await f.service.proposeNote('alice', PROJECT, { text: '生产环境使用 PostgreSQL', source: SOURCE });
+  assert.deepEqual([again.proposalId, again.waiting, again.replayed], [proposed.proposalId, 1, true], 'a retried call leaves no second record');
+  assert.equal(f.calls.length, 0, 'proposing never calls the model');
+  const listed = await f.service.list('alice', PROJECT);
+  assert.equal(listed.memory.length, 0);
+  assert.deepEqual(listed.proposals!.map(item => [item.id, item.text, item.source, item.provider]),
+    [[proposed.proposalId, '生产环境使用 PostgreSQL', `session:${SOURCE.nodeId}/session-1`, 'claude']]);
+  assert.equal((await f.service.list('alice', PROJECT, 1)).proposals, undefined, 'later pages do not repeat them');
+  assert.deepEqual((await f.service.search('alice', PROJECT, { query: 'PostgreSQL' })).entries, []);
+  assert.deepEqual((await f.service.briefs('alice', { projects: [{ id: PROJECT }] })).projects[0].topicCount, 0);
+
+  const preview = await f.service.previewNote('alice', PROJECT, { text: '生产环境用 PostgreSQL 15', proposalId: proposed.proposalId });
+  assert.equal(JSON.parse(f.calls[0].input[1].content).note, '生产环境用 PostgreSQL 15', 'the user may edit the text first');
+  assert.equal((await f.service.list('alice', PROJECT)).proposals!.length, 1, 'a preview alone settles nothing');
+  await f.service.confirmNote('alice', PROJECT, { draftId: preview.draftId });
+  const saved = await f.service.list('alice', PROJECT);
+  assert.deepEqual([saved.memory.length, saved.memory[0].source, saved.memory[0].mode], [1, 'user', 'manual']);
+  assert.deepEqual(saved.proposals, []);
+  await assert.rejects(f.service.previewNote('alice', PROJECT, { text: 'again', proposalId: proposed.proposalId }), { statusCode: 404 });
+});
+
+test('proposals are bounded, expire, reject credentials and bad sources, and can be dropped without writing', async t => {
+  const f = await fixture(t);
+  for (const value of [
+    { text: `sk-${'a'.repeat(40)}`, source: SOURCE }, { text: '', source: SOURCE }, { text: 'x'.repeat(8193), source: SOURCE },
+    { text: 'note', source: { ...SOURCE, provider: 'gemini' } }, { text: 'note', source: { ...SOURCE, nodeId: '../n' } },
+    { text: 'note', source: { ...SOURCE, sessionId: 'a/b' } }, { text: 'note', source: SOURCE, saved: true }, { text: 'note' },
+  ]) await assert.rejects(f.service.proposeNote('alice', PROJECT, value), { statusCode: 400 });
+  const first = await f.service.proposeNote('alice', PROJECT, { text: 'note 0', source: SOURCE });
+  for (let index = 1; index < 50; index++) await f.service.proposeNote('alice', PROJECT, { text: `note ${index}`, source: SOURCE });
+  await assert.rejects(f.service.proposeNote('alice', PROJECT, { text: 'one too many', source: SOURCE }), { statusCode: 409 });
+  assert.deepEqual(await f.service.dismissProposal('alice', PROJECT, first.proposalId), { dismissed: true });
+  assert.deepEqual(await f.service.dismissProposal('alice', PROJECT, first.proposalId), { dismissed: false });
+  await assert.rejects(f.service.dismissProposal('alice', PROJECT, '../x'), { statusCode: 400 });
+  await f.service.proposeNote('alice', PROJECT, { text: 'fits again', source: SOURCE });
+  const db = new Database(path.join(f.directory, 'index.sqlite'));
+  db.prepare('UPDATE note_proposals SET expires_at=0').run();
+  db.close();
+  assert.deepEqual((await f.service.list('alice', PROJECT)).proposals, []);
+  assert.equal((await f.service.proposeNote('alice', PROJECT, { text: 'after expiry', source: SOURCE })).waiting, 1);
+  assert.equal((await f.service.list('alice', PROJECT)).memory.length, 0);
+  assert.equal((await f.service.list('bob', PROJECT)).proposals!.length, 0, 'another account sees none');
+  await f.service.remove('alice', PROJECT);
+  await assert.rejects(f.service.proposeNote('alice', PROJECT, { text: 'deleted', source: SOURCE }), { statusCode: 404 });
+});
+
+test('a proposal dropped while its draft was being prepared yields no draft', async t => {
+  const f = await fixture(t);
+  const { proposalId } = await f.service.proposeNote('alice', PROJECT, { text: '生产数据库', source: SOURCE });
+  f.response.make = async () => { await f.service.dismissProposal('alice', PROJECT, proposalId); return completed({ changes: [fresh()] }); };
+  await assert.rejects(f.service.previewNote('alice', PROJECT, { text: '生产数据库', proposalId }), { statusCode: 404 });
+  await assert.rejects(f.service.previewNote('alice', PROJECT, { text: '生产数据库', proposalId: 'x' }), { statusCode: 400 });
+  const db = new Database(path.join(f.directory, 'index.sqlite'));
+  assert.equal((db.prepare('SELECT count(*) AS count FROM note_drafts').get() as { count: number }).count, 0);
+  db.close();
+});
+
 test('note HTTP routes require owner SSO and verified account identity and advertise additive support', async t => {
   const f = await fixture(t), app = express();
   app.use(express.json());
@@ -198,10 +262,23 @@ test('note HTTP routes require owner SSO and verified account identity and adver
   assert.equal((await call('guarded', 'preview', { text: 'production' })).status, 403);
   assert.equal((await call('missing-account', 'preview', { text: 'production' })).status, 403);
   assert.equal(f.calls.length, 0);
-  const info = await (await fetch(`http://127.0.0.1:${address.port}/owner/info`)).json() as { contract: number; features: { noteDrafts: boolean } };
+  const info = await (await fetch(`http://127.0.0.1:${address.port}/owner/info`)).json() as { contract: number; features: Record<string, boolean> };
   assert.equal(info.contract, 3);
   assert.equal(info.features.noteDrafts, true);
+  assert.equal(info.features.noteProposals, true);
   const preview = await (await call('owner', 'preview', { text: 'production' })).json() as { draftId: string };
   assert.equal((await call('owner', 'confirm', { draftId: preview.draftId })).status, 200);
   assert.equal((await call('owner', 'preview', { text: 'x'.repeat(17000) })).status, 413);
+
+  const proposals = (prefix: string, method: string, body?: unknown, id = '') => fetch(`http://127.0.0.1:${address.port}/${prefix}/projects/${PROJECT}/proposals${id}`,
+    { method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  assert.equal((await proposals('guarded', 'POST', { text: 'note', source: SOURCE })).status, 403);
+  assert.equal((await proposals('missing-account', 'POST', { text: 'note', source: SOURCE })).status, 403);
+  assert.equal((await proposals('owner', 'POST', { text: 'x'.repeat(17000), source: SOURCE })).status, 413);
+  const created = await proposals('owner', 'POST', { text: 'note', source: SOURCE });
+  assert.equal(created.status, 201);
+  const { proposalId } = await created.json() as { proposalId: string };
+  assert.equal((await proposals('guarded', 'DELETE', undefined, `/${proposalId}`)).status, 403);
+  assert.deepEqual(await (await proposals('owner', 'DELETE', undefined, `/${proposalId}`)).json(), { dismissed: true });
+  assert.equal((await proposals('owner', 'DELETE', undefined, '/not-an-id')).status, 400);
 });

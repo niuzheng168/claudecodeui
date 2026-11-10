@@ -32,13 +32,18 @@ type Dependencies = {
   environment?: NodeJS.ProcessEnv;
 };
 type NoteChange = { memory: Memory; previous: Memory | null };
-type NoteDraft = { revision: number; changes: NoteChange[] };
+type NoteDraft = { revision: number; changes: NoteChange[]; proposalId?: string };
+type NoteProposal = { id: string; text: string; source: string; provider: string; createdAt: number; expiresAt: number };
 const NOTE_KINDS = ['environment', 'decision', 'experience'];
 const NOTE_GROUPS: Record<string, string> = {
   environment: 'environment', fact: 'environment', repository: 'environment', document: 'environment', link: 'environment',
   decision: 'decision', rule: 'decision', experience: 'experience',
 };
 const NOTE_TTL = 15 * 60 * 1000;
+// What agents propose waits for the user much longer than an open dialog's draft.
+const PROPOSAL_TTL = 30 * 24 * 60 * 60 * 1000;
+const PROPOSAL_LIMIT = 50;
+const PROPOSAL_ID = /^[a-f0-9]{32}$/;
 const RESOURCE_KINDS = ['environment', 'repository', 'document', 'link', 'rule'];
 const KINDS = ['decision', 'fact', 'experience', ...RESOURCE_KINDS];
 const STATES = ['adopted', 'candidate', 'invalidated'];
@@ -155,6 +160,7 @@ export class ProjectMemoryService {
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED, words);
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS note_drafts (id TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS note_proposals (id TEXT PRIMARY KEY, value TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS jobs_due ON jobs (json_extract(value,'$.status'),json_extract(value,'$.nextAt'));`);
     return db;
   }
@@ -339,8 +345,67 @@ export class ProjectMemoryService {
         if (memory.length && bytes+size>8*1024*1024) break;
         memory.push(item);bytes+=size;
       }
-      return { memory: memory.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)), revision: snapshot.revision, contract: 3, total: snapshot.entries.length, nextCursor: offset+memory.length<snapshot.entries.length ? offset+memory.length : null };
+      return { memory: memory.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)), revision: snapshot.revision, contract: 3, total: snapshot.entries.length, nextCursor: offset+memory.length<snapshot.entries.length ? offset+memory.length : null,
+        ...(offset === 0 ? { proposals: this.proposals(dir) } : {}) };
     });
+  }
+
+  /** Notes sessions proposed and the user has not reviewed yet, newest first; never knowledge, so never in search or briefs. */
+  private proposals(dir: string): NoteProposal[] {
+    const db = this.database(dir);
+    try {
+      return (db.prepare('SELECT id,value FROM note_proposals WHERE expires_at > ?').all(Date.now()) as { id: string; value: string }[])
+        .map(row => ({ ...JSON.parse(row.value), id: row.id }) as NoteProposal)
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+    } finally { db.close(); }
+  }
+
+  /** An agent proposes a note from its session; the user reviews it as a 记一条 draft before anything is saved. */
+  async proposeNote(owner: string, project: string, value: unknown) {
+    const request = fields(value, ['text', 'source']);
+    const note = text(request.text, 8192);
+    if (redact(note) !== note) fail('请去掉凭据，只描述在哪里获取');
+    const from = fields(request.source, ['nodeId', 'provider', 'sessionId']);
+    if (typeof from.nodeId !== 'string' || !/^n-[a-f0-9]{24}$/.test(from.nodeId) || !['claude', 'codex'].includes(from.provider as string)
+      || typeof from.sessionId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(from.sessionId)) fail('提交记录的会话不正确');
+    const source = `session:${from.nodeId}/${from.sessionId}`;
+    const dir = this.directory(owner, project);
+    return this.serial(dir, async () => {
+      await this.snapshot(dir);
+      const now = Date.now();
+      const db = this.database(dir);
+      try {
+        db.prepare('DELETE FROM note_proposals WHERE expires_at <= ?').run(now);
+        const waiting = (db.prepare('SELECT id,value FROM note_proposals').all() as { id: string; value: string }[])
+          .map(row => ({ ...JSON.parse(row.value), id: row.id }) as NoteProposal);
+        // An agent retrying the same call gets the record it already left.
+        const same = waiting.find(item => item.text === note && item.source === source);
+        if (same) return { proposalId: same.id, expiresAt: same.expiresAt, waiting: waiting.length, replayed: true, contract: 3 };
+        if (waiting.length >= PROPOSAL_LIMIT) fail(`已有 ${PROPOSAL_LIMIT} 条会话提交的记录等用户处理，请用户先在项目页处理`, 409);
+        const id = randomBytes(16).toString('hex'), expiresAt = now + PROPOSAL_TTL;
+        db.prepare('INSERT INTO note_proposals VALUES(?,?,?)')
+          .run(id, JSON.stringify({ text: note, source, provider: from.provider, createdAt: now, expiresAt }), expiresAt);
+        return { proposalId: id, expiresAt, waiting: waiting.length + 1, replayed: false, contract: 3 };
+      } finally { db.close(); }
+    });
+  }
+
+  /** The user dropped a proposed note without saving it; dropping one already gone is not an error. */
+  async dismissProposal(owner: string, project: string, id: string) {
+    if (!PROPOSAL_ID.test(id)) fail('记录 ID 不正确');
+    const dir = this.directory(owner, project);
+    return this.serial(dir, async () => {
+      await this.snapshot(dir);
+      const db = this.database(dir);
+      try { return { dismissed: db.prepare('DELETE FROM note_proposals WHERE id=?').run(id).changes > 0 }; }
+      finally { db.close(); }
+    });
+  }
+
+  private hasProposal(dir: string, id: string): boolean {
+    const db = this.database(dir);
+    try { return Boolean(db.prepare('SELECT 1 FROM note_proposals WHERE id=? AND expires_at > ?').get(id, Date.now())); }
+    finally { db.close(); }
   }
 
   /** Owner-only read routes supply versioned, bounded startup briefs without topic bodies. */
@@ -497,12 +562,17 @@ export class ProjectMemoryService {
   }
 
   async remove(owner: string, project: string, id?: string) {
-    return this.write(owner, project, async (_dir, snapshot) => {
+    return this.write(owner, project, async (dir, snapshot) => {
       if (id && !snapshot.entries.some(entry => entry.id === id)) fail('没有这条记忆', 404);
       snapshot.tombstones = [...(snapshot.tombstones ?? []),...snapshot.entries.filter(entry => !id || entry.id===id).map(entry => entry.filename.toLowerCase())];
       snapshot.entries = id ? snapshot.entries.filter(entry => entry.id !== id) : [];
       // The tombstone also prevents an in-flight summary from recreating a deleted project.
-      if (!id) { snapshot.deleted = true; snapshot.receipts = {}; }
+      if (!id) {
+        snapshot.deleted = true; snapshot.receipts = {};
+        // Unreviewed text goes with the project; it was never knowledge to keep history of.
+        const db = this.database(dir);
+        try { db.exec('DELETE FROM note_proposals; DELETE FROM note_drafts;'); } finally { db.close(); }
+      }
       return { deleted: true };
     }, !id);
   }
@@ -685,12 +755,19 @@ export class ProjectMemoryService {
     try { return JSON.parse(readResponsesOutputText(output) || ''); }
     catch { fail('记忆模型返回的 JSON 无效',503); }
   }
-  /** Human-entered notes use the same bounded retrieval/model, but only persist an expiring proposal. */
+  /**
+   * Human-entered notes use the same bounded retrieval/model, but only persist an expiring proposal.
+   * A note a session proposed (`proposalId`) is reviewed the same way; confirming the draft settles it.
+   */
   async previewNote(owner: string, project: string, value: unknown) {
-    const request = fields(value, ['text']);
+    const request = fields(value, ['text', 'proposalId']);
     const note = text(request.text, 8192);
     if (redact(note) !== note) fail('请去掉凭据，只描述在哪里获取');
+    const proposalId = request.proposalId;
+    if (proposalId !== undefined && (typeof proposalId !== 'string' || !PROPOSAL_ID.test(proposalId))) fail('记录 ID 不正确');
     const dir = this.directory(owner, project);
+    const settled = () => fail('这条会话提交的记录已经处理或过期', 404);
+    if (proposalId && !await this.serial(dir, async () => this.hasProposal(dir, proposalId))) settled();
     if (this.noteRequests.has(dir)) fail('这个项目正在整理记忆，请稍后再试', 409);
     if (this.noteRequests.size >= 2) fail('记忆整理繁忙，请稍后再试', 503);
     this.noteRequests.add(dir);
@@ -746,6 +823,8 @@ excerpt=true 的主题只可参考，不能覆盖；需补充时另建简短主�
             version: (previous?.version ?? 0) + 1, createdAt: previous?.createdAt ?? now, updatedAt: now,
           } });
         }
+        // The user may have dropped the proposal in another window meanwhile.
+        if (proposalId && !this.hasProposal(dir, proposalId)) settled();
         if (!changes.length) return { draftId: null, expiresAt: null, changes: [], contract: 3 };
         const draftId = randomBytes(16).toString('hex'), expiresAt = Date.now() + NOTE_TTL;
         const db = this.database(dir);
@@ -754,7 +833,8 @@ excerpt=true 的主题只可参考，不能覆盖；需补充时另建简短主�
           if ((db.prepare('SELECT count(*) AS count FROM note_drafts').get() as { count: number }).count >= 20) {
             fail('待确认建议过多，请稍后再试', 503);
           }
-          db.prepare('INSERT INTO note_drafts VALUES(?,?,?)').run(draftId, JSON.stringify({ revision: snapshot.revision, changes }), expiresAt);
+          const draft: NoteDraft = { revision: snapshot.revision, changes, ...(proposalId ? { proposalId } : {}) };
+          db.prepare('INSERT INTO note_drafts VALUES(?,?,?)').run(draftId, JSON.stringify(draft), expiresAt);
         } finally { db.close(); }
         return { draftId, expiresAt, changes: changes.map(({ memory, previous }) => ({
           action: previous ? 'update' : 'create', kind: NOTE_GROUPS[memory.kind], title: memory.title, body: memory.body,
@@ -792,8 +872,10 @@ excerpt=true 的主题只可参考，不能覆盖；需补充时另建简短主�
         snapshot.receipts[receipt] = true;
         await this.commit(dir, snapshot);
         const cleanup = this.database(dir);
-        try { cleanup.prepare('DELETE FROM note_drafts WHERE id=?').run(draftId); }
-        finally { cleanup.close(); }
+        try {
+          cleanup.prepare('DELETE FROM note_drafts WHERE id=?').run(draftId);
+          if (draft.proposalId) cleanup.prepare('DELETE FROM note_proposals WHERE id=?').run(draft.proposalId);
+        } finally { cleanup.close(); }
         return { saved: true, replayed: false };
       } catch (error) {
         try { await this.publish(dir, await this.snapshot(dir, true)); } catch { /* Preserve original failure. */ }
