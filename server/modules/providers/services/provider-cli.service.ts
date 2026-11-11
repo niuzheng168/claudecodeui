@@ -181,6 +181,7 @@ function getProviderLabel(provider: LLMProvider): string {
     codex: 'Codex',
     cursor: 'Cursor CLI',
     opencode: 'OpenCode',
+    antigravity: 'Google Antigravity SDK',
   };
   return labels[provider];
 }

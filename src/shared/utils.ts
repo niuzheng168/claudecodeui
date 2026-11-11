@@ -133,7 +133,7 @@ export function returnToCodeyLogin(): void {
 }
 
 /** Every provider exposed by the ordinary self-hosted CloudCLI build. */
-const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'antigravity'];
 
 /**
  * Returns the harnesses behind this deployment's model picker. Codey models
@@ -143,7 +143,7 @@ const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 
 export function getEnabledProviders(
   codeyManaged = isCodeyManagedDeployment(),
 ): LLMProvider[] {
-  return codeyManaged ? ['codex', 'claude'] : [...cloudCliProviders];
+  return codeyManaged ? ['codex', 'claude', 'antigravity'] : [...cloudCliProviders];
 }
 
 /**

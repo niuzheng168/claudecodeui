@@ -249,6 +249,9 @@ function buildShellCommand(
     }
     return otherProgram(initialCommand || 'opencode');
   }
+  if (provider === 'antigravity') {
+    throw new Error('Antigravity SDK sessions run in Codey Chat. Open a plain project terminal for shell commands.');
+  }
 
   // Launching with the flag is what unlocks "bypass permissions" in the CLI's
   // shift+tab permission-mode cycle; it cannot be enabled from inside a

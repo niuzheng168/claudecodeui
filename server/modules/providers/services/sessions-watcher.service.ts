@@ -14,11 +14,13 @@ import { readForeignRegistrationSessionId } from '@/modules/providers/list/claud
 import { synchronizeCodexDaemonSessions, synchronizeCodexSessionIndex } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
 import { resolveCodexHomeDirectory } from '@/shared/index.js';
+import { antigravityHome } from '@/modules/providers/list/antigravity/antigravity-settings.service.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
 const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> = [
+  { provider: 'antigravity', rootPath: path.join(antigravityHome(), 'sessions') },
   {
     provider: 'claude',
     rootPath: path.join(os.homedir(), '.claude', 'projects'),
@@ -84,7 +86,11 @@ export function createWatcherIgnoredMatcher(rootPath: string): (filePath: string
       return true;
     }
 
-    return segments.some((segment) => IGNORED_DIRECTORY_NAMES.has(segment));
+    // Only Google's own binary SDK state is excluded, not folders called "sdk"
+    // in the other providers' trees.
+    const isGoogleState = path.resolve(rootPath) === path.join(antigravityHome(), 'sessions')
+      && segments[1] === 'sdk';
+    return isGoogleState || segments.some((segment) => IGNORED_DIRECTORY_NAMES.has(segment));
   };
 }
 

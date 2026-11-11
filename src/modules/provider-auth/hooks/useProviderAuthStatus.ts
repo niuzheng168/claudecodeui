@@ -16,6 +16,7 @@ const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusM
   cursor: { authenticated: false, email: null, method: null, error: null, loading },
   codex: { authenticated: false, email: null, method: null, error: null, loading },
   opencode: { authenticated: false, email: null, method: null, error: null, loading },
+  antigravity: { authenticated: false, email: null, method: null, error: null, loading },
 });
 
 type ProviderAuthStatusPayload = {

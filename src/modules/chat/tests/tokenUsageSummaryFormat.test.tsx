@@ -17,6 +17,14 @@ const shownCount = (used: number) => {
 };
 
 describe('TokenUsageSummary count', () => {
+  it('does not present Google SDK cumulative spend as current context occupancy', () => {
+    const { getByRole, unmount } = render(<TokenUsageSummary usage={{
+      inputTokens: 200, outputTokens: 50, used: 0,
+      sessionTokens: 250, contextUsageAvailable: false,
+    }} />);
+    assert.equal(getByRole('button').textContent, 'composer.sessionTokenCount');
+    unmount();
+  });
   it('carries a count that rounds up into the next unit', () => {
     assert.equal(shownCount(9_949), '9.9K');
     assert.equal(shownCount(9_960), '10K');

@@ -63,15 +63,16 @@ test('deployment paths do not rewrite external URLs', () => {
 });
 
 test('ordinary CloudCLI exposes every provider and starts with Claude', () => {
-  expect(getEnabledProviders(false)).toEqual(['claude', 'cursor', 'codex', 'opencode']);
+  expect(getEnabledProviders(false)).toEqual(['claude', 'cursor', 'codex', 'opencode', 'antigravity']);
   expect(getDefaultProvider(false)).toBe('claude');
   expect(resolveEnabledProvider('cursor', false)).toBe('cursor');
 });
 
-test('Codey-managed workspaces support model-selected Codex and Claude harnesses', () => {
-  expect(getEnabledProviders(true)).toEqual(['codex', 'claude']);
+test('Codey-managed workspaces support Codex, Claude and Google SDK harnesses', () => {
+  expect(getEnabledProviders(true)).toEqual(['codex', 'claude', 'antigravity']);
   expect(getDefaultProvider(true)).toBe('codex');
   expect(resolveEnabledProvider('claude', true)).toBe('claude');
   expect(resolveEnabledProvider('codex', true)).toBe('codex');
+  expect(resolveEnabledProvider('antigravity', true)).toBe('antigravity');
   expect(resolveEnabledProvider('cursor', true)).toBe('codex');
 });

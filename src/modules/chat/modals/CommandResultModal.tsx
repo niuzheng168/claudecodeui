@@ -58,6 +58,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  antigravity: 'Google Antigravity',
 };
 
 const FALLBACK_COMMANDS: CommandEntry[] = [

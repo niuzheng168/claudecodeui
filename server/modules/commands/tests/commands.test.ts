@@ -78,6 +78,17 @@ test('models command returns models only for the active provider using injected 
   assert.deepEqual(Object.keys(data.available as object), ['codex']);
 });
 
+test('Google model/status commands preserve the SDK provider instead of falling back to Claude', async () => {
+  const context = { provider: 'antigravity', model: 'gemini-4-carbon' };
+  const result = await executeCommand('/models', context);
+  const data = result.data as { current: { provider: string; model: string }; available: object };
+  assert.equal(data.current.provider, 'antigravity');
+  assert.equal(data.current.model, 'gemini-4-carbon');
+  assert.deepEqual(Object.keys(data.available), ['antigravity']);
+  const status = await executeCommand('/status', context);
+  assert.equal((status.data as { model: string }).model, 'gemini-4-carbon');
+});
+
 test('models command falls back to claude for unsupported providers', async () => {
   const result = await executeCommand('/models', { provider: 'unknown-provider' });
   const data = result.data as { current: { provider: string } };

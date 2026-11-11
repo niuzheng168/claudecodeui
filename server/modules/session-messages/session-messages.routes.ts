@@ -11,7 +11,7 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
 type AuthenticatedRequest = Request & { user?: { id?: number | string } };
 
 const MAX_MESSAGE_CHARS = 32_000;
-const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
+const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode', 'antigravity']);
 
 function invalid(message: string): AppError {
   return new AppError(message, { code: 'SESSION_MESSAGE_INVALID', statusCode: 400 });

@@ -67,6 +67,22 @@ type ProviderCapabilities = {
  * - Cursor has no token usage endpoint support (its store.db has no usage rows).
  */
 const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
+  antigravity: {
+    provider: 'antigravity',
+    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    defaultPermissionMode: 'default',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: true,
+    supportsTokenUsage: true,
+    supportsEffort: true,
+    effortLevels: ['minimal', 'low', 'medium', 'high', 'extra_high'],
+    supportsMessageEditing: false,
+    supportsSessionForking: false,
+    supportsSideQuestions: false,
+    supportsSteering: false,
+  },
   claude: {
     provider: 'claude',
     permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],

@@ -36,7 +36,9 @@ export default function AgentsSettingsTab({
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>(getDefaultProvider);
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
+    selectedAgent === 'antigravity'
+      ? ['account', 'mcp', 'skills']
+      : selectedAgent === 'opencode'
       ? ['account', 'permissions', 'mcp']
       : ['account', 'permissions', 'mcp', 'skills']
   ), [selectedAgent]);
@@ -62,12 +64,17 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.opencode,
       onLogin: () => onProviderLogin('opencode'),
     },
+    antigravity: {
+      authStatus: providerAuthStatus.antigravity,
+      onLogin: () => onProviderLogin('antigravity'),
+    },
   }), [
     onProviderLogin,
     providerAuthStatus.claude,
     providerAuthStatus.codex,
     providerAuthStatus.cursor,
     providerAuthStatus.opencode,
+    providerAuthStatus.antigravity,
   ]);
 
   useEffect(() => {

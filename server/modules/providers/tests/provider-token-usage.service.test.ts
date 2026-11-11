@@ -34,6 +34,22 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+test('Google SDK usage reports cumulative spend without inventing current context occupancy', async () => {
+  const service = createProviderTokenUsageService({
+    getSessionById: () => createSessionRow({ provider: 'antigravity', jsonl_path: '/fixture/messages.jsonl' }),
+    fileExists: () => true,
+    readTextFileTail: async () => ({ isComplete: true, content: JSON.stringify({
+      kind: 'status', text: 'antigravity_usage',
+      googleUsage: { prompt_token_count: 200, candidates_token_count: 40, thoughts_token_count: 10,
+        cached_content_token_count: 100, total_token_count: 250 },
+    }) }),
+  });
+  const usage = await service.getSessionTokenUsage('app-session');
+  assert.equal(usage.sessionTokens, 250);
+  assert.equal(usage.contextUsageAvailable, false);
+  assert.equal(usage.cacheReadTokens, 100);
+});
+
 test('token usage lookup requires only the app-facing session id for Claude', async () => {
   const tempDirectory = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-claude-'));
   const sessionFilePath = path.join(tempDirectory, 'provider-session.jsonl');

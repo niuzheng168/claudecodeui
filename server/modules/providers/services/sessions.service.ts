@@ -855,6 +855,15 @@ export const sessionsService = {
 
     let removedFromDisk = false;
     if (options.deletedFromDisk) {
+      const adapter = providerRegistry.listProviders().find(provider => provider.id === session.provider)?.sessions;
+      if (adapter?.deletePersistedSession && session.provider_session_id) {
+        if (chatRunRegistry.isProcessing(sessionId)) {
+          throw new AppError('Stop this session before deleting its SDK state.', {
+            code: 'SESSION_BUSY', statusCode: 409,
+          });
+        }
+        removedFromDisk = await adapter.deletePersistedSession(session.provider_session_id);
+      }
       // Every file the conversation has lived in, not just the one the row
       // points at now: editing a message on a provider that rewinds by
       // branching moves the session onto a copy and leaves the earlier

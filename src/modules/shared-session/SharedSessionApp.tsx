@@ -6,7 +6,7 @@ import { UiPreferencesProvider } from '@/shared/context/UiPreferencesContext';
 import type { LLMProvider, SharedSessionRuntime } from '@/shared/types';
 import SharedSessionPage from '@/modules/shared-session/SharedSessionPage';
 
-const KNOWN_PROVIDERS = new Set<string>(['claude', 'cursor', 'codex', 'opencode']);
+const KNOWN_PROVIDERS = new Set<string>(['claude', 'cursor', 'codex', 'opencode', 'antigravity']);
 
 /**
  * Validates the `window.__CODEY_SHARED_SESSION__` parameters the Portal

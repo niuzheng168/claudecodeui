@@ -78,9 +78,15 @@ export {
 
 // Claude's runtime uses the same shared CLI, content and error boundaries as the other adapters.
 export { buildClaudeUserContent } from './image-attachments.js';
+// Antigravity validates uploaded/workspace attachments before giving paths to the SDK.
+export { normalizeAttachmentDescriptors, resolveImageAbsolutePath, isAllowedImageSourcePath } from './image-attachments.js';
 export { resolveClaudeCodeExecutablePath } from './claude-cli-path.js';
 export { errorMessage } from './utils.js';
 // Provider auth adapters report the configured CLI's version through the shared probe contract.
 export type { IProviderAuth } from './interfaces.js';
 export type { CliVersionProbe, ProviderAuthStatus } from './types.js';
 export { probeCliVersion, readOptionalString } from './utils.js';
+// Antigravity's SDK facets use the existing shared model, MCP and skills contracts.
+export type { IProviderModels } from './interfaces.js';
+export type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput, ProviderSkillSource } from './types.js';
+export { readJsonConfig, writeJsonConfig, readStringArray, readStringRecord } from './utils.js';

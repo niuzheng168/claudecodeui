@@ -40,6 +40,8 @@ type TokenUsageResult = {
   total?: number;
   /** Tokens every request of the session consumed, cached input included. */
   sessionTokens?: number;
+  /** False when the provider reports spend but not its current context occupancy. */
+  contextUsageAvailable?: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -653,6 +655,28 @@ export function createProviderTokenUsageService(
       }
 
       const providerSessionId = session.provider_session_id || sessionId;
+
+      if (session.provider === 'antigravity') {
+        const file = session.jsonl_path;
+        if (!file || !dependencies.fileExists(file)) return emptyCodexTokenUsage();
+        const tail = await dependencies.readTextFileTail(file, TOKEN_USAGE_TAIL_BYTES);
+        const lines = tail.content.split('\n').reverse();
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line) as AnyRecord;
+            if (event.kind !== 'status' || event.text !== 'antigravity_usage' || !event.googleUsage) continue;
+            const input = Number(event.googleUsage.prompt_token_count ?? 0);
+            const output = Number(event.googleUsage.candidates_token_count ?? 0) + Number(event.googleUsage.thoughts_token_count ?? 0);
+            return {
+              used: 0, contextUsageAvailable: false, inputTokens: input, outputTokens: output,
+              cacheReadTokens: Number(event.googleUsage.cached_content_token_count ?? 0),
+              sessionTokens: Number(event.googleUsage.total_token_count ?? input + output),
+              breakdown: { input, output },
+            };
+          } catch { /* A partial final append is not a usage record. */ }
+        }
+        return emptyCodexTokenUsage();
+      }
 
       if (session.provider === 'cursor') {
         return {

@@ -13,6 +13,7 @@ const AGENT_NAMES: Record<AgentProvider, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  antigravity: 'Google Antigravity',
 };
 
 /** Rendered by AgentsSettingsTab to pick which agent provider the tab is configuring. */

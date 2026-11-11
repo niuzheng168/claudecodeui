@@ -30,7 +30,7 @@ import SharedSessionOutbox from '@/modules/shared-session/SharedSessionOutbox';
 const FOLLOW_BOTTOM_PX = 80;
 /** A login that expired reloads the page once (the Portal then asks for a login); not again within this window. */
 const SIGNED_OUT_RELOAD_GUARD_MS = 60_000;
-const KNOWN_PROVIDERS = new Set<LLMProvider>(['claude', 'cursor', 'codex', 'opencode']);
+const KNOWN_PROVIDERS = new Set<LLMProvider>(['claude', 'cursor', 'codex', 'opencode', 'antigravity']);
 
 type PageAccess = 'open' | 'ended' | 'signedOut';
 

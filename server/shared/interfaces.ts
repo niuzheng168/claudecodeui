@@ -280,6 +280,12 @@ export interface IProviderMcp {
 export interface IProviderSessions {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
+  /**
+   * Sessions service calls this only for an explicit permanent disk deletion.
+   * Removes provider-owned persistence in addition to the display journal.
+   * The argument is the authenticated row's native ID, not a filesystem path.
+   */
+  deletePersistedSession?(providerSessionId: string): Promise<boolean>;
 
   /**
    * Resolves where a conversation must resume from so that the turn identified

@@ -334,7 +334,7 @@ test('the model picker says which providers list only your models', () => {
         provider="claude"
         setProvider={() => {}}
         textareaRef={{ current: null }}
-        providerModels={{ claude: 'default', codex: 'gpt-5.6-sol', cursor: 'auto', opencode: '' }}
+        providerModels={{ claude: 'default', codex: 'gpt-5.6-sol', cursor: 'auto', opencode: '', antigravity: 'gemini-4-carbon' }}
         setProviderModel={() => {}}
         providerModelCatalog={providerModelCatalog}
         providerModelActions={createActions(async () => {})}
@@ -368,4 +368,51 @@ test('the model picker says which providers list only your models', () => {
   renderPicker({ claude: CUSTOM_ONLY_CATALOG, codex });
   screen.getByText('Only your models are listed for Anthropic');
   assert.equal(isShown('Built-in and custom models in one list'), false);
+});
+
+test('the model picker exposes Google models and selects the Antigravity SDK harness', async () => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  Element.prototype.scrollIntoView = () => undefined;
+  const setProvider = vi.fn();
+  const setProviderModel = vi.fn();
+  render(
+    <ProviderSelectionEmptyState
+      selectedSession={null}
+      currentSessionId={null}
+      provider="claude"
+      setProvider={setProvider}
+      textareaRef={{ current: null }}
+      providerModels={{ claude: 'default', codex: '', cursor: '', opencode: '', antigravity: 'gemini-4-carbon' }}
+      setProviderModel={setProviderModel}
+      providerModelCatalog={{
+        claude: MERGED_CATALOG,
+        antigravity: {
+          OPTIONS: [
+            { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon' },
+            { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
+            { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+          ],
+          DEFAULT: 'gemini-4-carbon',
+        },
+      }}
+      providerModelActions={createActions(async () => {})}
+      providerModelsLoading={false}
+      tasksEnabled={false}
+      isTaskMasterInstalled={null}
+      setInput={() => {}}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: /Click to change model/ }));
+  // Search opens the provider branch, as it does in the actual shared picker.
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Gemini' } });
+  await waitFor(() => assert.equal(isShown('Gemini 4 Carbon'), true));
+  assert.equal(isShown('Gemini 4 Argon'), true);
+  assert.equal(isShown('Gemini 3.8 Flash'), true);
+  fireEvent.click(screen.getByText('Gemini 4 Carbon'));
+  assert.equal(setProvider.mock.calls[0][0], 'antigravity');
+  assert.deepEqual(setProviderModel.mock.calls[0], ['antigravity', 'gemini-4-carbon']);
 });

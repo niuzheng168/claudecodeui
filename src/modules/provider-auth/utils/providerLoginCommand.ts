@@ -32,6 +32,9 @@ export function resolveProviderLoginCommand({
   if (provider === 'opencode') {
     return 'opencode auth login';
   }
+  if (provider === 'antigravity') {
+    return 'codey antigravity login';
+  }
 
   return 'claude --dangerously-skip-permissions /login';
 }

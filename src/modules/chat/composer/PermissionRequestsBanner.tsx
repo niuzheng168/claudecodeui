@@ -89,11 +89,14 @@ export default function PermissionRequestsBanner({
         }
 
         const rawInput = formatToolInputForDisplay(request.input);
+        // SDK adapters that do not persist rules must not offer a remember
+        // action, especially one that would write another provider's settings.
+        const canRemember = !(request.context && typeof request.context === 'object'
+          && (request.context as Record<string, unknown>).canRemember === false);
         const alwaysPatterns = readContextPatterns(request.context, 'always');
         const requestedPatterns = readContextPatterns(request.context, 'patterns') ?? [];
-        const permissionEntry = alwaysPatterns ? null : buildClaudeToolPermissionEntry(request.toolName, rawInput);
-        const settings = getClaudeSettings();
-        const alreadyAllowed = permissionEntry ? settings.allowedTools.includes(permissionEntry) : false;
+        const permissionEntry = !canRemember || alwaysPatterns ? null : buildClaudeToolPermissionEntry(request.toolName, rawInput);
+        const alreadyAllowed = permissionEntry ? getClaudeSettings().allowedTools.includes(permissionEntry) : false;
         const rememberLabel = alreadyAllowed ? 'Allow (saved)' : 'Allow & remember';
         const matchingRequestIds = permissionEntry
           ? pendingPermissionRequests
@@ -155,7 +158,7 @@ export default function PermissionRequestsBanner({
               >
                 Deny
               </ConfirmationAction>
-              {alwaysPatterns ? (
+              {canRemember && (alwaysPatterns ? (
                 <ConfirmationAction
                   variant="outline"
                   onClick={() => handlePermissionDecision(request.requestId, { allow: true, rememberEntry: 'always' })}
@@ -175,7 +178,7 @@ export default function PermissionRequestsBanner({
                 >
                   {rememberLabel}
                 </ConfirmationAction>
-              )}
+              ))}
               <ConfirmationAction
                 variant="default"
                 onClick={() => handlePermissionDecision(request.requestId, { allow: true })}

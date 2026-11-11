@@ -75,7 +75,12 @@ function TokenUsageSummary({ usage, contextWindow, onClick }: TokenUsageSummaryP
   };
   let label: string;
   let title: string;
-  if (sessionTokens === null) {
+  if (usage?.contextUsageAvailable === false && sessionTokens !== null) {
+    // The Google SDK reports cumulative spend, not current context occupancy.
+    // Do not present repeated/cached input across turns as a context size.
+    label = t('composer.sessionTokenCount', { tokens: formatTokenCount(sessionTokens) });
+    title = t('composer.sessionTokensUsed', { tokens: sessionTokens.toLocaleString() });
+  } else if (sessionTokens === null) {
     label = totalTokens > 0
       ? t('composer.tokenCountOfTotal', contextCounts)
       : t('composer.tokenCount', contextCounts);

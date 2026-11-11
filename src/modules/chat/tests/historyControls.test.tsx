@@ -17,7 +17,7 @@ function props(): ComponentProps<typeof ChatMessagesPane> {
     scrollContainerRef: createRef(), onWheel: vi.fn(), onTouchMove: vi.fn(),
     isLoadingSessionMessages: false, chatMessages: messages, selectedSession: null, currentSessionId: 'a',
     provider: 'codex', setProvider: vi.fn(), textareaRef: createRef(),
-    providerModels: { codex: '', claude: '', cursor: '', opencode: '' }, setProviderModel: vi.fn(),
+    providerModels: { codex: '', claude: '', cursor: '', opencode: '', antigravity: '' }, setProviderModel: vi.fn(),
     providerModelCatalog: {}, providerModelActions: {} as never, providerModelsLoading: false,
     tasksEnabled: false, isTaskMasterInstalled: false, setInput: vi.fn(),
     isLoadingMoreMessages: false, hasMoreMessages: true, totalMessages: 1601, sessionMessagesCount: 20,

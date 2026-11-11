@@ -71,7 +71,7 @@ export type SessionMessageResult = {
   runId?: string | null;
 };
 
-const PROVIDER_NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', gemini: 'Gemini', opencode: 'OpenCode' };
+const PROVIDER_NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', gemini: 'Gemini', opencode: 'OpenCode', antigravity: 'Google Antigravity' };
 
 function attribute(value: string): string {
   return value.replace(/["<>\r\n]/g, '').slice(0, 120);

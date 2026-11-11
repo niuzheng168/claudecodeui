@@ -472,7 +472,9 @@ function ChatInterface({
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
   const selectedProviderLabel =
-    provider === 'cursor'
+    provider === 'antigravity'
+      ? 'Google Antigravity'
+      : provider === 'cursor'
       ? t('messageTypes.cursor')
       : provider === 'codex'
         ? t('messageTypes.codex')

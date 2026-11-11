@@ -58,7 +58,7 @@ test('Claude chats list Claude Code\'s own commands after Codey\'s, and other pr
     });
     assert.equal(claude.builtIn.find((command: AnyRecord) => command.name === '/cost').metadata.type, 'builtin');
 
-    for (const provider of ['codex', 'cursor', 'opencode']) {
+    for (const provider of ['codex', 'cursor', 'opencode', 'antigravity']) {
       const result = await post('/list', { provider });
       assert.equal(result.builtIn.some((command: AnyRecord) => command.metadata?.provider === 'claude'), false, provider);
     }

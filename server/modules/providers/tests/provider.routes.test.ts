@@ -69,6 +69,24 @@ async function withProviderServer(
   }
 }
 
+test('Google SDK catalog and capabilities are reachable through the real provider routes', async () => {
+  await withProviderServer(async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/providers/antigravity/models`);
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { data: { provider: string; models: { OPTIONS: Array<{ value: string }>; DEFAULT: string } } };
+    assert.equal(payload.data.provider, 'antigravity');
+    assert.equal(payload.data.models.DEFAULT, 'gemini-4-carbon');
+    assert.ok(payload.data.models.OPTIONS.some(model => model.value === 'gemini-4-carbon'));
+    const capabilities = await fetch(`${baseUrl}/api/providers/antigravity/capabilities`);
+    assert.equal(capabilities.status, 200);
+    const custom = await fetch(`${baseUrl}/api/providers/antigravity/models`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'Custom Gemini', id: 'gemini-custom', effort: { values: ['high'] } }),
+    });
+    assert.equal(custom.status, 201);
+  });
+});
+
 test('session creation route names a CloudCLI session from the initial message', async () => {
   await withProviderServer(async (baseUrl, workspacePath) => {
     const response = await fetch(`${baseUrl}/api/providers/sessions`, {

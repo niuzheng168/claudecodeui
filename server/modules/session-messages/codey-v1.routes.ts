@@ -22,7 +22,7 @@ const RUN_ID = /^[A-Za-z0-9_-]{8,80}$/;
 const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const MAX_PERMISSION_MESSAGE_CHARS = 4_000;
 const ADDRESS = /^codey:\/\/n-[a-f0-9]{24}\/[A-Za-z0-9._:-]{1,160}$/;
-const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
+const PROVIDERS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode', 'antigravity']);
 const STATUS: Record<SessionMessageResult['status'], string> = { started: 'started', queued: 'queued', delivered: 'handed_off' };
 
 function invalid(message: string): AppError {

@@ -23,6 +23,7 @@ const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly stri
   // valid Max/Ultra selection from being reset during catalog hydration.
   codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   opencode: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  antigravity: ['minimal', 'low', 'medium', 'high', 'extra_high'],
 };
 
 const toProviderEffortOptions = (
@@ -34,6 +35,7 @@ const fallbackDefaultModel: Record<LLMProvider, string> = {
   cursor: 'gpt-5.3-codex',
   codex: isCodeyManagedDeployment() ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
   opencode: 'anthropic/claude-sonnet-4-5',
+  antigravity: 'gemini-4-carbon',
 };
 
 const providers = Object.keys(fallbackDefaultModel) as LLMProvider[];
@@ -57,6 +59,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   // Plan must be advertised by the node, never guessed for an older backend.
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+  antigravity: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
 };
 
 type ProviderCapabilities = {
