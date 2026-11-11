@@ -7,7 +7,7 @@ import type { ChatMessage, LiveTaskStatus, MessageSender, NormalizedMessage, Sub
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
-  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  const text = typeof content === 'string' ? content : JSON.stringify(content) ?? '';
   const toolUseErrorMatch = /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim());
   return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
 }
@@ -520,7 +520,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       }
 
       case 'tool_use': {
-        const tr = toolResultSource;
+        // Early Antigravity journals nested a standalone result instead of
+        // following the top-level content/isError contract. Read them safely.
+        const tr = toolResultSource && 'kind' in toolResultSource && toolResultSource.kind === 'tool_result'
+          ? toolResultSource.toolResult ?? toolResultSource
+          : toolResultSource;
         // A row is a subagent container when the backend attached agent
         // metadata to it. Both providers normalize to that, so no provider or
         // tool-name special-casing is needed here; the name check only covers

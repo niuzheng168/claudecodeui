@@ -37,14 +37,24 @@ async function setup(mode: string, run: (fixture: {
   delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
   delete process.env.GEMINI_API_KEY;
   await writeFile(process.env.CODEY_ANTIGRAVITY_CONFIG, '{"apiKey":"test-credential"}');
+  if (mode === 'managed') {
+    process.env.CODEY_MODEL_API_KEY = 'private-managed-proxy-key';
+    process.env.GEMINI_API_KEY = 'unused-private-google-key';
+    await writeFile(process.env.CODEY_ANTIGRAVITY_CONFIG, 'invalid direct Google config');
+  }
   closeConnection();
   await initializeDatabase();
   sessionsDb.createAppSession('app-google', 'antigravity', cwd, 'Test');
   const capture = path.join(root, 'request.json');
   const runtime = createAntigravityRuntime({
-    createBridge: workspace => spawn(process.execPath, ['--import', loader, fixture], {
+    ...(mode === 'managed' ? { gateway: {
+      isManaged: () => true,
+      getModels: async () => ({ OPTIONS: [], DEFAULT: '' }),
+      open: async () => ({ credentials: { apiKey: 'per-turn-token', baseUrl: 'http://127.0.0.1:12345', vertex: false }, close: async () => {} }),
+    } } : {}),
+    createBridge: (workspace, environment) => spawn(process.execPath, ['--import', loader, fixture], {
       cwd: workspace, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
-      env: { ...process.env, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)),
+      env: { ...environment, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)),
         FAKE_ANTIGRAVITY_MODE: mode, FAKE_ANTIGRAVITY_CAPTURE: capture },
     }),
     startupTimeoutMs: mode === 'startup-hang' ? 100 : 5_000,
@@ -75,6 +85,16 @@ async function setup(mode: string, run: (fixture: {
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test('managed SDK receives only its per-turn credential, not Google or node proxy secrets', async () => {
+  await setup('managed', async ({ runtime, context, cwd, capture, writer }) => {
+    await runtime.run('Through Copilot', { sessionId: 'app-google', cwd, model: 'gemini-4-carbon' }, writer, context);
+    const body = await readFile(capture, 'utf8');
+    assert.equal(JSON.parse(body).credentials.apiKey, 'per-turn-token');
+    assert.equal(JSON.parse(body).managed, true);
+    assert.doesNotMatch(body, /private-managed-proxy-key|unused-private-google-key/);
+  });
+});
 
 test('Google runtime passes the selected model/effort to SDK and persists resumable history', async () => {
   await setup('text', async ({ runtime, context, cwd, capture, events, writer }) => {
@@ -125,7 +145,11 @@ for (const allow of [false, true]) {
       }, context);
       await sending;
       assert.equal(runtime.permissions?.listPending('app-google').length, 0);
-      assert.equal(events.find(event => event.kind === 'tool_result')?.toolResult?.isError, !allow);
+      assert.equal(events.find(event => event.kind === 'tool_result')?.isError, !allow);
+      assert.equal(typeof events.find(event => event.kind === 'tool_result')?.content, 'string');
+      assert.equal(events.filter(event => event.kind === 'tool_use').length, 1);
+      assert.equal(events.find(event => event.kind === 'tool_use')?.toolId, 'copilot-call-id');
+      assert.equal(events.find(event => event.kind === 'tool_result')?.toolId, 'copilot-call-id');
     });
   });
 }

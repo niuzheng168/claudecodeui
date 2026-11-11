@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 
+import { antigravityGateway } from '@/modules/providers/list/antigravity/antigravity-gateway.service.js';
 import type { CliVersionProbe, IProviderAuth, ProviderAuthStatus } from '@/shared/index.js';
 import {
   antigravityBridge, antigravityPython, readAntigravityCredentials,
@@ -7,6 +8,7 @@ import {
 
 /** The registry/settings report the official SDK's installation and Google credentials. */
 export class AntigravityProviderAuth implements IProviderAuth {
+  constructor(private readonly gateway = antigravityGateway) {}
   checkInstalled(): CliVersionProbe {
     const result = spawnSync(antigravityPython(), [antigravityBridge(), '--version'], {
       encoding: 'utf8', timeout: 10_000, windowsHide: true,
@@ -23,6 +25,16 @@ export class AntigravityProviderAuth implements IProviderAuth {
       installedVersion: probe.version, authenticated: false, email: null, method: null,
     };
     try {
+      if (this.gateway.isManaged()) {
+        status.method = 'codey_model_api';
+        status.email = 'Copilot proxy';
+        if (!probe.installed) status.error = 'Install the Google Antigravity SDK with codey antigravity install.';
+        else {
+          status.authenticated = (await this.gateway.getModels()).OPTIONS.length > 0;
+          if (!status.authenticated) status.error = 'The Copilot proxy has no available Gemini models. Check model access and proxy discovery; Google login is not required.';
+        }
+        return status;
+      }
       const credentials = readAntigravityCredentials();
       status.authenticated = probe.installed && Boolean(credentials.vertex
         ? credentials.project && credentials.location

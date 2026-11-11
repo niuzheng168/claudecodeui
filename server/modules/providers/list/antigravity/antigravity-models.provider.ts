@@ -1,4 +1,5 @@
 import type { IProviderModels, ProviderModelsDefinition } from '@/shared/index.js';
+import { antigravityGateway } from '@/modules/providers/list/antigravity/antigravity-gateway.service.js';
 
 /**
  * Google API model IDs (not Antigravity CLI's effort-suffixed slugs).
@@ -19,11 +20,14 @@ const MODELS: ProviderModelsDefinition = {
 
 /** The provider registry exposes Google models to the existing model picker. */
 export class AntigravityProviderModels implements IProviderModels {
+  constructor(private readonly gateway = antigravityGateway) {}
+
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    if (this.gateway.isManaged()) return this.gateway.getModels();
     return structuredClone(MODELS);
   }
 
   async getCurrentActiveModel() {
-    return { model: MODELS.DEFAULT };
+    return { model: (await this.getSupportedModels()).DEFAULT };
   }
 }

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import ProviderCliVersion from '@/modules/settings/tabs/agents-settings/sections/content/ProviderCliVersion';
 import { Badge, Button, LLMProviderLogo } from '@/shared/ui';
 import type { AgentProvider, ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types';
+import { isCodeyManagedDeployment } from '@/shared/utils';
 
 type AccountContentProps = {
   agent: AgentProvider;
@@ -108,6 +109,7 @@ function SubscriptionOverrideNotice({ override }: SubscriptionOverrideNoticeProp
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
+  const managedGoogle = agent === 'antigravity' && isCodeyManagedDeployment();
 
   return (
     <div className="space-y-6">
@@ -116,7 +118,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
         <div>
           <h3 className="text-lg font-medium text-foreground">{config.name}</h3>
           <p className="text-sm text-muted-foreground">
-            {t(`agents.account.${agent}.description`, {
+            {managedGoogle ? 'Antigravity SDK · Copilot proxy · No Google login required' : t(`agents.account.${agent}.description`, {
               defaultValue: config.description || `${config.name} CLI assistant`,
             })}
           </p>
@@ -170,7 +172,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
             subtextClass={config.subtextClass}
           />
 
-          {authStatus.method !== 'api_key' && (
+          {!managedGoogle && authStatus.method !== 'api_key' && (
             <div className="border-t border-border/50 pt-4">
               <div className="flex items-center justify-between">
                 <div>

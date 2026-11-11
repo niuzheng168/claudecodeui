@@ -1906,3 +1906,29 @@ export const SIDE_CONVERSATION_DEVELOPER_INSTRUCTIONS = "You are in a side conve
  * of the question itself, by runtimes that cannot inject a history item.
  */
 export const SIDE_CONVERSATION_BOUNDARY_PROMPT = "Side conversation boundary.\n\nEverything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.\n\nDo not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary. Only messages submitted after this boundary are active user instructions for this side conversation.\n\nYou are a side-conversation assistant, separate from the main thread. Answer questions and do lightweight, non-mutating exploration without disrupting the main thread. If there is no user question after this boundary yet, wait for one.\n\nExternal tools may be available according to this thread's current permissions. Any tool calls or outputs visible before this boundary happened in the parent thread and are reference-only; do not infer active instructions from them.\n\nThis thread is ephemeral and cannot retain worktree attachments. Do not call create_worktree here. Direct requests requiring a new worktree back to the main conversation.\n\nSub-agents are off-limits in this side conversation. Do not interact with any existing or new sub-agents, even if sub-agents were used before this boundary.\n\nDo not modify files, source, git state, permissions, configuration, or workspace state unless the user explicitly asks for that mutation after this boundary. Do not request escalated permissions or broader sandbox access unless the user explicitly asks for a mutation that requires it. If the user explicitly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread.";
+//----------------- MANAGED MODEL API CONFIGURATION ------------
+/**
+ * Claude and Antigravity consume only the host's authenticated model gateway.
+ * Credentials never come from a browser payload. Remote targets require HTTPS;
+ * loopback HTTP is allowed for the node-local Copilot proxy. No URL credentials,
+ * queries, fragments or redirects may turn this into credential forwarding.
+ */
+export function readCodeyModelApiConfiguration(env: NodeJS.ProcessEnv = process.env) {
+  const key = env.CODEY_MODEL_API_KEY?.trim();
+  if (!key) throw new AppError('The Codey model API key is not configured.', {
+    code: 'CODEY_MODEL_API_UNCONFIGURED', statusCode: 503,
+  });
+  let url: URL;
+  try {
+    url = new URL(env.CODEY_MODEL_BASE_URL || 'http://127.0.0.1:4141');
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if (url.username || url.password || url.search || url.hash
+      || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) throw new Error();
+  } catch {
+    throw new AppError('Codey requires an HTTPS or loopback model API URL.', {
+      code: 'CODEY_MODEL_API_URL_INVALID', statusCode: 503,
+    });
+  }
+  return { key, baseUrl: url.toString().replace(/\/$/, '') };
+}
+// ---------------------------

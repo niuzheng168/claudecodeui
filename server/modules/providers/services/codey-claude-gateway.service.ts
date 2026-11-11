@@ -1,5 +1,5 @@
 import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/index.js';
-import { AppError, readObjectRecord } from '@/shared/index.js';
+import { AppError, readObjectRecord, readCodeyModelApiConfiguration } from '@/shared/index.js';
 
 const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // Managed Claude and Codex run at xhigh by default (the user's choice, 2026-11-06):
@@ -82,27 +82,7 @@ export function createCodeyClaudeGateway(dependencies: {
   let lastCatalog: ProviderModelsDefinition | undefined;
 
   function configuration() {
-    const env = environment();
-    const key = env.CODEY_MODEL_API_KEY?.trim();
-    if (!key) {
-      throw new AppError('The Codey model API key is not configured.', {
-        code: 'CODEY_MODEL_API_UNCONFIGURED', statusCode: 503,
-      });
-    }
-    let url: URL;
-    try {
-      url = new URL(env.CODEY_MODEL_BASE_URL || 'http://127.0.0.1:4141');
-      const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
-      if (url.username || url.password || url.search || url.hash
-        || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) {
-        throw new Error('Invalid gateway URL');
-      }
-    } catch {
-      throw new AppError('Codey requires an HTTPS or loopback model API URL.', {
-        code: 'CODEY_MODEL_API_URL_INVALID', statusCode: 503,
-      });
-    }
-    return { key, baseUrl: url.toString().replace(/\/$/, '') };
+    return readCodeyModelApiConfiguration(environment());
   }
 
   async function getModels(): Promise<ProviderModelsDefinition> {

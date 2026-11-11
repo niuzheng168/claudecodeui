@@ -57,12 +57,13 @@ class SdkContractTests(unittest.TestCase):
         self.temp.cleanup()
 
     def run_bridge(self, prompt, *, resume=False, mode="default", allow=None,
-                   model="gemini-4-carbon", cancel_on_permission=False):
+                   model="gemini-4-carbon", cancel_on_permission=False, managed=False):
         request = {
             "cwd": str(self.root), "stateDir": str(self.root / "state"),
             "conversationId": self.conversation_id, "resume": resume,
             "model": model, "effort": "medium", "prompt": prompt,
             "permissionMode": mode,
+            "managed": managed,
             "credentials": {"apiKey": "fixture-key",
                             "baseUrl": f"http://127.0.0.1:{self.server.server_port}"},
         }
@@ -142,6 +143,10 @@ class SdkContractTests(unittest.TestCase):
         self.assertTrue(any(event["event"] == "permission" for event in events))
         self.assertEqual(target.read_text(), "real SDK write\n")
         self.assertTrue(any(event["event"] == "tool_result" for event in events))
+        started = [event["tool"]["id"] for event in events if event["event"] == "tool_start"]
+        ended = [event["result"]["id"] for event in events if event["event"] == "tool_result"]
+        self.assertTrue(started)
+        self.assertEqual(started, ended)
 
     def test_plan_mode_does_not_expose_mutating_tools(self):
         self.run_bridge("Inspect only", mode="plan")
@@ -150,6 +155,14 @@ class SdkContractTests(unittest.TestCase):
         self.assertNotIn("write_to_file", names)
         self.assertNotIn("run_command", names)
         self.assertNotIn("replace_file_content", names)
+
+    def test_managed_sdk_does_not_require_google_credentials_or_offer_google_cloud_tools(self):
+        events = self.run_bridge("Reply through the configured proxy.", managed=True)
+        self.assertTrue(any(event.get("event") == "result" for event in events))
+        names = {function["name"] for tool in self.server.requests[0][1].get("tools", [])
+                 for function in tool.get("functionDeclarations", [])}
+        self.assertNotIn("generate_image", names)
+        self.assertNotIn("search_web", names)
 
     def test_real_sdk_cancellation_withdraws_pending_approval_without_writing(self):
         target = self.root / "cancelled.txt"

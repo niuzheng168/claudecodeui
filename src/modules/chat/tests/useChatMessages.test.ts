@@ -40,6 +40,23 @@ test('preserves historical UI message identity when only the stream record chang
   assert.equal(updated[2]?.content, 'Part one and two');
 });
 
+test('Antigravity hook results attach without crashing, including earlier nested journals', () => {
+  const use = message('google-call', { provider: 'antigravity', kind: 'tool_use',
+    toolId: 'call_copilot', toolName: 'create_file', content: undefined, toolInput: { TargetFile: '/workspace/proof.txt' } });
+  for (const result of [
+    { content: 'File written', isError: false },
+    { content: undefined, toolResult: { content: 'File written', isError: false } },
+    { content: undefined },
+  ]) {
+    const rows = normalizedToChatMessages([use, message('google-result', {
+      provider: 'antigravity', kind: 'tool_result', toolId: 'call_copilot', ...result,
+    })]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].toolResult?.content, result.content === undefined && !('toolResult' in result) ? '' : 'File written');
+    assert.equal(rows[0].toolResult?.isError, false);
+  }
+});
+
 test('rebuilds a tool-use UI message when its separately received result changes', () => {
   const toolUse = message('tool-use', {
     kind: 'tool_use',

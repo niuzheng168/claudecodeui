@@ -90,3 +90,4 @@ export { probeCliVersion, readOptionalString } from './utils.js';
 export type { IProviderModels } from './interfaces.js';
 export type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput, ProviderSkillSource } from './types.js';
 export { readJsonConfig, writeJsonConfig, readStringArray, readStringRecord } from './utils.js';
+export { readCodeyModelApiConfiguration } from './utils.js';

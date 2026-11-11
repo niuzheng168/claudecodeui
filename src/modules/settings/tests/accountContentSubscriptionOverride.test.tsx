@@ -34,6 +34,16 @@ const apiKeyStatus = (overrides: Partial<ProviderAuthStatus> = {}): ProviderAuth
 const renderClaudeAccount = (authStatus: ProviderAuthStatus) =>
   render(<AccountContent agent="claude" authStatus={authStatus} onLogin={() => {}} />);
 
+it('managed Antigravity explains Copilot authentication instead of offering a Google login', () => {
+  try {
+    vi.stubEnv('VITE_CODEY_MANAGED', 'true');
+    render(<AccountContent agent="antigravity"
+      authStatus={apiKeyStatus({ method: 'codey_model_api', email: 'Copilot proxy' })} onLogin={() => {}} />);
+    expect(screen.getByText('Antigravity SDK · Copilot proxy · No Google login required')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /login|sign in|authenticate/i })).toBeNull();
+  } finally { vi.unstubAllEnvs(); }
+});
+
 describe('AccountContent subscription override notice', () => {
   it('warns which variable is bypassing the login, where it came from, and how to fix it (process env)', () => {
     renderClaudeAccount(apiKeyStatus({

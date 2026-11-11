@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { AntigravityMcpProvider } from '@/modules/providers/list/antigravity/antigravity-mcp.provider.js';
+import { antigravityGateway } from '@/modules/providers/list/antigravity/antigravity-gateway.service.js';
 import {
   antigravityBridge, antigravityPython, readAntigravityCredentials,
 } from '@/modules/providers/list/antigravity/antigravity-settings.service.js';
@@ -36,6 +37,7 @@ type Turn = {
   closed: Promise<number | null>;
   aborted: boolean;
   stopping?: Promise<boolean>;
+  closeBridge?: () => Promise<void>;
 };
 
 const provider = 'antigravity' as const;
@@ -43,10 +45,12 @@ const stringify = (value: unknown) => typeof value === 'string' ? value : JSON.s
 
 /** Registry and focused runtime tests create isolated SDK transports and turn registries. */
 export function createAntigravityRuntime(dependencies: {
-  createBridge?: (cwd: string) => ChildProcessWithoutNullStreams;
+  createBridge?: (cwd: string, environment: NodeJS.ProcessEnv) => ChildProcessWithoutNullStreams;
   startupTimeoutMs?: number;
   approvalTimeoutMs?: number;
+  gateway?: typeof antigravityGateway;
 } = {}): IProviderRuntime {
+  const gateway = dependencies.gateway ?? antigravityGateway;
   const turns = new Map<string, Turn>();
   const prompts = new Map<string, PendingPrompt>();
 
@@ -65,6 +69,7 @@ export function createAntigravityRuntime(dependencies: {
 
   async function stopChild(turn: Turn, userAbort = true): Promise<boolean> {
     if (userAbort) turn.aborted = true;
+    await turn.closeBridge?.();
     if (turn.child.stdin.writable) turn.child.stdin.write('{"event":"cancel"}\n');
     let timer: ReturnType<typeof setTimeout>;
     const exited = await Promise.race([
@@ -96,6 +101,7 @@ export function createAntigravityRuntime(dependencies: {
     const key = appId ?? nativeId;
     if (turns.has(key)) throw new Error('An Antigravity turn is already running for this session.');
     let turn: Turn | undefined;
+    let proxy: Awaited<ReturnType<typeof gateway.open>> | undefined;
     let failed: string | null = null;
     let ready = false;
     let resultReceived = false;
@@ -125,10 +131,6 @@ export function createAntigravityRuntime(dependencies: {
       }
       model = await context.resolveResumeModel(appId, readOptionalString(options.model))
         ?? (await context.getProviderModels()).DEFAULT;
-      const credentials = readAntigravityCredentials();
-      if (!(credentials.vertex ? credentials.project && credentials.location : credentials.apiKey)) {
-        throw new Error('Google credentials are not configured. Run codey antigravity login.');
-      }
       if (!(await context.isProviderInstalled())) {
         throw new Error('Google Antigravity SDK is not installed. Run codey antigravity install.');
       }
@@ -137,6 +139,14 @@ export function createAntigravityRuntime(dependencies: {
       const effort = requestedEffort === 'default' ? undefined : requestedEffort;
       if (effort && !['minimal', 'low', 'medium', 'high', 'extra_high'].includes(effort)) {
         throw new Error(`Unsupported Google thinking level: ${effort}`);
+      }
+      const managed = gateway.isManaged();
+      if (managed) proxy = await gateway.open(model, effort);
+      const credentials = proxy
+        ? { ...proxy.credentials, project: undefined, location: undefined }
+        : readAntigravityCredentials();
+      if (!proxy && !(credentials.vertex ? credentials.project && credentials.location : credentials.apiKey)) {
+        throw new Error('Google credentials are not configured. Run codey antigravity login.');
       }
       const attachments = [
         ...normalizeAttachmentDescriptors(options.images),
@@ -153,16 +163,22 @@ export function createAntigravityRuntime(dependencies: {
         }
         return canonical;
       }));
-      const child = dependencies.createBridge?.(cwd) ?? spawn(antigravityPython(), [antigravityBridge()], {
+      const childEnvironment: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' };
+      if (managed) {
+        for (const name of ['CODEY_MODEL_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+          'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_GENAI_USE_VERTEXAI',
+          'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION']) delete childEnvironment[name];
+      }
+      const child = dependencies.createBridge?.(cwd, childEnvironment) ?? spawn(antigravityPython(), [antigravityBridge()], {
         cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
         detached: process.platform !== 'win32',
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+        env: childEnvironment,
       });
       const closed = new Promise<number | null>(resolve => {
         child.once('error', error => { reportError(error); resolve(null); });
         child.once('close', resolve);
       });
-      turn = { child, closed, aborted: false };
+      turn = { child, closed, aborted: false, closeBridge: proxy?.close };
       turns.set(key, turn);
       // Never log stderr: SDK diagnostics can contain request headers or keys.
       child.stderr.resume();
@@ -174,7 +190,7 @@ export function createAntigravityRuntime(dependencies: {
       const mcp = await new AntigravityMcpProvider().listServers({ workspacePath: cwd });
       const servers = new Map([...mcp.user, ...mcp.project].map(server => [server.name, server]));
       child.stdin.write(JSON.stringify({
-        prompt: command, cwd, model, effort, credentials,
+        prompt: command, cwd, model, effort, credentials, managed,
         conversationId: nativeId, resume: Boolean(existing),
         stateDir: path.join(antigravitySessionStore.directory(nativeId), 'sdk'),
         permissionMode: readOptionalString(options.permissionMode) ?? 'default',
@@ -203,6 +219,14 @@ export function createAntigravityRuntime(dependencies: {
             provider, sessionId: key, images: options.images, files: options.files,
           }));
           await new AntigravitySessionSynchronizer().synchronizeFile(antigravitySessionStore.transcript(nativeId));
+        } else if (event.event === 'tool_start') {
+          const tool = readObjectRecord(event.tool) ?? {};
+          const toolId = String(tool.id || `${tool.step_id}:${tool.name}`);
+          if (!toolIds.has(toolId)) {
+            toolIds.add(toolId);
+            await record(emit({ kind: 'tool_use', id: `${toolId}:call`, toolId,
+              toolName: String(tool.name), toolInput: tool.args }));
+          }
         } else if (event.event === 'permission') {
           const requestId = readOptionalString(event.requestId);
           if (!requestId || turn.aborted) continue;
@@ -250,14 +274,6 @@ export function createAntigravityRuntime(dependencies: {
             state.thinking += step.thinking_delta;
           }
           texts.set(id, state);
-          for (const raw of Array.isArray(step.tool_calls) ? step.tool_calls : []) {
-            const tool = readObjectRecord(raw) ?? {};
-            const toolId = String(tool.id || `${id}:${tool.name}`);
-            if (toolIds.has(toolId)) continue;
-            toolIds.add(toolId);
-            await record(emit({ kind: 'tool_use', id: `${toolId}:call`, toolId,
-              toolName: String(tool.name), toolInput: tool.args }));
-          }
           if (['DONE', 'ERROR', 'CANCELED'].includes(String(step.status)) && !recordedTexts.has(id)) {
             const content = step.source === 'MODEL' && step.target === 'TARGET_USER'
               ? String(step.content || state.content) : '';
@@ -281,7 +297,7 @@ export function createAntigravityRuntime(dependencies: {
           const result = readObjectRecord(event.result) ?? {};
           const toolId = String(result.id || `${result.step_id}:${result.name}`);
           await record(emit({ kind: 'tool_result', id: `${toolId}:result`, toolId,
-            toolName: String(result.name), toolResult: { content: stringify(result.error || result.result), isError: Boolean(result.error) } }));
+            toolName: String(result.name), content: stringify(result.error || result.result), isError: Boolean(result.error) }));
         } else if (event.event === 'error') {
           reportError(String(event.message || 'Antigravity SDK failed.'));
         } else if (event.event === 'result') {
@@ -309,6 +325,7 @@ export function createAntigravityRuntime(dependencies: {
         }
         turns.delete(key);
       }
+      await proxy?.close();
       if (ready) {
         // Preserve an interrupted answer so a reload does not erase streamed work.
         for (const [id, text] of texts) {

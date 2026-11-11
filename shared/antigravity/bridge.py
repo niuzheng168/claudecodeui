@@ -126,6 +126,9 @@ async def run(request):
 
     @hooks.pre_tool_call_decide
     async def permission(tool: types.ToolCall):
+        # Native Step events can describe an intermediate preview (edit_file)
+        # using a different step index. Hooks carry the real pre/post call ID.
+        emit("tool_start", tool=tool.model_dump(mode="json"))
         name = str(tool.name)
         # Canonical paths have already been decoded/normalized by the SDK.
         inside = not tool.canonical_path or Path(tool.canonical_path).resolve().is_relative_to(cwd)
@@ -183,6 +186,11 @@ async def run(request):
         )
     enabled = [tool for tool in types.BuiltinTools.default()
                if tool != types.BuiltinTools.SCHEDULE]
+    if request.get("managed"):
+        # Copilot supplies chat/tool inference, not Google's image/search APIs.
+        enabled = [tool for tool in enabled if tool not in (
+            types.BuiltinTools.GENERATE_IMAGE, types.BuiltinTools.SEARCH_WEB,
+        )]
     enabled.append(types.BuiltinTools.ASK_QUESTION)
     if mode == "plan":
         enabled = [tool for tool in enabled if str(tool) in read_tools]
@@ -198,12 +206,14 @@ async def run(request):
             mcp_servers.append(types.McpStreamableHttpServer(
                 **common, url=server["url"], headers=server.get("headers") or {},
             ))
+    models = [types.ModelTarget(name=request["model"], endpoint=endpoint)]
+    # The SDK adds an IMAGE default even when that tool is disabled. Bind this
+    # unused target too, so it cannot demand ambient Google credentials or fall
+    # back to Google. The managed adapter rejects every non-selected model.
+    models.append(types.ModelTarget(name="gemini-3.1-flash-lite-image",
+                                   types=[types.ModelType.IMAGE], endpoint=endpoint))
     config = LocalAgentConfig(
-        models=[
-            types.ModelTarget(name=request["model"], endpoint=endpoint),
-            types.ModelTarget(name="gemini-3.1-flash-lite-image",
-                              types=[types.ModelType.IMAGE], endpoint=endpoint),
-        ],
+        models=models,
         conversation_id=request["conversationId"],
         session_continuation_mode=(
             types.SessionContinuationMode.RESUME if request.get("resume")

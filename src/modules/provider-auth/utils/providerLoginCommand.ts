@@ -33,7 +33,7 @@ export function resolveProviderLoginCommand({
     return 'opencode auth login';
   }
   if (provider === 'antigravity') {
-    return 'codey antigravity login';
+    return isCodeyManagedDeployment() ? 'codey antigravity install && codey antigravity status' : 'codey antigravity login';
   }
 
   return 'claude --dangerously-skip-permissions /login';

@@ -137,8 +137,8 @@ const cloudCliProviders: readonly LLMProvider[] = ['claude', 'cursor', 'codex', 
 
 /**
  * Returns the harnesses behind this deployment's model picker. Codey models
- * run with Codex or Claude Code; the model selection carries its harness ID,
- * while both harnesses use the independently configured Codey model API.
+ * run with Codex, Claude Code or Antigravity; the model selection carries its
+ * harness ID, while managed inference uses the configured Codey model API.
  */
 export function getEnabledProviders(
   codeyManaged = isCodeyManagedDeployment(),
