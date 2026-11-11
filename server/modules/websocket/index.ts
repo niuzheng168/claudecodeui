@@ -1,4 +1,4 @@
-export { WS_OPEN_STATE, connectedClients } from './services/websocket-state.service.js';
+export { WS_OPEN_STATE, connectedClients, broadcastToConnectedClients } from './services/websocket-state.service.js';
 export { createWebSocketServer } from './services/websocket-server.service.js';
 export { chatRunRegistry } from './services/chat-run-registry.service.js';
 // readChatRunOrigin: the queue dispatcher reads the origin a session message's queue entry carries.

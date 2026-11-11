@@ -26,8 +26,11 @@ import readline from 'node:readline';
 
 const replay = process.argv.includes('--replay-user-messages');
 const flag = (name) => {
+  const joined = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  if (joined) return joined.slice(name.length + 1);
   const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : 'none';
+  // New SDKs omit default permissions instead of passing --permission-mode=default.
+  return index >= 0 ? process.argv[index + 1] : name === '--permission-mode' ? 'default' : 'none';
 };
 // Resuming keeps the session id, like the real CLI.
 const sessionId = flag('--resume') === 'none' ? randomUUID() : flag('--resume');

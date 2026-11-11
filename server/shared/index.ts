@@ -68,3 +68,15 @@ export type {
   GitCommandResult, GitCommandRunner, WorkspacePathValidationResult, WorktreeFileSystem, WorktreePorcelainEntry,
   WorktreeProjectGateway, WorktreeServices,
 } from './types.js';
+
+// Providers' read-only side questions and File Tree scope checks use these shared contracts.
+export type { SideQuestionOutcome, SideQuestionRequest, SideQuestionSink } from './types.js';
+export {
+  resolvePathUnderRoots, SIDE_CONVERSATION_BOUNDARY_PROMPT,
+  SIDE_CONVERSATION_DEVELOPER_INSTRUCTIONS, SIDE_QUESTION_ANSWER_SEPARATOR,
+} from './utils.js';
+
+// Claude's runtime uses the same shared CLI, content and error boundaries as the other adapters.
+export { buildClaudeUserContent } from './image-attachments.js';
+export { resolveClaudeCodeExecutablePath } from './claude-cli-path.js';
+export { errorMessage } from './utils.js';

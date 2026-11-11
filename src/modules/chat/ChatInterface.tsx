@@ -78,7 +78,7 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, isConnected } = useWebSocket();
   const { t } = useTranslation('chat');
   const processingSessions = useProcessingSessions();
   const {
@@ -137,6 +137,7 @@ function ChatInterface({
     resolvePermissionModeForProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    supportsSideQuestions,
     supportsSteering,
   } = useChatProviderState({
     selectedSession,
@@ -256,6 +257,7 @@ function ChatInterface({
     isSteering,
     steerError,
     steeringMessageId,
+    handleSendMenuChoice,
     backgroundSendPrompt,
     resolveBackgroundSendPrompt,
     takeOverPrompt,
@@ -265,6 +267,8 @@ function ChatInterface({
     queuedDrafts,
     editQueuedDraft,
     deleteQueuedDraft,
+    pendingSteers,
+    handleSteerOutcome,
     handleVoiceTranscript,
     replaceVoiceDraft,
     replaceComposerDraft,
@@ -306,6 +310,8 @@ function ChatInterface({
     canSteerQueued: steering.canSteerQueued,
     sendByCtrlEnter,
     onSessionProcessing: markOwnSendProcessing,
+    isConnected,
+    supportsSteering,
     onSessionEstablished: handleSessionEstablished,
     prepareNewSessionProject: newSessionWorktree.prepare,
     onFileOpen,
@@ -315,6 +321,7 @@ function ChatInterface({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
     resolvePermissionModeForProvider,
+    supportsSideQuestions,
   });
 
   useChatRealtimeHandlers({
@@ -338,6 +345,7 @@ function ChatInterface({
     requestLatestMessages,
     sessionStore,
     onSessionOpenElsewhere: askToTakeOverSession,
+    onSteerOutcome: handleSteerOutcome,
   });
 
   // Lets other modules (the quick settings Commands tab) hand text to the
@@ -411,7 +419,7 @@ function ChatInterface({
   }, [onNavigateToSession, selectedSession?.id]);
 
   const { scheduledMessages, schedule: scheduleMessage, cancel: cancelScheduledMessage } =
-    useScheduledMessages(currentSessionId || selectedSession?.id || null);
+    useScheduledMessages(currentSessionId || selectedSession?.id || null, subscribe);
 
   /**
    * Hands the composer's current text to the server to send later, and clears
@@ -591,6 +599,7 @@ function ChatInterface({
           isSteering={isSteering}
           steerError={steerError}
           steeringMessageId={steeringMessageId}
+          canAbortSession={canAbortSession}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={selectPermissionMode}
@@ -624,6 +633,9 @@ function ChatInterface({
           onResolveTakeOverPrompt={resolveTakeOverPrompt}
           onEditQueuedDraft={editQueuedDraft}
           onDeleteQueuedDraft={deleteQueuedDraft}
+          onSendMenuChoice={handleSendMenuChoice}
+          supportsSteering={supportsSteering}
+          pendingSteers={pendingSteers}
           attachedFiles={attachedFiles}
           onRemoveAttachment={(index) =>
             setAttachedFiles((previous) =>
@@ -671,6 +683,7 @@ function ChatInterface({
           placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
+          supportsSideQuestions={supportsSideQuestions}
         />
         </div>
       </div>

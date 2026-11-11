@@ -1,6 +1,7 @@
 export { sessionSynchronizerService } from './services/session-synchronizer.service.js';
 export { providerSkillsService } from './services/skills.service.js';
 export { providerMcpService } from './services/mcp.service.js';
+export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
 export { providerRuntimeService } from './services/provider-runtime.service.js';
 
 // providerModelsService: used by Commands to list models and resolve the active session model.
@@ -16,6 +17,10 @@ export { claudeNativeCommandsService } from './list/claude/claude-commands.provi
 // Activity to report the busy sessions to the Codey Portal.
 export { sessionsService } from './services/sessions.service.js';
 
+// reapOrphanedOpenCodeServers: used by the server entrypoint at startup to stop
+// OpenCode turn servers a killed CloudCLI process left running.
+export { reapOrphanedOpenCodeServers } from './list/opencode/opencode-runtime.provider.js';
+
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 // codexThreadStatus: what the local Codex daemon says about every thread, for
 // the running list and Activity; started and closed with the server.
@@ -27,7 +32,6 @@ export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 
 // Session messages: the default permission mode of a turn they start, and the
 // Claude Desktop or terminal process that holds a Claude session open.
-export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
 export {
   findForeignSessionProcess,
   readLastPermissionMode,
@@ -37,3 +41,12 @@ export {
 export { applyClaudeArchiveChanges } from './list/claude/claude-desktop-archive.service.js';
 // Project-memory wakeups and catch-up verify native archive metadata.
 export { synchronizeMemoryArchives } from './services/memory-archive-sync.service.js';
+// sideQuestionsService: used by the websocket module's `chat.side_question` handler and
+// the provider routes' side-question endpoints. State is in memory; a new
+// service instance starts empty, as after a CloudCLI restart.
+export {
+  createSideQuestionsService,
+  MAX_CONCURRENT_SIDE_QUESTIONS_PER_SESSION,
+  MAX_SIDE_QUESTIONS_PER_SESSION,
+  sideQuestionsService,
+} from './services/side-questions.service.js';

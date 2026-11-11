@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
-import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage,GetSessionActivity,MarkSessionBackground,SessionOpenElsewhere } from '@/shared/types';
+import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissionRequest,ProjectSession,LLMProvider,NormalizedMessage,GetSessionActivity,MarkSessionBackground,SessionOpenElsewhere,SideQuestionEvent,SteerOutcome } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
-import { collectRunningBackgroundTasks } from '@/modules/chat/utils/backgroundTasks';
+import { sideQuestionStore } from '@/modules/chat/hooks/useSideQuestions';
+import { collectRunningBackgroundTasks, listRunningBackgroundLaunches, readBackgroundTaskId, readBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
 import { readBackgroundTaskStops, recordRefusedTaskStop } from '@/modules/chat/utils/backgroundTaskStops';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
@@ -52,6 +53,12 @@ type UseChatRealtimeHandlersArgs = {
   sessionStore: SessionStore;
   /** A Claude turn was refused because `claude` in a terminal has the session open; the composer may offer to take it over. */
   onSessionOpenElsewhere?: (sessionId: string, holder: SessionOpenElsewhere) => void;
+  /**
+   * Reports what became of a message sent into a running turn, so the
+   * composer can settle its card: the server's acceptance or refusal, and —
+   * for every live user message, steered or not — `delivered` with its id.
+   */
+  onSteerOutcome?: (sessionId: string, messageId: string, outcome: SteerOutcome) => void;
 };
 
 /* ------------------------------------------------------------------ */
@@ -88,6 +95,7 @@ export function useChatRealtimeHandlers({
   requestLatestMessages,
   sessionStore,
   onSessionOpenElsewhere,
+  onSteerOutcome,
 }: UseChatRealtimeHandlersArgs) {
   // ChatInterface shares one set between this hook and its sibling; a caller
   // that passes none (a test mounting the hook alone) gets a private one.
@@ -212,9 +220,18 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        case 'chat_steer_accepted': {
+          // Only the tab that sent the message gets this; it is not a
+          // transcript row.
+          if (sid && typeof msg.messageId === 'string') {
+            onSteerOutcome?.(sid, msg.messageId, 'accepted');
+          }
+          return;
+        }
+
         case 'chat_abort_result':
         case 'protocol_error': {
-          if (sid && msg.kind === 'protocol_error' && msg.code === 'NO_SUCH_TASK') {
+          if (sid && msg.kind === 'protocol_error' && msg.code === 'NO_SUCH_TASK' && readBackgroundTaskStops(sid).stopping.size > 0) {
             // The task ended without this page hearing of it; the strip drops
             // it instead of the conversation gaining an error about it.
             recordRefusedTaskStop(sid, typeof msg.taskId === 'string' ? msg.taskId : undefined);
@@ -223,17 +240,51 @@ export function useChatRealtimeHandlers({
             }
             return;
           }
+          // A message sent into a turn that had already ended. The run is not
+          // failing — it finished — so nothing is shown or idled here; the
+          // composer sends the message as the next turn instead.
+          if (sid && msg.code === 'STEER_UNAVAILABLE' && typeof msg.messageId === 'string') {
+            onSteerOutcome?.(sid, msg.messageId, 'refused');
+            return;
+          }
           console.error('[Chat] Protocol error:', msg.code, msg.error);
+          // The ✕ on a task whose end never reached this client (its process
+          // went away, say): settle its card and chip instead of reporting a
+          // failure the user can do nothing about.
+          if (sid && msg.code === 'NO_SUCH_TASK' && typeof msg.taskId === 'string') {
+            const rows = normalizedToChatMessages(sessionStore.getMessages(sid))
+              .filter((message) => readBackgroundTaskId(message) === msg.taskId);
+            // A resumed agent can name the task on more than one running row.
+            const launches = listRunningBackgroundLaunches(rows);
+            for (const launch of launches) {
+              handleEvent({
+                kind: 'task_status',
+                event: 'updated',
+                id: `task_gone_${launch.toolId}`,
+                sessionId: sid,
+                provider,
+                timestamp: new Date().toISOString(),
+                taskId: msg.taskId,
+                toolUseId: launch.toolId,
+                status: 'stopped',
+              });
+            }
+            if (launches.length > 0) {
+              return;
+            }
+            // Its end arrived before the refusal: the card has settled already.
+            if (rows.some((message) => {
+              const status = readBackgroundTaskStatus(message);
+              return status !== undefined && status !== 'running';
+            })) {
+              return;
+            }
+          }
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.
-            // A refused abort, or a refused stop request for a background
-            // task that had already settled, is not about the run: idling
-            // here would drop a response in flight on that session.
-            if (
-              msg.kind !== 'chat_abort_result'
-              && msg.code !== 'TASK_ID_REQUIRED'
-            ) {
+            // Control failures concern the task/request, not the live response.
+            if (msg.kind !== 'chat_abort_result' && !['NO_SUCH_TASK', 'TASK_ID_REQUIRED', 'TASK_STOP_FAILED'].includes(String(msg.code))) {
               onSessionIdle?.(sid);
               // A refused send never became a run on this socket; if the
               // session is busy with another run, that one still has to attach.
@@ -251,9 +302,20 @@ export function useChatRealtimeHandlers({
           return;
         }
 
+        case 'side_question': {
+          // A side question never touches the session's transcript: it goes
+          // to the side-question store, for whichever session it names, and
+          // never falls through to the message-kind handling below.
+          sideQuestionStore.applyEvent(msg as unknown as SideQuestionEvent);
+          return;
+        }
+
         // Sidebar/global events — owned by useProjectsState.
         case 'session_upserted':
         case 'loading_progress':
+        // Owned by useScheduledMessages, which reads the composer banner's
+        // list again. Not a transcript row.
+        case 'scheduled_messages_changed':
           return;
 
         default:
@@ -309,6 +371,13 @@ export function useChatRealtimeHandlers({
 
       if (sid && shouldPersist) {
         sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
+      }
+
+      // A user message on the live stream is a steered message the agent just
+      // read (the turn's own prompt is never echoed); the composer drops its
+      // card if it is one of its own.
+      if (sid && msg.kind === 'text' && msg.role === 'user' && typeof msg.id === 'string') {
+        onSteerOutcome?.(sid, msg.id, 'delivered');
       }
 
       // --- UI side effects for specific kinds ---
@@ -497,5 +566,6 @@ export function useChatRealtimeHandlers({
     requestLatestMessages,
     sessionStore,
     onSessionOpenElsewhere,
+    onSteerOutcome,
   ]);
 }

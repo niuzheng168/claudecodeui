@@ -4,6 +4,7 @@ import type {
   CodexRpcRequestId,
   CodexRpcServerReply,
   CodexDesktopThreadState,
+  CliVersionProbe,
   FetchHistoryOptions,
   FetchHistoryResult,
   LLMProvider,
@@ -24,6 +25,9 @@ import type {
   ProviderRuntimePermissionGateway,
   ProviderRuntimeWriter,
   ScheduledTaskSummary,
+  SideQuestionOutcome,
+  SideQuestionRequest,
+  SideQuestionSink,
   UpsertProviderMcpServerInput,
   WorkflowAgentActivity,
 } from '@/shared/types.js';
@@ -87,7 +91,7 @@ export interface IProviderRuntime {
   /** True while this adapter tracks a running turn that accepts extra input; this does not grant interruption ownership. */
   canSteer?(sessionId: string): boolean;
   /** Append input to the current turn; never interrupt, restart, or queue it. */
-  steer?(sessionId: string, command: string, options: AnyRecord): Promise<void | ProviderSteerReceipt>;
+  steer?(sessionId: string, command: string, options: AnyRecord): Promise<void | boolean | ProviderSteerReceipt>;
   permissions?: ProviderRuntimePermissionGateway;
   /**
    * Sessions with background tasks still outstanding, or tasks scheduled to
@@ -101,9 +105,24 @@ export interface IProviderRuntime {
   /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already
-   * settled, or the id was never one of its own.
+   * settled, or the id was never one of its own. Rejects when the stop does
+   * not take, so the caller can report it (`TASK_STOP_FAILED`).
    */
   stopBackgroundTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /**
+   * Asks a side question on the provider runtime while a session is active.
+   *
+   * A provider with this method uses its native fork capability; one without it
+   * falls back to the history path (the provider runtime service supplies the history
+   * and drives the Claude adapter instead). This method never rejects: all outcomes
+   * are returned as SideQuestionOutcome (done or error), never thrown.
+   */
+  askSideQuestion?(
+    request: SideQuestionRequest,
+    sink: SideQuestionSink,
+    context: ProviderRuntimeContext,
+  ): Promise<SideQuestionOutcome>;
+
 }
 
 /**
@@ -195,6 +214,13 @@ export interface IProviderAuth {
    * Checks whether the provider is installed and has usable credentials.
    */
   getStatus(): Promise<ProviderAuthStatus>;
+  /**
+   * Runs `--version` on the CLI this provider's chats use: the same check
+   * `getStatus()` reports as `installed` and `installedVersion`, without the
+   * credential lookup (which can take seconds). The providers module's CLI
+   * update service reads versions through it.
+   */
+  checkInstalled(): CliVersionProbe;
 }
 
 // ---------------------------

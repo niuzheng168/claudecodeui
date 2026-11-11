@@ -6,7 +6,7 @@ import test from 'node:test';
 
 // Node's test runner isolates this file. Configure the shared module before its
 // first import, then restore the environment so no subprocess inherits the override.
-const driveRoot = path.parse(await realpath(os.tmpdir())).root;
+const driveRoot = path.parse(await realpath(os.homedir())).root;
 const previousRoot = process.env.WORKSPACES_ROOT;
 process.env.WORKSPACES_ROOT = driveRoot;
 const { validateWorkspacePath } = await import('@/shared/index.js');
@@ -14,10 +14,11 @@ if (previousRoot === undefined) delete process.env.WORKSPACES_ROOT;
 else process.env.WORKSPACES_ROOT = previousRoot;
 
 test('a configured filesystem root accepts its existing and not-yet-created child workspaces', async (t) => {
+  // /tmp is intentionally forbidden for workspaces; test root containment under the user's home.
   const prefix = 'cloudcli-workspace-root-';
-  const folder = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const folder = await mkdtemp(path.join(os.homedir(), prefix));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(folder)), path.resolve(os.tmpdir()));
+    assert.equal(path.dirname(path.resolve(folder)), path.resolve(os.homedir()));
     assert.ok(path.basename(folder).startsWith(prefix));
     await rm(folder, { recursive: true, force: true });
   });

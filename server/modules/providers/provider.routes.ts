@@ -3,11 +3,13 @@ import express, { type Request, type Response } from 'express';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
+import { providerCliService } from '@/modules/providers/services/provider-cli.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
+import { sideQuestionsService } from '@/modules/providers/services/side-questions.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   CustomProviderModelEffort,
@@ -19,7 +21,7 @@ import type {
   ProviderSkillCreateInput,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
-import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { AppError, asyncHandler, createApiSuccessResponse, SIDE_QUESTION_ID_PATTERN } from '@/shared/utils.js';
 
 const router = express.Router();
 
@@ -53,6 +55,18 @@ const parseSessionId = (value: unknown): string => {
   }
 
   return sessionId;
+};
+
+const parseSideQuestionId = (value: unknown): string => {
+  const sideQuestionId = readPathParam(value, 'sideQuestionId').trim();
+  if (!SIDE_QUESTION_ID_PATTERN.test(sideQuestionId)) {
+    throw new AppError('Invalid sideQuestionId.', {
+      code: 'INVALID_SIDE_QUESTION_ID',
+      statusCode: 400,
+    });
+  }
+
+  return sideQuestionId;
 };
 
 /** A workflow run id as the harness mints one (`wf_16fbf852-274`). */
@@ -640,6 +654,24 @@ router.get(
   }),
 );
 
+/** The installed CLI version, the newest npm release, whether this server can update the CLI and whether it is doing so. */
+router.get(
+  '/:provider/cli',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    res.json(createApiSuccessResponse(await providerCliService.getCliStatus(provider)));
+  }),
+);
+
+/** Runs the CLI's own updater; refused while the provider is busy in a session. */
+router.post(
+  '/:provider/cli/update',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    res.json(createApiSuccessResponse(await providerCliService.updateCli(provider)));
+  }),
+);
+
 router.get(
   '/:provider/models',
   asyncHandler(async (req: Request, res: Response) => {
@@ -927,6 +959,26 @@ router.get(
   }),
 );
 
+// Declared before the generic `/sessions/:sessionId` routes below, like every
+// other session-specific route in this file.
+router.delete(
+  '/sessions/:sessionId/side-questions/:sideQuestionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const sideQuestionId = parseSideQuestionId(req.params.sideQuestionId);
+    // `dismiss` broadcasts the `dismissed` event itself, through the same
+    // connected-clients fan-out the `chat.side_question` handler uses.
+    const deleted = sideQuestionsService.dismiss(sessionId, sideQuestionId);
+    if (!deleted) {
+      throw new AppError('Side question not found.', {
+        code: 'SIDE_QUESTION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    res.json(createApiSuccessResponse({ deleted: true }));
+  }),
+);
+
 // Must stay registered after the static and session-specific routes so their
 // literals never match the generic `:sessionId` parameter.
 router.get(
@@ -1024,7 +1076,11 @@ router.get(
       ...(syncCursor ? { syncCursor } : {}),
       ...(beforeCursor ? { beforeCursor } : {}),
     });
-    res.json(createApiSuccessResponse(result));
+    // The session's whole side-question list, on every page: side questions
+    // are not part of the paged transcript, and the client wants to draw
+    // every one of them regardless of which page it is looking at.
+    const sideQuestions = sideQuestionsService.listForSession(sessionId);
+    res.json(createApiSuccessResponse({ ...result, sideQuestions }));
   }),
 );
 

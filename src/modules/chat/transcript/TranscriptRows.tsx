@@ -157,6 +157,7 @@ export default function TranscriptRows({
             lazyRows={lazyRows}
             timestamp={item.timestamp}
             messageId={item.sourceId}
+            className={item.sideQuestion && item.type === 'assistant' ? '!mt-0' : undefined}
             initiallyNearViewport={initiallyNearViewport}
           >
             <MessageComponent

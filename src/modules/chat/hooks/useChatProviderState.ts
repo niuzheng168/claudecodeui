@@ -71,6 +71,7 @@ type ProviderCapabilities = {
   supportsEffort?: boolean;
   supportsMessageEditing?: boolean;
   supportsSessionForking?: boolean;
+  supportsSideQuestions?: boolean;
   supportsSteering?: boolean;
 };
 
@@ -514,6 +515,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // Node backends are updated separately from this UI; one that predates the
   // field can only steer Codex.
   const supportsSteering = providerCapabilities?.[provider]?.supportsSteering ?? provider === 'codex';
+  const supportsSideQuestions = Boolean(providerCapabilities?.[provider]?.supportsSideQuestions);
 
   const resolvePermissionModeForProvider = useCallback((
     targetProvider: LLMProvider,
@@ -906,6 +908,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     resolvePermissionModeForProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    supportsSideQuestions,
     supportsSteering,
   };
 }

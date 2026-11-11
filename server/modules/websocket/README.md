@@ -164,6 +164,7 @@ flowchart TD
   D -->|chat.send| E[resolve session row -> startRun -> providerRuntimeService.run]
   D -->|chat.steer| S[validate run owner + runId -> providerRuntimeService.steer -> chat_steer_result]
   D -->|chat.edit-send| E2[history_truncated -> rewind or resume at the anchor -> same as chat.send]
+  D -->|chat.steer| E3[providerRuntimeService.steer -> chat_steer_accepted, or protocol_error STEER_UNAVAILABLE]
   D -->|chat.abort| F[providerRuntimeService.abort + synthetic complete]
   D -->|chat.stop-task| F2[providerRuntimeService.stopBackgroundTask]
   D -->|chat.subscribe| G[chat_subscribed ack + attach socket + replay events seq > lastSeq]

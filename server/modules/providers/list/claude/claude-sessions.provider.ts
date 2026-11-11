@@ -1131,7 +1131,7 @@ function isNoResponsePlaceholder(raw: AnyRecord): boolean {
 function readQueuedPromptRow(raw: AnyRecord | null): { row: AnyRecord; sourceUuid: string | null } | null {
   const attachment = readObjectRecord(raw?.attachment);
   if (raw?.type !== 'attachment' || attachment?.type !== 'queued_command'
-    || attachment.commandMode !== 'prompt' || attachment.isMeta === true) {
+    || (attachment.commandMode ?? 'prompt') !== 'prompt' || attachment.isMeta === true) {
     return null;
   }
 
@@ -1141,7 +1141,7 @@ function readQueuedPromptRow(raw: AnyRecord | null): { row: AnyRecord; sourceUui
   }
 
   return {
-    row: { uuid: raw.uuid, timestamp: raw.timestamp, type: 'user', message: { role: 'user', content: prompt } },
+    row: { uuid: attachment.source_uuid || raw.uuid, timestamp: raw.timestamp, type: 'user', message: { role: 'user', content: prompt } },
     sourceUuid: typeof attachment.source_uuid === 'string' && attachment.source_uuid ? attachment.source_uuid : null,
   };
 }

@@ -10,7 +10,7 @@ import type {
   FileTreeUploadedFile,
 } from '@/shared/index.js';
 import {
-  AppError, FORBIDDEN_WORKSPACE_PATHS, isPathInsideDirectory, normalizeProjectPath,
+  AppError, FORBIDDEN_WORKSPACE_PATHS, isPathInsideDirectory, normalizeProjectPath, resolvePathUnderRoots,
 } from '@/shared/index.js';
 
 const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
@@ -601,6 +601,8 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
    * the read-only root policy first (symlinks resolved before the comparison);
    * everything else goes through `resolveSingleFilePath`. The writing endpoints
    * never call this, so nothing outside the project can be changed.
+   * Files elsewhere under the configured workspace root are readable too;
+   * symlinks are resolved before applying that read-only policy.
    */
   async function resolveReadableFilePath(
     projectRoot: string,
@@ -611,6 +613,11 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       const readOnlyPath = await dependencies.workspace.resolveReadOnlyRootPath(requestedPath);
       if (readOnlyPath) {
         return { requestedPath, canonicalPath: readOnlyPath };
+      }
+
+      const workspacePath = await resolvePathUnderRoots(requestedPath, [dependencies.workspace.rootPath]);
+      if (workspacePath) {
+        return { requestedPath, canonicalPath: workspacePath };
       }
     }
     return resolveSingleFilePath(projectRoot, filePath);

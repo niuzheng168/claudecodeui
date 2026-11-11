@@ -19,11 +19,11 @@ const formatTokenCount = (value: number) => {
     return `${(value / 1_000_000_000).toFixed(value >= 10_000_000_000 ? 0 : 1).replace(/\.0$/, '')}B`;
   }
 
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (value >= 999_500) {
+    return `${(value / 1_000_000).toFixed(value >= 9_950_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   }
 
-  if (value >= 10_000) {
+  if (value >= 9_950) {
     return `${Math.round(value / 1_000)}K`;
   }
 

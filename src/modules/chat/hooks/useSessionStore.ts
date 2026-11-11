@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/shared/api';
 import type { LLMProvider, NormalizedMessage, SessionHistoryView } from '@/shared/types';
 import { compareNativeTranscriptPositions, createSessionHistoryCache } from '@/shared/utils';
+import { sideQuestionStore } from '@/modules/chat/hooks/useSideQuestions';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
 import { orderNativeTranscriptMessages } from '@/modules/chat/utils/nativeTranscriptOrder';
 import {
@@ -133,6 +134,13 @@ async function requestSessionHistoryPage(
     throw new Error('The node returned an invalid conversation history. Retry loading the conversation.');
   }
   const messages: NormalizedMessage[] = data.messages;
+
+  // The server sends the session's whole side-question list on every page
+  // (not just the page's own rows), so the store is replaced here rather
+  // than merged, regardless of which page this request fetched.
+  if (Array.isArray(data.sideQuestions)) {
+    sideQuestionStore.replaceForSession(sessionId, data.sideQuestions);
+  }
 
   return {
     messages,

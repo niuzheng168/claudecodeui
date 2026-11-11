@@ -44,6 +44,24 @@ const lineFromRef = (value: string): number | null => {
 // Strip a trailing `:line` / `:line:col` suffix (e.g. `src/foo.ts:130`).
 const stripLineSuffix = (value: string): string => value.replace(/:\d+(?::\d+)?$/, '');
 
+// Markdown hrefs are URLs, while the editor needs a filesystem path. Decode
+// once at this boundary; repeated decoding would rename literal `%20` files.
+const decodeFileHref = (value: string): string => {
+  // Match one UTF-8 character at a time so a literal percent or an invalid
+  // byte sequence cannot prevent valid escapes elsewhere from decoding.
+  return value.replace(
+    /%(?:[0-7][\da-f]|[cd][\da-f]%[89ab][\da-f]|e[\da-f](?:%[89ab][\da-f]){2}|f[0-4](?:%[89ab][\da-f]){3})/gi,
+    (encodedCharacter) => {
+      try {
+        return decodeURIComponent(encodedCharacter);
+      } catch {
+        // Preserve invalid UTF-8 (including overlong or surrogate encodings).
+        return encodedCharacter;
+      }
+    },
+  );
+};
+
 // Markdown encodes Unicode/spaces in hrefs, but editor/API paths are literal.
 // Decode only this URL boundary, once; link text must never be URL-decoded.
 const filePathFromHref = (href?: string): string | undefined => {
@@ -52,12 +70,7 @@ const filePathFromHref = (href?: string): string | undefined => {
   }
   // Remove source locations before decoding so an encoded colon stays literal.
   const filePath = stripLineSuffix(href);
-  try {
-    return decodeURIComponent(filePath);
-  } catch {
-    // Malformed escapes must not break rendering or prevent a literal lookup.
-    return filePath;
-  }
+  return decodeFileHref(filePath);
 };
 
 // A usable file path contains a separator or a filename with an extension.

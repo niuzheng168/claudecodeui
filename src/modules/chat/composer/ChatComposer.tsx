@@ -20,7 +20,8 @@ import { useCodeyVoice } from '@/shared/hooks/useCodeyVoice';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { isCodeyPortalSso, isComposerModeShortcut } from '@/shared/utils';
-import type { BackgroundSendChoice, BackgroundSendPrompt, SessionTakeOverPrompt, ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { PendingSteer, BackgroundSendChoice, BackgroundSendPrompt, SessionTakeOverPrompt, ChatMessage, VoiceDraftInsertion, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import { MCP_ELICITATION_TOOL_NAME } from '@/shared/constants';
 import {
   PromptInput,
   PromptInputHeader,
@@ -36,6 +37,7 @@ import { ComposerVoiceControl } from '@/modules/chat/composer/ComposerVoiceContr
 import { VoiceRewriteControl } from '@/modules/chat/composer/VoiceRewriteControl';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
+import SteeredMessageCard from '@/modules/chat/composer/SteeredMessageCard';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
 import SessionTakeOverDialog from '@/modules/chat/composer/SessionTakeOverDialog';
 import { ScheduledMessageList } from '@/modules/chat/composer/ScheduledMessageList';
@@ -44,11 +46,16 @@ import ComposerPermissionMenu from '@/modules/chat/composer/ComposerPermissionMe
 import { ComposerCompletionOverlay } from '@/modules/chat/composer/ComposerCompletionOverlay';
 import { ComposerCompletionBar } from '@/modules/chat/composer/ComposerCompletionBar';
 import { ComposerCompletionControl } from '@/modules/chat/composer/ComposerCompletionControl';
+import ComposerSendMenu from '@/modules/chat/composer/ComposerSendMenu';
 
 type MentionableFile = {
   name: string;
   path: string;
 };
+
+// A stable empty default, so a composer with no steered messages (every
+// caller but the chat tab) does not get a new array each render.
+const NO_PENDING_STEERS: PendingSteer[] = [];
 
 type ChatComposerProps = {
   pendingPermissionRequests: PendingPermissionRequest[];
@@ -71,6 +78,8 @@ type ChatComposerProps = {
   isSteering?: boolean;
   steerError?: string | null;
   steeringMessageId?: string;
+  /** Whether the viewed session can currently be interrupted; threaded to the send menu's Stop row, which otherwise looks actionable while `onAbortSession` already no-ops. Defaults to true so existing callers and tests, which never had a non-interruptible turn, keep working. */
+  canAbortSession?: boolean;
   permissionMode: PermissionMode;
   availablePermissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
@@ -108,6 +117,14 @@ type ChatComposerProps = {
   onCancelScheduledMessage: (id: string) => void;
   onEditQueuedDraft: (messageId?: string) => void;
   onDeleteQueuedDraft: (messageId?: string) => void;
+  /** Handle send menu choices (queue, steer, side question, send). */
+  onSendMenuChoice?: (choice: 'queue' | 'steer' | 'sideQuestion' | 'send') => void;
+  /** False until the capability matrix has loaded, or for a provider it does not list; passed through to the send menu and the background-send dialog so neither offers a side question that would be refused. */
+  supportsSideQuestions?: boolean;
+  /** Whether the provider can take a message into a running turn; gates the send menu's Steer row the same way `supportsSideQuestions` gates its row. */
+  supportsSteering?: boolean;
+  /** Messages sent into the running turn that the agent has not read yet, each shown as a card above the composer until its echo lands in the transcript. */
+  pendingSteers?: PendingSteer[];
   attachedFiles: File[];
   onRemoveAttachment: (index: number) => void;
   fileErrors: Map<string, string>;
@@ -171,6 +188,7 @@ export default function ChatComposer({
   isSteering = false,
   steerError = null,
   steeringMessageId,
+  canAbortSession = true,
   permissionMode,
   availablePermissionModes,
   onSelectPermissionMode,
@@ -204,6 +222,10 @@ export default function ChatComposer({
   onCancelScheduledMessage,
   onEditQueuedDraft,
   onDeleteQueuedDraft,
+  onSendMenuChoice,
+  supportsSideQuestions,
+  supportsSteering = false,
+  pendingSteers = NO_PENDING_STEERS,
   attachedFiles,
   onRemoveAttachment,
   fileErrors,
@@ -369,9 +391,10 @@ export default function ChatComposer({
     }
   }, [isEditingSentMessage, voiceState, rewrite.busy]);
 
-  // Detect if the AskUserQuestion interactive panel is active
+  // Detect if an interactive panel that takes the person's answer is active:
+  // a question from the agent, or an MCP server's request for input.
   const hasQuestionPanel = pendingPermissionRequests.some(
-    (r) => r.toolName === 'AskUserQuestion'
+    (r) => r.toolName === 'AskUserQuestion' || r.toolName === MCP_ELICITATION_TOOL_NAME
   );
 
   // Hide the thinking/status bar while any permission request is pending
@@ -414,13 +437,14 @@ export default function ChatComposer({
       : sendByCtrlEnter
         ? t('input.hintText.ctrlEnter')
         : t('input.hintText.enter');
-  const submitAriaLabel = joinsRunningTurn
+  const submitAriaLabel = isTranscribing ? t('input.send') : joinsRunningTurn
     ? t('input.steer.send', { defaultValue: 'Send now' })
     : canQueueDraft
       ? t('input.queue.sendNext', { defaultValue: 'Queue next message' })
       : isLoading
         ? t('input.stop')
         : isRecording && rewriteConfigured ? t('voice.rewrite.stopPreview') : t('input.send');
+  const hasAnyInput = Boolean(input.trim() || attachedFiles.length > 0);
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
@@ -434,6 +458,7 @@ export default function ChatComposer({
         <div className="mx-auto mb-3 max-w-[54.25rem]">
           <PermissionRequestsBanner
             pendingPermissionRequests={pendingPermissionRequests}
+            providerLabel={providerLabel}
             handlePermissionDecision={handlePermissionDecision}
             handleGrantToolPermission={handleGrantToolPermission}
           />
@@ -467,8 +492,13 @@ export default function ChatComposer({
         <BackgroundSendDialog
           prompt={backgroundSendPrompt}
           onResolve={onResolveBackgroundSendPrompt}
+          supportsSideQuestions={supportsSideQuestions}
+          hasText={Boolean(input.trim())}
         />
       )}
+      {pendingSteers.map((steer) => (
+        <SteeredMessageCard key={steer.messageId} steer={steer} providerLabel={providerLabel} />
+      ))}
 
       {onResolveTakeOverPrompt && (
         <SessionTakeOverDialog
@@ -729,7 +759,21 @@ export default function ChatComposer({
               onSelectPermissionMode={onSelectPermissionMode}
               providerLabel={providerLabel}
             />}
-          submitControl={<PromptInputSubmit
+          submitControl={!onSteerQueued && !sendJoinsRunningTurn && (isLoading || activity?.background) && hasAnyInput && !isRecording && !isTranscribing && !isSteering ? (
+            <ComposerSendMenu
+              state={isLoading ? 'responding' : 'background'}
+              hasInput={hasAnyInput}
+              hasText={Boolean(input.trim())}
+              canAbortSession={canAbortSession}
+              supportsSideQuestions={supportsSideQuestions}
+              supportsSteering={supportsSteering}
+              sendByCtrlEnter={sendByCtrlEnter}
+              onSelect={(choice) => {
+                if (choice === 'stop') onAbortSession();
+                else onSendMenuChoice?.(choice);
+              }}
+            />
+          ) : <PromptInputSubmit
               onClick={
                 canQueueDraft
                   ? (e: MouseEvent<HTMLButtonElement>) => {
@@ -746,10 +790,10 @@ export default function ChatComposer({
                       : undefined
               }
               disabled={
-                isSteering && canQueueDraft
+                isTranscribing ? true : isSteering && canQueueDraft
                   ? true
                   : isLoading
-                  ? false
+                  ? !isRecording && !canAbortSession
                   : isRecording
                     ? false
                     : isTranscribing

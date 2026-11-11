@@ -45,6 +45,7 @@ async function fixture(t: TestContext, body: (f: {
   const calls: unknown[][] = [];
   const runtime = {
     hasRuntime: () => true,
+    askSideQuestion: async () => ({ status: 'done' as const, answer: '' }),
     run: async () => { calls.push(['run']); },
     abort: async () => { calls.push(['abort']); return true; },
     canSteer: () => true,
