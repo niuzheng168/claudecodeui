@@ -1,13 +1,12 @@
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
 import TOML from '@iarna/toml';
 
-import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { CliVersionProbe, ProviderAuthStatus } from '@/shared/types.js';
-import { probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/utils.js';
+import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import type { CliVersionProbe, IProviderAuth, ProviderAuthStatus } from '@/shared/index.js';
+import { probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/index.js';
 
 type CodexCredentialsStatus = {
   authenticated: boolean;
@@ -54,16 +53,24 @@ export function resolveCodexCustomProviderCredentials(
   }
 }
 
+/** Provider registry uses the same configured Codex CLI as the runtime for availability checks. */
 export class CodexProviderAuth implements IProviderAuth {
   /**
    * Checks whether the Codex CLI that chats run is available, and which version
-   * it is. That is the `@openai/codex` package CloudCLI depends on, which
-   * `@openai/codex-sdk` resolves from node_modules, not a `codex` on PATH.
+   * it is. Codey supplies its owner's absolute executable; ordinary CloudCLI
+   * falls back to the same guarded npm launcher the app-server adapter uses.
+   * Never search PATH or hide a missing configured CLI with another install.
    */
   checkInstalled(): CliVersionProbe {
+    const executable = process.env.CODEY_CODEX_EXECUTABLE;
+    if (executable) {
+      return path.isAbsolute(executable)
+        ? probeCliVersion(executable)
+        : { installed: false, exitCode: null, version: null };
+    }
     let launcherPath: string;
     try {
-      launcherPath = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+      launcherPath = codexAppServer.resolveLauncher();
     } catch {
       return { installed: false, exitCode: null, version: null };
     }

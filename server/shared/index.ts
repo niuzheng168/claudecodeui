@@ -80,3 +80,7 @@ export {
 export { buildClaudeUserContent } from './image-attachments.js';
 export { resolveClaudeCodeExecutablePath } from './claude-cli-path.js';
 export { errorMessage } from './utils.js';
+// Provider auth adapters report the configured CLI's version through the shared probe contract.
+export type { IProviderAuth } from './interfaces.js';
+export type { CliVersionProbe, ProviderAuthStatus } from './types.js';
+export { probeCliVersion, readOptionalString } from './utils.js';
