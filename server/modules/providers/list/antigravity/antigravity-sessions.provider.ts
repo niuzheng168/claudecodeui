@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { antigravityHome } from '@/modules/providers/list/antigravity/antigravity-settings.service.js';
+import { readAntigravityTokenUsage } from '@/modules/providers/list/antigravity/antigravity-usage.service.js';
 import { readObjectRecord, sliceTailPage } from '@/shared/index.js';
 import type {
   FetchHistoryOptions, FetchHistoryResult, IProviderSessions, IProviderSessionSynchronizer,
@@ -94,13 +95,17 @@ export class AntigravitySessionsProvider implements IProviderSessions {
   async fetchHistory(sessionId: string, options: FetchHistoryOptions = {}): Promise<FetchHistoryResult> {
     const row = sessionsDb.getSessionById(sessionId);
     const nativeId = row?.provider_session_id ?? options.providerSessionId ?? sessionId;
-    const messages = (await antigravitySessionStore.messages(nativeId))
+    const journal = await antigravitySessionStore.messages(nativeId);
+    const metadata = await antigravitySessionStore.read(nativeId);
+    const tokenUsage = await readAntigravityTokenUsage(nativeId, antigravitySessionStore.transcript(nativeId),
+      { messages: journal, model: row?.model ?? metadata?.model }).catch(() => undefined);
+    const messages = journal
       .filter(message => message.kind !== 'status')
       .map(message => ({ ...message, sessionId }));
     const limit = options.limit === undefined ? 50 : options.limit;
     const offset = options.offset ?? 0;
     const { page, hasMore } = sliceTailPage(messages, limit, offset);
-    return { messages: page, total: messages.length, hasMore, offset, limit };
+    return { messages: page, total: messages.length, hasMore, offset, limit, tokenUsage };
   }
 }
 

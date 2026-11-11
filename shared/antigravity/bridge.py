@@ -242,11 +242,37 @@ async def run(request):
         prompt = [request["prompt"]]
         for attachment in request.get("attachments", []):
             prompt.append(types.from_file(attachment))
-        await agent.conversation.send(prompt)
-        async for step in agent.conversation.receive_steps():
-            if not step.parent_trajectory_id and step.trajectory_id != request["conversationId"]:
-                raise ValueError("The SDK returned an unexpected conversation ID.")
-            emit("step", step=step.model_dump(mode="json"))
+        last_usage = None
+
+        def publish_usage():
+            nonlocal last_usage
+            # The public cumulative counter includes resumed turns/subagents.
+            # It is a snapshot, not an amount to add once per step or poll.
+            usage = agent.conversation.total_usage.model_dump(mode="json")
+            if usage != last_usage:
+                emit("usage", usage=usage)
+                last_usage = usage
+
+        async def watch_usage():
+            # Native usage updates need not coincide with a Step. Do not defer
+            # available counters until the whole multi-tool run ends.
+            while True:
+                publish_usage()
+                await asyncio.sleep(0.5)
+
+        watcher = asyncio.create_task(watch_usage())
+        try:
+            await agent.conversation.send(prompt)
+            async for step in agent.conversation.receive_steps():
+                if not step.parent_trajectory_id and step.trajectory_id != request["conversationId"]:
+                    raise ValueError("The SDK returned an unexpected conversation ID.")
+                emit("step", step=step.model_dump(mode="json"))
+                publish_usage()
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+            publish_usage()
         finished = True
         emit("result", cancelled=cancelled,
              usage=agent.conversation.total_usage.model_dump(mode="json"))

@@ -115,6 +115,18 @@ test('the primary row hides secondary settings, uses a short model label and kee
 });
 
 test.each([
+  {
+    name: 'Gemini native context and cumulative session spend',
+    tokenUsage: { used: 170, total: 1_000_000, sessionTokens: 315, contextUsageAvailable: true,
+      inputTokens: 160, outputTokens: 10, cacheReadTokens: 100 },
+    text: 'Total 315 · Context 170 / 1M',
+    title: '315 tokens used this session\n170 of 1,000,000 context tokens used',
+  },
+  {
+    name: 'legacy Gemini spend without inventing a context count',
+    tokenUsage: { used: 0, sessionTokens: 315, contextUsageAvailable: false },
+    contextWindow: 1_000_000, text: 'Total 315', title: '315 tokens used this session',
+  },
   { name: 'usage alone', tokenUsage: { used: 12345 }, text: '12K tokens', title: '12,345 tokens used' },
   {
     name: 'the catalog window before the first turn', tokenUsage: null, contextWindow: 1_000_000,

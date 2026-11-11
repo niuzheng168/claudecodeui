@@ -125,6 +125,28 @@ export type QueuedMessageOperation = {
 export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'antigravity';
 
 /**
+ * Usage snapshot shared by provider runtimes, history readers and the usage
+ * endpoint. `used` is the latest request's context (prompt plus output);
+ * `sessionTokens` is cumulative spend, including repeated/cached input.
+ * Never substitute cumulative spend for context when occupancy is unknown.
+ * `total` is a reported context capacity, not a session spending limit.
+ */
+export type ProviderTokenUsage = {
+  used: number;
+  total?: number;
+  sessionTokens?: number;
+  contextUsageAvailable?: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  cacheTokens?: number;
+  breakdown: { input: number; output: number };
+  unsupported?: boolean;
+  message?: string;
+};
+
+/**
  * One selectable model row in a provider model catalog.
  */
 export type ProviderModelOption = {

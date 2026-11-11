@@ -29,9 +29,11 @@ class FixtureApi(http.server.BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers["content-length"])))
         self.server.requests.append((self.path, request))
         parts = self.server.parts.pop(0) if self.server.parts else [{"text": "SDK contract response"}]
+        usage = self.server.usages.pop(0) if self.server.usages else {
+            "promptTokenCount": 17, "candidatesTokenCount": 4, "totalTokenCount": 21}
         payload = {
             "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
-            "usageMetadata": {"promptTokenCount": 17, "candidatesTokenCount": 4, "totalTokenCount": 21},
+            "usageMetadata": usage,
         }
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -46,6 +48,7 @@ class SdkContractTests(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureApi)
         self.server.requests = []
         self.server.parts = []
+        self.server.usages = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.conversation_id = str(uuid.uuid4())
@@ -120,6 +123,26 @@ class SdkContractTests(unittest.TestCase):
         self.assertIn("SDK contract response", serialized)
         self.assertEqual(second[0]["conversationId"], self.conversation_id)
         self.assertGreater(second[-1]["usage"]["total_token_count"], first[-1]["usage"]["total_token_count"])
+
+    def test_usage_updates_between_tool_rounds_and_native_counts_include_cache_and_thinking(self):
+        target = self.root / "usage.txt"
+        self.configure_write(target)
+        self.server.usages = [
+            {"promptTokenCount": 100, "cachedContentTokenCount": 60,
+             "candidatesTokenCount": 20, "thoughtsTokenCount": 5, "totalTokenCount": 125},
+            {"promptTokenCount": 160, "cachedContentTokenCount": 100,
+             "candidatesTokenCount": 7, "thoughtsTokenCount": 3, "totalTokenCount": 170},
+        ]
+        events = self.run_bridge("Create usage.txt", allow=True)
+        usage = [e["usage"]["total_token_count"] for e in events if e["event"] == "usage"]
+        self.assertIn(125, usage)
+        self.assertEqual(usage[-1], 295)
+        self.assertEqual(events[-1]["usage"]["total_token_count"], 295)
+        log = self.root / "state" / "app" / "brain" / self.conversation_id / ".system_generated" / "logs" / "transcript_full.jsonl"
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        counts = [(r["input_tokens"], r["cache_read_tokens"], r["output_tokens"])
+                  for r in rows if "input_tokens" in r]
+        self.assertEqual(counts, [(40, 60, 25), (60, 100, 10)])
 
     def configure_write(self, target):
         self.server.parts = [[{"functionCall": {

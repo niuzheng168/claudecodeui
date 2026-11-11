@@ -23,7 +23,8 @@ test('authenticated loopback adapter streams text/tools/usage and persists opaqu
         result({ tool_calls: [{ index: 0, id: 'call_one', function: { name: 'write_to_file', arguments: '{"path":' } }] }),
         result({ tool_calls: [{ index: 0, function: { arguments: '"hello.txt"}' } }], reasoning_opaque: 'b3BhcXVl' }),
         result({}, 'tool_calls'),
-        { choices: [], usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 } },
+        { choices: [], usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 30 }, completion_tokens_details: { reasoning_tokens: 6 } } },
       ]);
     },
   });
@@ -42,6 +43,9 @@ test('authenticated loopback adapter streams text/tools/usage and persists opaqu
   assert.equal(rows[0].candidates[0].content.parts[0].text, 'Thinking done.');
   const last = rows.at(-1);
   assert.equal(last.usageMetadata.totalTokenCount, 50);
+  assert.equal(last.usageMetadata.candidatesTokenCount, 4);
+  assert.equal(last.usageMetadata.thoughtsTokenCount, 6);
+  assert.equal(last.usageMetadata.cachedContentTokenCount, 30);
   assert.deepEqual(last.candidates[0].content.parts, [
     { thought: true, text: '', thoughtSignature: 'b3BhcXVl' },
     { functionCall: { name: 'write_to_file', args: { path: 'hello.txt' }, id: 'call_one' } },

@@ -9,6 +9,10 @@ export function createAntigravityGateway(dependencies: {
 } = {}) {
   const environment = dependencies.environment ?? (() => process.env);
   const request = dependencies.fetch ?? globalThis.fetch;
+  // Usage/history reads must not refetch the catalog for every streamed step.
+  let contextWindows = new Map<string, number>();
+  let catalogReadAt = 0;
+  let catalogRequest: Promise<unknown> | undefined;
   async function getModels(): Promise<ProviderModelsDefinition> {
     const { key, baseUrl } = readCodeyModelApiConfiguration(environment());
     let response: Response;
@@ -31,6 +35,8 @@ export function createAntigravityGateway(dependencies: {
         || !Array.isArray(model.supported_endpoints)
         || !model.supported_endpoints.includes('/chat/completions')) continue;
       const capabilities = readObjectRecord(model.capabilities);
+      const window = readObjectRecord(capabilities?.limits)?.max_context_window_tokens;
+      const contextWindow = typeof window === 'number' && Number.isSafeInteger(window) && window > 0 ? window : undefined;
       const supports = readObjectRecord(capabilities?.supports);
       const efforts = Array.isArray(supports?.reasoning_effort)
         ? supports.reasoning_effort.filter((v): v is string => (
@@ -39,16 +45,27 @@ export function createAntigravityGateway(dependencies: {
       options.push({
         value: model.id, label: typeof model.name === 'string' ? model.name : model.id,
         description: 'Antigravity SDK · Copilot proxy (no Google login)',
+        ...(contextWindow ? { contextWindow } : {}),
         ...(efforts.length ? { effort: { default: efforts.includes('high') ? 'high' : efforts[0],
           values: [...new Set(efforts)].map(value => ({ value })) } } : {}),
       });
     }
     options.sort((a, b) => Number(b.value === 'gemini-4-carbon') - Number(a.value === 'gemini-4-carbon'));
+    contextWindows = new Map(options.flatMap(option => option.contextWindow ? [[option.value, option.contextWindow]] : []));
+    catalogReadAt = Date.now();
     return { OPTIONS: options, DEFAULT: options[0]?.value ?? '', modelApiManaged: true };
   }
   return {
     isManaged: () => environment().CODEY_MANAGED === 'true',
     getModels,
+    async getContextWindow(model: string): Promise<number | undefined> {
+      if (environment().CODEY_MANAGED !== 'true') return undefined;
+      if (Date.now() - catalogReadAt > 60_000) {
+        catalogRequest ??= getModels().catch(() => undefined).finally(() => { catalogRequest = undefined; });
+        await catalogRequest;
+      }
+      return contextWindows.get(model);
+    },
     async open(model: string, effort?: string) {
       const option = (await getModels()).OPTIONS.find(item => item.value === model);
       if (!option) throw new Error(`The Copilot proxy does not offer ${model}. Check Copilot model access and proxy discovery; Google login is not required.`);

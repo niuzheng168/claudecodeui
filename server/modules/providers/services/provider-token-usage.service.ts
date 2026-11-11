@@ -7,8 +7,9 @@ import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { codeyClaudeGateway } from '@/modules/providers/services/codey-claude-gateway.service.js';
-import type { AnyRecord } from '@/shared/types.js';
-import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { readAntigravityTokenUsage } from '@/modules/providers/list/antigravity/antigravity-usage.service.js';
+import type { AnyRecord, ProviderTokenUsage as TokenUsageResult } from '@/shared/index.js';
+import { AppError, getOpenCodeDatabasePath } from '@/shared/index.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -32,27 +33,6 @@ type ProviderTokenUsageServiceDependencies = {
   ) => Promise<number | string | undefined>;
   readClaudeSessionTokens: (transcriptPath: string) => Promise<number>;
   isProviderSessionSuperseded: (providerSessionId: string, provider: string) => boolean;
-};
-
-type TokenUsageResult = {
-  /** Tokens the context window holds: the newest request's prompt and reply. */
-  used: number;
-  total?: number;
-  /** Tokens every request of the session consumed, cached input included. */
-  sessionTokens?: number;
-  /** False when the provider reports spend but not its current context occupancy. */
-  contextUsageAvailable?: boolean;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-  cacheTokens?: number;
-  breakdown: {
-    input: number;
-    output: number;
-  };
-  unsupported?: boolean;
-  message?: string;
 };
 
 type OpenCodeTokenRow = {
@@ -658,24 +638,11 @@ export function createProviderTokenUsageService(
 
       if (session.provider === 'antigravity') {
         const file = session.jsonl_path;
-        if (!file || !dependencies.fileExists(file)) return emptyCodexTokenUsage();
-        const tail = await dependencies.readTextFileTail(file, TOKEN_USAGE_TAIL_BYTES);
-        const lines = tail.content.split('\n').reverse();
-        for (const line of lines) {
-          try {
-            const event = JSON.parse(line) as AnyRecord;
-            if (event.kind !== 'status' || event.text !== 'antigravity_usage' || !event.googleUsage) continue;
-            const input = Number(event.googleUsage.prompt_token_count ?? 0);
-            const output = Number(event.googleUsage.candidates_token_count ?? 0) + Number(event.googleUsage.thoughts_token_count ?? 0);
-            return {
-              used: 0, contextUsageAvailable: false, inputTokens: input, outputTokens: output,
-              cacheReadTokens: Number(event.googleUsage.cached_content_token_count ?? 0),
-              sessionTokens: Number(event.googleUsage.total_token_count ?? input + output),
-              breakdown: { input, output },
-            };
-          } catch { /* A partial final append is not a usage record. */ }
-        }
-        return emptyCodexTokenUsage();
+        if (!file || !dependencies.fileExists(file)) return {
+          used: 0, sessionTokens: 0, contextUsageAvailable: false,
+          inputTokens: 0, outputTokens: 0, breakdown: { input: 0, output: 0 },
+        };
+        return readAntigravityTokenUsage(providerSessionId, file, { model: session.model ?? undefined });
       }
 
       if (session.provider === 'cursor') {

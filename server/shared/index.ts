@@ -13,6 +13,9 @@ export type { QueuedMessageOperation, QueuedSessionMessageRecord } from './types
 export { readObjectRecord } from './utils.js';
 // Providers' managed model API adapter uses the shared catalog contracts.
 export type { ProviderModelOption, ProviderModelsDefinition } from './types.js';
+// Provider usage endpoints, history and runtimes share context/spend semantics.
+export type { ProviderTokenUsage } from './types.js';
+export { getOpenCodeDatabasePath } from './utils.js';
 // WebSocket acceptance assigns one persisted input identity per native submission.
 export { generateMessageId } from './utils.js';
 // Codex provider transports/runtime share the RPC, message and attachment contracts.

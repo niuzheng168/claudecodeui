@@ -7,7 +7,8 @@ import { AntigravityProviderModels } from '@/modules/providers/list/antigravity/
 
 const row = (id = 'gemini-4-carbon') => ({
   id, name: id, supported_endpoints: ['/chat/completions'],
-  capabilities: { supports: { reasoning_effort: ['low', 'medium', 'high'] } },
+  capabilities: { supports: { reasoning_effort: ['low', 'medium', 'high'] },
+    limits: { max_context_window_tokens: 1_000_000 } },
 });
 const environment = () => ({
   CODEY_MANAGED: 'true', CODEY_MODEL_API_KEY: 'private-proxy-key', CODEY_MODEL_BASE_URL: 'http://127.0.0.1:4144',
@@ -27,6 +28,9 @@ test('managed Google models and auth come from the proxy, not hardcoded IDs or G
   const models = await new AntigravityProviderModels(gateway).getSupportedModels();
   assert.deepEqual(models.OPTIONS.map(model => model.value), ['gemini-4-carbon', 'gemini-3.8-flash']);
   assert.equal(models.modelApiManaged, true);
+  assert.equal(models.OPTIONS[0].contextWindow, 1_000_000);
+  assert.equal(await gateway.getContextWindow('gemini-4-carbon'), 1_000_000);
+  assert.equal(await gateway.getContextWindow('gemini-unknown'), undefined);
   const auth = new AntigravityProviderAuth(gateway);
   auth.checkInstalled = () => ({ installed: true, version: '0.1.23', exitCode: 0 });
   const status = await auth.getStatus();

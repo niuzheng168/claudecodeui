@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 
 import { AntigravityMcpProvider } from '@/modules/providers/list/antigravity/antigravity-mcp.provider.js';
 import { antigravityGateway } from '@/modules/providers/list/antigravity/antigravity-gateway.service.js';
+import { readAntigravityTokenUsage } from '@/modules/providers/list/antigravity/antigravity-usage.service.js';
 import {
   antigravityBridge, antigravityPython, readAntigravityCredentials,
 } from '@/modules/providers/list/antigravity/antigravity-settings.service.js';
@@ -122,6 +123,19 @@ export function createAntigravityRuntime(dependencies: {
       failed ??= message;
     };
     let model = '';
+    let contextWindow: number | undefined;
+    let lastBudget = '';
+    const publishUsage = async (sdkUsage: unknown) => {
+      if (!ready) return;
+      const tokenBudget = await readAntigravityTokenUsage(nativeId, antigravitySessionStore.transcript(nativeId),
+        { sdkUsage, contextWindow, model }).catch(() => null);
+      // Missing/unreadable optional telemetry must not cancel an agent turn.
+      if (!tokenBudget || (tokenBudget.sessionTokens === undefined && !tokenBudget.contextUsageAvailable)) return;
+      const serialized = JSON.stringify(tokenBudget);
+      if (serialized === lastBudget) return;
+      lastBudget = serialized;
+      await record(emit({ kind: 'status', text: 'token_budget', tokenBudget }));
+    };
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const cwd = await realpath(readOptionalString(options.cwd) ?? readOptionalString(options.projectPath) ?? process.cwd());
@@ -129,8 +143,9 @@ export function createAntigravityRuntime(dependencies: {
       if (existing && await realpath(existing.projectPath) !== cwd) {
         throw new Error('Antigravity session belongs to another workspace.');
       }
-      model = await context.resolveResumeModel(appId, readOptionalString(options.model))
-        ?? (await context.getProviderModels()).DEFAULT;
+      const models = await context.getProviderModels();
+      model = await context.resolveResumeModel(appId, readOptionalString(options.model)) ?? models.DEFAULT;
+      contextWindow = models.OPTIONS.find(option => option.value === model)?.contextWindow;
       if (!(await context.isProviderInstalled())) {
         throw new Error('Google Antigravity SDK is not installed. Run codey antigravity install.');
       }
@@ -298,6 +313,8 @@ export function createAntigravityRuntime(dependencies: {
           const toolId = String(result.id || `${result.step_id}:${result.name}`);
           await record(emit({ kind: 'tool_result', id: `${toolId}:result`, toolId,
             toolName: String(result.name), content: stringify(result.error || result.result), isError: Boolean(result.error) }));
+        } else if (event.event === 'usage') {
+          await publishUsage(event.usage);
         } else if (event.event === 'error') {
           reportError(String(event.message || 'Antigravity SDK failed.'));
         } else if (event.event === 'result') {
@@ -305,8 +322,7 @@ export function createAntigravityRuntime(dependencies: {
           if (event.cancelled === true && !turn.aborted) {
             reportError(new Error('Antigravity SDK cancelled the turn before completion.'));
           }
-          const usage = readObjectRecord(event.usage);
-          if (usage) await record(emit({ kind: 'status', text: 'antigravity_usage', googleUsage: usage }));
+          await publishUsage(event.usage);
           child.stdin.end();
         }
       }
@@ -335,6 +351,9 @@ export function createAntigravityRuntime(dependencies: {
             }));
           }
         }
+        // The native harness may flush its last usage row only as it exits,
+        // including on cancellation/error before a result event.
+        await publishUsage(undefined);
       }
     }
     if (turn?.aborted) return; // The authenticated abort gateway owns the terminal event.

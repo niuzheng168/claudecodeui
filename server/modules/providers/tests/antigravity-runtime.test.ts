@@ -9,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { createAntigravityRuntime } from '@/modules/providers/list/antigravity/antigravity-runtime.provider.js';
-import { AntigravityProviderModels } from '@/modules/providers/list/antigravity/antigravity-models.provider.js';
 import { AntigravitySessionsProvider, antigravitySessionStore } from '@/modules/providers/list/antigravity/antigravity-sessions.provider.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import type { AnyRecord, NormalizedMessage, ProviderRuntimeContext } from '@/shared/index.js';
 
 const loader = createRequire(import.meta.url).resolve('tsx');
@@ -50,6 +50,7 @@ async function setup(mode: string, run: (fixture: {
     ...(mode === 'managed' ? { gateway: {
       isManaged: () => true,
       getModels: async () => ({ OPTIONS: [], DEFAULT: '' }),
+      getContextWindow: async () => 1_000_000,
       open: async () => ({ credentials: { apiKey: 'per-turn-token', baseUrl: 'http://127.0.0.1:12345', vertex: false }, close: async () => {} }),
     } } : {}),
     createBridge: (workspace, environment) => spawn(process.execPath, ['--import', loader, fixture], {
@@ -65,7 +66,8 @@ async function setup(mode: string, run: (fixture: {
   const context: ProviderRuntimeContext = {
     resolveProviderSessionId: () => nativeId,
     resolveResumeModel: async (_id, requested) => requested ?? undefined,
-    getProviderModels: () => new AntigravityProviderModels().getSupportedModels(),
+    getProviderModels: async () => ({ DEFAULT: 'gemini-4-carbon',
+      OPTIONS: [{ value: 'gemini-4-carbon', label: 'Carbon', contextWindow: 1_000_000 }] }),
     isProviderInstalled: async () => true,
     normalizeMessage: () => [],
   };
@@ -93,6 +95,71 @@ test('managed SDK receives only its per-turn credential, not Google or node prox
     assert.equal(JSON.parse(body).credentials.apiKey, 'per-turn-token');
     assert.equal(JSON.parse(body).managed, true);
     assert.doesNotMatch(body, /private-managed-proxy-key|unused-private-google-key/);
+  });
+});
+
+test('Google live usage equals reloaded history and the usage endpoint across resumed turns', async () => {
+  await setup('usage', async ({ runtime, context, cwd, events, writer }) => {
+    for (const [used, sessionTokens] of [[125, 125], [170, 295]]) {
+      events.length = 0;
+      await runtime.run('Usage test', { sessionId: 'app-google', cwd }, writer, context);
+      const budgets = events.filter(event => event.text === 'token_budget');
+      assert.equal(budgets.length, 1, 'repeated cumulative notifications are not additive');
+      const snapshot = budgets[0].tokenBudget;
+      assert.equal((snapshot as AnyRecord).used, used);
+      assert.equal((snapshot as AnyRecord).sessionTokens, sessionTokens);
+      assert.equal((snapshot as AnyRecord).total, 1_000_000);
+      assert.ok(events.indexOf(budgets[0]) < events.findIndex(event => event.kind === 'complete'));
+      const history = await new AntigravitySessionsProvider().fetchHistory('app-google', { limit: 1 });
+      assert.deepEqual(history.tokenUsage, snapshot);
+      assert.deepEqual(await providerTokenUsageService.getSessionTokenUsage('app-google'), snapshot);
+    }
+  });
+});
+
+test('Google usage survives a failed turn, before any result event', async () => {
+  await setup('usage-error', async ({ runtime, context, cwd, events, writer }) => {
+    await assert.rejects(() => runtime.run('Fail after usage', { sessionId: 'app-google', cwd }, writer, context));
+    const snapshot = events.find(event => event.text === 'token_budget')?.tokenBudget;
+    assert.equal((snapshot as AnyRecord).sessionTokens, 125);
+    assert.deepEqual(await providerTokenUsageService.getSessionTokenUsage('app-google'), snapshot);
+  });
+});
+
+test('Google reads the native context flushed only at harness exit', async () => {
+  await setup('usage-late', async ({ runtime, context, cwd, events, writer }) => {
+    await runtime.run('Late usage', { sessionId: 'app-google', cwd }, writer, context);
+    const budgets = events.filter(event => event.text === 'token_budget');
+    assert.equal((budgets[0].tokenBudget as AnyRecord).contextUsageAvailable, false);
+    assert.equal((budgets.at(-1)!.tokenBudget as AnyRecord).used, 125);
+    assert.equal((budgets.at(-1)!.tokenBudget as AnyRecord).sessionTokens, 125);
+    assert.deepEqual(await providerTokenUsageService.getSessionTokenUsage('app-google'), budgets.at(-1)!.tokenBudget);
+  });
+});
+
+test('unreadable optional native usage does not fail a Google turn or hide its history', async () => {
+  await setup('usage-unreadable', async ({ runtime, context, cwd, events, writer }) => {
+    await runtime.run('Optional metrics', { sessionId: 'app-google', cwd }, writer, context);
+    assert.equal(events.find(event => event.kind === 'complete')?.success, true);
+    const history = await new AntigravitySessionsProvider().fetchHistory('app-google');
+    assert.equal(history.tokenUsage, undefined);
+    assert.equal(history.messages.at(-1)?.content, 'Google response');
+  });
+});
+
+test('Google cancellation retains already consumed usage without inventing a completion', async () => {
+  await setup('usage-hold', async ({ runtime, context, cwd, events, writer }) => {
+    await runtime.run('Cancel after usage', { sessionId: 'app-google', cwd }, {
+      ...writer,
+      send(event) {
+        writer.send(event);
+        if ((event as NormalizedMessage).kind === 'stream_delta') void runtime.abort('app-google');
+      },
+    }, context);
+    assert.equal(events.filter(event => event.kind === 'complete').length, 0);
+    const saved = await providerTokenUsageService.getSessionTokenUsage('app-google');
+    assert.equal(saved.sessionTokens, 125);
+    assert.equal(saved.used, 125);
   });
 });
 

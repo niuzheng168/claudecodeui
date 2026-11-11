@@ -55,6 +55,19 @@ async function loadStore() {
 }
 
 describe('token usage on a history page', () => {
+  it('restores Gemini context and session spend and updates them on history refresh', async () => {
+    const first = { used: 125, total: 1_000_000, sessionTokens: 125, contextUsageAvailable: true };
+    const second = { used: 170, total: 1_000_000, sessionTokens: 295, contextUsageAvailable: true };
+    const googleMessage = { ...message, provider: 'antigravity' };
+    respondWith({ messages: [googleMessage], total: 1, hasMore: false, tokenUsage: first });
+    const { result } = await loadStore();
+    await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20, offset: 0 }); });
+    assert.deepEqual(result.current.getSessionSlot('session-1')?.tokenUsage, first);
+    respondWith({ messages: [googleMessage], total: 1, hasMore: false, tokenUsage: second });
+    await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20, offset: 0 }); });
+    assert.deepEqual(result.current.getSessionSlot('session-1')?.tokenUsage, second);
+  });
+
   it('leaves the slot untouched when the provider reports none', async () => {
     respondWith({ messages: [message], total: 1, hasMore: false });
     const { result } = await loadStore();

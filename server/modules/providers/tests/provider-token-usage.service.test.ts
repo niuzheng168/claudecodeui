@@ -34,15 +34,17 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test('Google SDK usage reports cumulative spend without inventing current context occupancy', async () => {
+test('Google SDK usage reports cumulative spend without inventing current context occupancy', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-google-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'messages.jsonl');
+  await writeFile(file, JSON.stringify({
+    kind: 'status', text: 'antigravity_usage',
+    googleUsage: { prompt_token_count: 200, candidates_token_count: 40, thoughts_token_count: 10,
+      cached_content_token_count: 100, total_token_count: 250 },
+  }));
   const service = createProviderTokenUsageService({
-    getSessionById: () => createSessionRow({ provider: 'antigravity', jsonl_path: '/fixture/messages.jsonl' }),
-    fileExists: () => true,
-    readTextFileTail: async () => ({ isComplete: true, content: JSON.stringify({
-      kind: 'status', text: 'antigravity_usage',
-      googleUsage: { prompt_token_count: 200, candidates_token_count: 40, thoughts_token_count: 10,
-        cached_content_token_count: 100, total_token_count: 250 },
-    }) }),
+    getSessionById: () => createSessionRow({ provider: 'antigravity', jsonl_path: file }),
   });
   const usage = await service.getSessionTokenUsage('app-session');
   assert.equal(usage.sessionTokens, 250);

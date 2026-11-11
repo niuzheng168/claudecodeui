@@ -213,10 +213,13 @@ async function translate(upstream: Response, res: ServerResponse, streaming: boo
     if (chunk.error) throw new Error('Copilot reported a stream error.');
     if (chunk.usage) {
       const u = object(chunk.usage);
-      usage = { promptTokenCount: u.prompt_tokens ?? 0, candidatesTokenCount: u.completion_tokens ?? 0,
-        totalTokenCount: u.total_tokens ?? 0,
+      const completion = Number(u.completion_tokens ?? 0);
+      const reasoning = Math.min(completion, Number(object(u.completion_tokens_details).reasoning_tokens ?? 0));
+      // OpenAI completion includes reasoning; Gemini candidates excludes it.
+      usage = { promptTokenCount: u.prompt_tokens ?? 0, candidatesTokenCount: completion - reasoning,
+        totalTokenCount: u.total_tokens ?? Number(u.prompt_tokens ?? 0) + completion,
         cachedContentTokenCount: object(u.prompt_tokens_details).cached_tokens ?? 0,
-        thoughtsTokenCount: object(u.completion_tokens_details).reasoning_tokens ?? 0 };
+        thoughtsTokenCount: reasoning };
     }
     for (const raw of array(chunk.choices)) {
       const choice = object(raw), delta = object(choice.delta);
