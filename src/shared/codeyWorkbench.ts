@@ -121,12 +121,19 @@ function handleMessage(event: MessageEvent): void {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('message', handleMessage);
-  // Set while the bundle loads, so the Workbench can tell by the frame's `load` event.
-  if (window.parent !== window) {
-    document.documentElement.dataset[PAGE_MARK] = '';
-    document.documentElement.dataset[NAVIGATION_MARK] = '';
-    document.documentElement.dataset[NEW_SESSION_MARK] = '';
-  }
+}
+
+/**
+ * Marks the page in a Workbench frame with what it can do. The Workbench reads
+ * the marks at the frame's `load` event, which does not wait for the app's own
+ * chunk, so the entry module calls this before it loads the app.
+ */
+export function markWorkbenchFrame(): void {
+  if (window.parent === window) return;
+  const { dataset } = document.documentElement;
+  dataset[PAGE_MARK] = '';
+  dataset[NAVIGATION_MARK] = '';
+  dataset[NEW_SESSION_MARK] = '';
 }
 
 /**

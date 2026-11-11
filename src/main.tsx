@@ -4,6 +4,7 @@ import { scan } from 'react-scan'
 
 import '@/index.css'
 import 'katex/dist/katex.min.css'
+import { markWorkbenchFrame } from '@/shared/codeyWorkbench'
 import { getPageTitle, withDeploymentBasePath } from '@/shared/utils'
 
 // Initialize i18n
@@ -41,6 +42,11 @@ if (sharedSession) {
       console.warn('Service worker registration failed:', err);
     });
   }
+
+  // The Workbench reads these at the frame's `load` event, before the app chunk
+  // below has run, and posts a new session's directories right then; importing
+  // the module here also keeps those until the app shows them.
+  markWorkbenchFrame()
 
   // The app is its own chunk so the shared-session page does not download it.
   void import('@/App').then(({ default: App }) => {

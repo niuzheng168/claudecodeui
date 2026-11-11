@@ -4,6 +4,7 @@ import { renderHook } from '@testing-library/react';
 import { test } from 'vitest';
 
 import {
+  markWorkbenchFrame,
   onWorkbenchNewSession,
   onWorkbenchOpenSession,
   useWorkbenchPageReady,
@@ -28,9 +29,25 @@ const ask = (data: Record<string, unknown>, sender?: Sender) => post({ type: WOR
 
 const askNewSession = (data: Record<string, unknown>, sender?: Sender) => post({ type: WORKBENCH_NEW_SESSION_MESSAGE, ...data }, sender);
 
-test('the page says it can switch sessions, and passes on each session the Workbench asks for', () => {
-  // The mark is set only inside a frame; jsdom's page is its own parent.
-  assert.equal(document.documentElement.hasAttribute('data-codey-workbench-navigation'), window.parent !== window);
+const MARKS = ['data-codey-workbench-directories', 'data-codey-workbench-navigation', 'data-codey-workbench-new-session'];
+
+test('the entry marks a page in a frame with what it can do, and a page of its own not at all', () => {
+  const marked = () => MARKS.filter((mark) => document.documentElement.hasAttribute(mark));
+  // jsdom's page is its own parent.
+  markWorkbenchFrame();
+  assert.deepEqual(marked(), []);
+  const parent = Object.getOwnPropertyDescriptor(window, 'parent');
+  Object.defineProperty(window, 'parent', { value: {}, configurable: true });
+  try {
+    markWorkbenchFrame();
+    assert.deepEqual(marked(), MARKS);
+  } finally {
+    if (parent) Object.defineProperty(window, 'parent', parent);
+    MARKS.forEach((mark) => document.documentElement.removeAttribute(mark));
+  }
+});
+
+test('the page passes on each session the Workbench asks for', () => {
   const opened: string[] = [];
   const stop = onWorkbenchOpenSession((sessionId) => opened.push(sessionId));
   ask({ sessionId: 'session-1' });
@@ -68,8 +85,7 @@ test('only the embedding page on this origin can switch the session', () => {
   assert.deepEqual(opened, []);
 });
 
-test('the page says it can open new session pages, and passes on each project the Workbench asks for', () => {
-  assert.equal(document.documentElement.hasAttribute('data-codey-workbench-new-session'), window.parent !== window);
+test('the page passes on each project the Workbench asks to start a new session in', () => {
   const requested: WorkbenchNewSession[] = [];
   const stop = onWorkbenchNewSession((request) => requested.push(request));
   askNewSession({ projectId: 'project-1', path: '/repo/one', name: 'one' });
