@@ -96,7 +96,10 @@ export async function listWorktrees(
   dependencies: ListWorktreesDependencies,
 ): Promise<WorktreeListResult> {
   const { runGit, getProjectByPath } = dependencies;
-  const entries = await listWorktreePorcelainEntries(input.projectPath, runGit);
+  // A worktree whose directory is gone (git calls it prunable) has nothing to
+  // inspect, and git cannot even start in it; the rest are listed as usual.
+  const entries = (await listWorktreePorcelainEntries(input.projectPath, runGit))
+    .filter((entry, index) => index === 0 || !entry.isPrunable);
 
   // The first porcelain entry is always the main worktree; its checked-out
   // branch is the merge target ("base branch") offered by the UI.

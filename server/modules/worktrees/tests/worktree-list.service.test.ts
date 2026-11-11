@@ -43,3 +43,34 @@ test('listWorktrees bounds concurrent per-worktree Git inspection and preserves 
   assert.deepEqual(result.worktrees.map((worktree) => worktree.path.replace(/\\/g, '/')),
     Array.from({ length: entryCount }, (_, index) => `/workspace/repo-${index}`));
 });
+
+test('listWorktrees leaves out a worktree whose directory is gone instead of failing', async () => {
+  const porcelain = [
+    'worktree /workspace/repo', `HEAD ${'1'.repeat(40)}`, 'branch refs/heads/main', '',
+    'worktree /tmp/review/worktree', `HEAD ${'2'.repeat(40)}`, 'detached',
+    'prunable gitdir file points to non-existent location', '',
+    'worktree /workspace/repo-feature', `HEAD ${'3'.repeat(40)}`, 'branch refs/heads/feature', '',
+  ].join('\n');
+  const inspected = new Set<string>();
+
+  const runGit = async (args: string[], cwd: string): Promise<GitCommandResult> => {
+    if (args[0] === 'worktree') {
+      return { stdout: porcelain, stderr: '' };
+    }
+    inspected.add(cwd.replace(/\\/g, '/'));
+    // Spawning git in a directory that does not exist fails as if git were missing.
+    if (cwd.replace(/\\/g, '/') === '/tmp/review/worktree') {
+      throw new Error('Failed to run git: spawn git ENOENT');
+    }
+    return { stdout: args[0] === 'rev-list' ? '0 0' : '', stderr: '' };
+  };
+
+  const result = await listWorktrees(
+    { projectPath: '/workspace/repo' },
+    { runGit, getProjectByPath: () => null },
+  );
+
+  assert.deepEqual(result.worktrees.map((worktree) => worktree.path.replace(/\\/g, '/')),
+    ['/workspace/repo', '/workspace/repo-feature']);
+  assert.equal(inspected.has('/tmp/review/worktree'), false);
+});
