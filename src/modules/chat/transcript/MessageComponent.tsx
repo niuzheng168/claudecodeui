@@ -12,6 +12,7 @@ import ChatMessageFiles from '@/modules/chat/transcript/ChatMessageFiles';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
 import StreamingMarkdown from '@/modules/chat/transcript/StreamingMarkdown';
 import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
+import { MarkdownPreviewControl } from '@/modules/chat/transcript/MarkdownPreviewControl';
 import MessageModelLabel from '@/modules/chat/transcript/MessageModelLabel';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import MessageSenderBadge from '@/modules/chat/transcript/MessageSenderBadge';
@@ -101,7 +102,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   const isCommandOrFileEditToolResponse = Boolean(
     message.isToolUse && COPY_HIDDEN_TOOL_NAMES.has(String(message.toolName || ''))
   );
-  // Copy and speak are affordances for a live conversation. In an exported
+  // Copy, preview and speak are affordances for a live conversation. In an exported
   // document there is nothing to click, and rendering them statically would
   // also pull in browser-only voice state that a document render has no
   // provider for.
@@ -235,6 +236,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     </button>
                   )}
                   {forkControl}
+                  {shouldShowUserCopyControl && (
+                    <MarkdownPreviewControl content={userCopyContent} />
+                  )}
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
@@ -515,6 +519,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             {(forkControl || shouldShowAssistantCopyControl || !isGrouped) && (
               <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
                 {forkControl}
+                {shouldShowAssistantCopyControl && (
+                  <MarkdownPreviewControl content={assistantCopyContent} />
+                )}
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
                 )}

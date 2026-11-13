@@ -55,6 +55,14 @@
     "copied": "Copied",
     "copyCode": "Copy code"
   },
+  "markdownPreview": {
+    "title": "Markdown preview",
+    "preview": "Preview",
+    "source": "Source",
+    "zoom": "Preview zoom",
+    "close": "Close preview",
+    "loading": "Loading preview…"
+  },
   "copyMessage": {
     "copy": "Copy message",
     "copied": "Message copied",

@@ -55,6 +55,14 @@
     "copied": "已复制",
     "copyCode": "复制代码"
   },
+  "markdownPreview": {
+    "title": "Markdown 预览",
+    "preview": "预览",
+    "source": "源码",
+    "zoom": "预览缩放",
+    "close": "关闭预览",
+    "loading": "正在加载预览…"
+  },
   "copyMessage": {
     "copy": "复制消息",
     "copied": "消息已复制",
