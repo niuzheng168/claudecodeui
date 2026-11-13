@@ -31,7 +31,6 @@ export class CodexNativeQueueRun {
   private readonly emitted = new Map<string, string>();
   private baselineTurnId: string | null = null;
   private latestObservedTurn: AnyRecord | null = null;
-  private observing = false;
   private readonly observedAt = new Date().toISOString();
 
   constructor(
@@ -107,7 +106,6 @@ export class CodexNativeQueueRun {
     try {
       if (!expectedTurnId) throw this.error('No desktop turn was selected.', 'CODEX_ACTIVE_TURN_UNCONFIRMED');
       await this.assertReaderOnly();
-      this.observing = true;
       this.turnId = expectedTurnId;
       this.observer.started(expectedTurnId);
     } finally {
@@ -244,10 +242,9 @@ export class CodexNativeQueueRun {
       if (!readObjectRecord(item) || typeof item.id !== 'string' || !item.id) {
         throw this.error('Codex returned an invalid native item.', 'CODEX_DESKTOP_QUEUE_PROTOCOL_ERROR');
       }
-      // Only the original queued input is already echoed by this gateway.
-      // Desktop sends and later steering receipts must reach both clients,
-      // even when their acceptance arrives after the native user item.
-      if (!this.observing && item.type === 'userMessage' && item.clientId === this.clientId) continue;
+      // Emit the submitted input too: its clientId replaces the optimistic
+      // echo and its native position keeps the question before its answer,
+      // even when the question has fallen outside the latest history page.
       const signature = createHash('sha256').update(JSON.stringify(item)).digest('hex');
       if (this.emitted.get(item.id) === signature) continue;
       this.emitted.set(item.id, signature);

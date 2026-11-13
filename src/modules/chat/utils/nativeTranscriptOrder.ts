@@ -13,17 +13,26 @@ function turnKey(message: NormalizedMessage, position: NativeTranscriptPosition)
  * carry arrival times. Those clocks cannot order items from the same turn.
  * Native positions are authoritative; transient echoes/notices stay next to
  * the native events they arrived between. Legacy providers retain clock order.
+ * The store retains lightweight live ordering evidence after confirmed rows
+ * leave realtime, preserving both page-coordinate alignment and input anchors.
  */
 export function orderNativeTranscriptMessages(
   messages: NormalizedMessage[],
   server: NormalizedMessage[],
   realtime: NormalizedMessage[],
   sortTime: (message: NormalizedMessage) => number,
+  orderingEvidence: NormalizedMessage[] = realtime,
 ): NormalizedMessage[] {
   // Legacy JSONL and SDK streams have no common native position contract.
   if (server.length > 0 && !server.some(positionOf)) return messages;
   if (!messages.some(positionOf)) return messages;
 
+  const liveById = new Map(realtime.map(message => [message.id, message]));
+  const observedIds = new Set(orderingEvidence.map(message => message.id));
+  const observed = [
+    ...orderingEvidence.map(message => liveById.get(message.id) ?? message),
+    ...realtime.filter(message => !observedIds.has(message.id)),
+  ];
   const turnTimes = new Map<string, number>();
   const canonical = new Map<string, NormalizedMessage>();
   const serverRows = new Set(server);
@@ -39,7 +48,7 @@ export function orderNativeTranscriptMessages(
       pageTurns.set(turn, { maximum: Math.max(known?.maximum ?? -Infinity, position.itemIndex) });
     }
   }
-  for (const live of realtime) {
+  for (const live of observed) {
     const stored = canonical.get(live.id), a = stored && positionOf(stored), b = positionOf(live);
     if (a?.orderScope && b && !b.orderScope && a.turnId === b.turnId) {
       const turn = pageTurns.get(turnKey(live, b));
@@ -67,7 +76,7 @@ export function orderNativeTranscriptMessages(
   // for native items. In particular, a late steer acknowledgement must not
   // put its user message after the assistant's already-streamed answer.
   let previous: OrderKey | null = null;
-  for (const message of realtime) {
+  for (const message of observed) {
     const key = nativeKey(message);
     if (key) previous = key;
     else if (previous && !message.replacesAnchorId) {
@@ -75,8 +84,8 @@ export function orderNativeTranscriptMessages(
     }
   }
   let next: OrderKey | null = null;
-  for (let index = realtime.length - 1; index >= 0; index--) {
-    const message = realtime[index];
+  for (let index = observed.length - 1; index >= 0; index--) {
+    const message = observed[index];
     const key = nativeKey(message);
     if (key) next = key;
     else if (next && !keys.has(message) && !message.replacesAnchorId

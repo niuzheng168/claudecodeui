@@ -133,7 +133,7 @@ test('queued input is correlated across metadata and item pages by client identi
   });
   const result = await f.run.run([{ type: 'text', text: 'Submit once' }]);
   assert.equal(result.turn?.id, 'ours');
-  assert.deepEqual(f.emitted, ['answer']);
+  assert.deepEqual(f.emitted, ['ours-user', 'answer']);
   assert.equal(f.calls.filter(call => call.method === 'thread/queue/add').length, 1);
   assert.ok(!f.calls.some(call => ['thread/resume', 'turn/start', 'turn/steer', 'turn/interrupt'].includes(call.method)));
 });

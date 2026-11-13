@@ -132,6 +132,116 @@ test('native positions survive a history refresh whose turn-start timestamps pre
     ['question', 'tool', 'answer']);
 });
 
+test.each(['optimistic', 'native'] as const)(
+  'a %s question outside the latest page stays before its answer after confirmed live rows are pruned',
+  async kind => {
+    const { result } = renderHook(() => useSessionStore());
+    const question = kind === 'native'
+      ? nativeRow('question', 0, { role: 'user', clientMessageId: 'input' })
+      : row('local_question', {
+        role: 'user', clientMessageId: 'input', timestamp: '2026-09-15T15:25:47.500Z',
+        images: [{ path: '/screenshot.png' }],
+      });
+    const live = Array.from({ length: 5 }, (_, i) => nativeRow(`answer-${i}`, i + 10, {
+      timestamp: `2026-09-15T15:26:0${i}.000Z`,
+    }));
+    act(() => {
+      result.current.appendRealtime('session-1', question);
+      for (const message of live) result.current.appendRealtime('session-1', message);
+    });
+    const page = live.map((message, index) => ({
+      ...message, nativePosition: { ...message.nativePosition!, itemIndex: index - 4, orderScope: 'page' },
+    }));
+    respondWith(page);
+    await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20 }); });
+    assert.deepEqual(result.current.getSessionSlot('session-1')?.realtimeMessages.map(message => message.id), [question.id]);
+    assert.deepEqual(result.current.getMessages('session-1').map(message => message.id),
+      [question.id, ...live.map(message => message.id)]);
+    // The ordering evidence must survive further renders and history reads,
+    // not just the first merge before confirmed stream rows are discarded.
+    act(() => { result.current.appendRealtime('session-1', nativeRow('later-answer', 15)); });
+    await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20 }); });
+    assert.deepEqual(result.current.getMessages('session-1').map(message => message.id),
+      [question.id, ...live.map(message => message.id), 'later-answer']);
+    respondWith([nativeRow('question', 0, { role: 'user', clientMessageId: 'input' }), ...live]);
+    await act(async () => { await result.current.fetchFromServer('session-1'); });
+    assert.deepEqual(result.current.getMessages('session-1').map(message => message.id),
+      ['question', ...live.map(message => message.id), 'later-answer']);
+  },
+);
+
+test('a late native receipt keeps its position after partial live replay is reconciled with a page-local tail', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', row('local_question', {
+      role: 'user', clientMessageId: 'input', timestamp: '2026-09-15T16:12:00.000Z',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('tool', 10, { kind: 'tool_use', toolId: 'tool' }));
+    result.current.appendRealtime('session-1', nativeRow('answer', 11));
+    result.current.appendRealtime('session-1', nativeRow('question', 9, { role: 'user', clientMessageId: 'input' }));
+  });
+  respondWith([{
+    ...nativeRow('answer', 11), nativePosition: { ...nativeRow('answer', 11).nativePosition!, itemIndex: 0, orderScope: 'tail' },
+  }]);
+  await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20 }); });
+  assert.deepEqual(result.current.getMessages('session-1').map(message => message.id), ['question', 'tool', 'answer']);
+});
+
+test('ordering evidence stays bounded and payload-free without evicting an unconfirmed prompt during a long turn', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', row('local_question', {
+      role: 'user', clientMessageId: 'input', content: 'Inspect the screenshot',
+      timestamp: '2026-09-15T15:25:47.500Z', images: [{ data: 'private-image-payload' }],
+    }));
+  });
+  for (let batch = 0; batch < 30; batch++) {
+    const live = Array.from({ length: 20 }, (_, i) => nativeRow(`answer-${batch * 20 + i}`, batch * 20 + i + 1));
+    act(() => { for (const message of live) result.current.appendRealtime('session-1', message); });
+    respondWith(live.map((message, index) => ({
+      ...message, nativePosition: { ...message.nativePosition!, itemIndex: index - 19, orderScope: `page-${batch}` },
+    })));
+    await act(async () => { await result.current.fetchFromServer('session-1', { limit: 20 }); });
+    assert.equal(result.current.getMessages('session-1')[0].id, 'local_question');
+  }
+  const slot = result.current.getSessionSlot('session-1')!;
+  assert.ok(slot._realtimeOrder.length <= 1000);
+  assert.equal(slot._realtimeOrder[0].id, 'local_question');
+  assert.ok(slot._realtimeOrder.every(message =>
+    !message.content && !message.images && !message.toolInput && !message.toolResult));
+});
+
+test('an edit clears superseded ordering witnesses while a newer local question stays after the previous answer', async () => {
+  const { result } = renderHook(() => useSessionStore());
+  act(() => {
+    result.current.appendRealtime('session-1', nativeRow('question', 0, {
+      role: 'user', transcriptAnchorId: 'edit',
+    }));
+    result.current.appendRealtime('session-1', nativeRow('answer', 1));
+  });
+  respondWith([
+    nativeRow('question', 0, { role: 'user', transcriptAnchorId: 'edit' }),
+    nativeRow('answer', 1),
+  ]);
+  await act(async () => { await result.current.fetchFromServer('session-1'); });
+  act(() => {
+    result.current.appendRealtime('session-1', row('local_followup', {
+      role: 'user', clientMessageId: 'second', timestamp: '2026-09-15T15:26:00.000Z',
+    }));
+  });
+  assert.deepEqual(result.current.getMessages('session-1').map(message => message.id),
+    ['question', 'answer', 'local_followup']);
+  act(() => {
+    result.current.appendRealtime('session-1', row('local_replacement', {
+      role: 'user', clientMessageId: 'replacement', replacesAnchorId: 'edit',
+    }));
+    result.current.truncateAt('session-1', 'edit');
+  });
+  assert.deepEqual(result.current.getSessionSlot('session-1')?._realtimeOrder.map(message => message.id),
+    ['local_replacement']);
+  assert.deepEqual(result.current.getMessages('session-1').map(message => message.id), ['local_replacement']);
+});
+
 test('joining a partially streamed native item keeps receiving updates across stale history reads', async () => {
   const { result } = renderHook(() => useSessionStore());
   const prompt = nativeRow('question', 0, { role: 'user' });

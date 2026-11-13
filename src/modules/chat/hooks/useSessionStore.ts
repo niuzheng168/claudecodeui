@@ -36,6 +36,8 @@ export type SessionStatus = 'idle' | 'loading' | 'streaming' | 'error';
 export type SessionSlot = {
   serverMessages: NormalizedMessage[];
   realtimeMessages: NormalizedMessage[];
+  /** @internal Bounded, payload-free live order evidence, retained after history deduplication removes its anchor rows. */
+  _realtimeOrder: NormalizedMessage[];
   merged: NormalizedMessage[];
   /** @internal Cache-invalidation refs for computeMerged */
   _lastServerRef: NormalizedMessage[];
@@ -69,6 +71,7 @@ function createEmptySlot(): SessionSlot {
   return {
     serverMessages: EMPTY,
     realtimeMessages: EMPTY,
+    _realtimeOrder: EMPTY,
     merged: EMPTY,
     _lastServerRef: EMPTY,
     _lastRealtimeRef: EMPTY,
@@ -401,13 +404,17 @@ function pruneRealtimeSupersededByServer(
   });
 }
 
-function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[]): NormalizedMessage[] {
+function computeMerged(
+  server: NormalizedMessage[],
+  realtime: NormalizedMessage[],
+  orderingEvidence: NormalizedMessage[],
+): NormalizedMessage[] {
   if (realtime.length === 0) {
     return dedupeAdjacentAssistantEchoes(server);
   }
   if (server.length === 0) {
     return dedupeAdjacentAssistantEchoes(orderNativeTranscriptMessages(
-      realtime, server, realtime, (message) => readSortTime(message, 0),
+      realtime, server, realtime, (message) => readSortTime(message, 0), orderingEvidence,
     ));
   }
 
@@ -443,7 +450,7 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
       [...server, ...extra].sort(
         (a, b) => readSortTime(a, newestServerTime) - readSortTime(b, newestServerTime),
       ),
-      server, realtime, (message) => readSortTime(message, newestServerTime),
+      server, realtime, (message) => readSortTime(message, newestServerTime), orderingEvidence,
     ),
   );
 }
@@ -458,7 +465,7 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   }
   slot._lastServerRef = slot.serverMessages;
   slot._lastRealtimeRef = slot.realtimeMessages;
-  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
+  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages, slot._realtimeOrder);
   return true;
 }
 
@@ -469,6 +476,11 @@ type LatestHistoryRefreshResult = {
 };
 
 type CanRequestHistory = () => boolean;
+
+function isHistoryCheckpointError(error: unknown): boolean {
+  return ['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED', 'HISTORY_SNAPSHOT_MISMATCH']
+    .includes((error as { code?: string } | null)?.code ?? '');
+}
 
 // Token usage is JSON response data, so compare its serialized value instead
 // of treating each freshly parsed response object as a state change.
@@ -501,13 +513,14 @@ async function refreshLatestSlotFromServer(
   limit: number,
   canRequest: CanRequestHistory = () => true,
   onPage: () => void | Promise<void> = () => {},
+  { resetCheckpoint = false }: { resetCheckpoint?: boolean } = {},
 ): Promise<LatestHistoryRefreshResult> {
   if (!canRequest()) {
     return { applied: false, changed: false, deferred: true };
   }
 
-  let resetAfterRewrite = false;
-  if ((slot.snapshotId || slot.syncCursor) && slot.serverMessages.length > 0) {
+  let resetAfterRewrite = resetCheckpoint;
+  if (!resetAfterRewrite && (slot.snapshotId || slot.syncCursor) && slot.serverMessages.length > 0) {
     let changed = false;
     while (canRequest()) {
       // A native item can project to multiple rows (e.g. a multi-file edit).
@@ -529,7 +542,7 @@ async function refreshLatestSlotFromServer(
           ...(slot.syncCursor ? { syncCursor: slot.syncCursor } : {}),
         });
       } catch (error) {
-        if (['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED'].includes((error as { code?: string }).code ?? '')) {
+        if (isHistoryCheckpointError(error)) {
           resetAfterRewrite = true;
           break;
         }
@@ -584,10 +597,14 @@ async function refreshLatestSlotFromServer(
   // those omitted rows when planning the bridge back to the cached newest row.
   const previousTailTotal = previousTotal - Math.max(0, slot.offset - previousServerMessages.length);
   const previousHasMore = resetAfterRewrite ? false : slot.hasMore;
+  const requestedMessages = slot.serverMessages;
   const latestPage = await requestSessionHistoryPage(sessionId, {
     limit,
     offset: 0,
   });
+  // A checkpoint reset is also a network read; an edit received while it was
+  // pending must not be undone by this older authoritative page.
+  if (slot.serverMessages !== requestedMessages) return { applied: false, changed: false, deferred: true };
 
   let nextServerMessages: NormalizedMessage[] | null = null;
   let nextHasMore = previousHasMore;
@@ -710,6 +727,30 @@ async function refreshLatestSlotFromServer(
 const STALE_THRESHOLD_MS = 30_000;
 
 const MAX_REALTIME_MESSAGES = 500;
+
+function rememberRealtimeOrder(slot: SessionSlot, message: NormalizedMessage): void {
+  const entries = [...slot._realtimeOrder];
+  const index = entries.findIndex(entry => entry.id === message.id
+    || (entry.provider === message.provider && entry.sessionId === message.sessionId
+      && entry.role === 'user' && message.role === 'user'
+      && entry.clientMessageId && entry.clientMessageId === message.clientMessageId));
+  const previous = entries[index];
+  // Keep only identity/ordering metadata, never tool payloads or attachments.
+  const entry: NormalizedMessage = {
+    id: message.id, sessionId: message.sessionId, provider: message.provider,
+    kind: message.kind, role: message.role, timestamp: previous?.timestamp ?? message.timestamp,
+    clientMessageId: message.clientMessageId, nativePosition: message.nativePosition,
+    replacesAnchorId: message.replacesAnchorId,
+  };
+  if (index < 0) entries.push(entry);
+  else if (!previous.nativePosition || entry.nativePosition) entries[index] = entry;
+  const pending = new Set(slot.realtimeMessages.map(row => row.id));
+  let retainedAnchors = 0;
+  // Pending rows keep their arrival slot even in a long turn. Bound the extra
+  // confirmed witnesses separately so history refreshes cannot evict a prompt.
+  slot._realtimeOrder = entries.reverse().filter(row =>
+    pending.has(row.id) || retainedAnchors++ < MAX_REALTIME_MESSAGES).reverse();
+}
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
@@ -1045,12 +1086,14 @@ export function useSessionStore(cacheOwner: string | null = null) {
         return { slot, prependedCount };
       } catch (caught) {
         let error = caught;
-        if (slot.beforeCursor && ['HISTORY_ANCHOR_NOT_FOUND', 'HISTORY_SNAPSHOT_EXPIRED']
-          .includes((error as { code?: string }).code ?? '')) {
-          // Recover an expired native chain through a bounded latest-page
-          // refresh; never fall through to whole-history offset reads.
+        if (slot.beforeCursor && isHistoryCheckpointError(error)) {
+          // A working forward cursor cannot repair a rejected older cursor.
+          // Obtain a fresh bounded chain without either old cursor/snapshot;
+          // retain confirmed rows until it succeeds, never load all implicitly.
           try {
-            await refreshLatestSlotFromServer(sessionId, slot, SESSION_MESSAGES_PAGE_SIZE, canRequest);
+            await refreshLatestSlotFromServer(
+              sessionId, slot, SESSION_MESSAGES_PAGE_SIZE, canRequest, undefined, { resetCheckpoint: true },
+            );
             recomputeMergedIfNeeded(slot);
             notify(sessionId);
             await persist(sessionId, slot);
@@ -1102,6 +1145,8 @@ export function useSessionStore(cacheOwner: string | null = null) {
       // turns it now sits after.
       ? [{ ...replacements[replacements.length - 1], replacesAfterRowCount: cutIndex }]
       : EMPTY;
+    slot._realtimeOrder = EMPTY;
+    for (const message of slot.realtimeMessages) rememberRealtimeOrder(slot, message);
     // `total` counts what the server would serve; it is about to be re-fetched
     // anyway, but leaving it high makes the pager offer pages that do not exist.
     slot.total = slot.serverMessages.length;
@@ -1146,10 +1191,12 @@ export function useSessionStore(cacheOwner: string | null = null) {
     } else {
       updated.push(normalizedMessage);
     }
+    const orderingMessage = updated[existingIndex >= 0 ? existingIndex : updated.length - 1];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
     slot.realtimeMessages = updated;
+    rememberRealtimeOrder(slot, orderingMessage);
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
   }, [getSlot, notify]);

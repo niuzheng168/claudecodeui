@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { CodexNativeQueueRun } from '@/modules/providers/list/codex/codex-native-queue.service.js';
-import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient } from '@/shared/index.js';
+import type { AnyRecord, ICodexDesktopThreadOwner, ICodexRpcClient, NativeTranscriptPosition } from '@/shared/index.js';
 
 function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: boolean; loaded?: boolean; sharedDaemon?: boolean; incompleteItems?: boolean; transientInterrupted?: boolean; clientMessageId?: string; deleteAck?: boolean | null } = {}) {
   const calls: Array<{ method: string; params: AnyRecord }> = [];
   const items: AnyRecord[] = [];
+  const positions: NativeTranscriptPosition[] = [];
   const started: string[] = [];
   let clientId = '';
   let created = false;
@@ -63,13 +64,14 @@ function fixture(options: { pending?: boolean; lostAck?: boolean; wrongThread?: 
     onDisconnect: () => () => {}, close: () => {},
   };
   const run = new CodexNativeQueueRun(client, 'desktop', {
-    item: item => items.push(item), started: id => started.push(id),
+    item: (item, _turnId, position) => { items.push(item); positions.push(position); },
+    started: id => started.push(id),
   }, { clientMessageId: options.clientMessageId, sleep: async () => {
     sleepEntered();
     await new Promise<void>(resolve => { sleeping = resolve; });
   } });
   return {
-    run, calls, items, started, asleep, wake: () => { completed = true; sleeping?.(); },
+    run, calls, items, positions, started, asleep, wake: () => { completed = true; sleeping?.(); },
     claim: () => { pending = false; completed = true; sleeping?.(); },
   };
 }
@@ -80,6 +82,9 @@ test('desktop queue preserves the browser input identity through its native rece
   assert.equal(result.turn?.id, 'our-turn');
   assert.equal(f.calls.find((call) => call.method === 'thread/queue/add')?.params.clientUserMessageId,
     'browser-input-identity');
+  assert.deepEqual(f.items.map(item => item.id), ['our-user', 'answer']);
+  assert.equal(f.items[0].clientId, 'browser-input-identity');
+  assert.deepEqual(f.positions.map(position => [position.turnId, position.itemIndex]), [['our-turn', 0], ['our-turn', 1]]);
 });
 
 test('desktop queue preserves images and native identity without starting/resuming/forking a competing writer', async () => {
@@ -92,7 +97,8 @@ test('desktop queue preserves images and native identity without starting/resumi
   assert.equal(result.turn?.id, 'our-turn');
   assert.equal(result.turn?.status, 'completed');
   assert.deepEqual(f.started, ['our-turn']);
-  assert.deepEqual(f.items.map(item => item.text), ['DESKTOP_REPLY']);
+  assert.deepEqual(f.items.map(item => item.id), ['our-user', 'answer']);
+  assert.equal(f.items[1].text, 'DESKTOP_REPLY');
   assert.deepEqual(f.calls.find(call => call.method === 'thread/queue/add')?.params.input, input);
   assert.ok(f.calls.every(call => call.params.threadId === 'desktop' || call.method === 'thread/loaded/list'));
   assert.ok(!f.calls.some(call => ['thread/start', 'thread/resume', 'thread/fork', 'turn/start', 'turn/interrupt'].includes(call.method)));
@@ -129,7 +135,7 @@ test('a refused or unconfirmed queue deletion is not a successful Stop', async (
 test('a shared daemon can relay to a different desktop owner without claiming its thread', async () => {
   const f = fixture({ sharedDaemon: true });
   assert.equal((await f.run.run([{ type: 'text', text: 'Use the existing desktop writer' }])).turn?.status, 'completed');
-  assert.deepEqual(f.items.map(item => item.text), ['DESKTOP_REPLY']);
+  assert.deepEqual(f.items.map(item => item.id), ['our-user', 'answer']);
   assert.ok(!f.calls.some(call => ['thread/resume', 'turn/start', 'turn/interrupt'].includes(call.method)));
   const unsafe = fixture({ sharedDaemon: true, loaded: true });
   await assert.rejects(unsafe.run.run([{ type: 'text', text: 'Never claim a writer' }]), {
@@ -161,10 +167,10 @@ test('an unfinished foreign-process snapshot is not mistaken for an interrupted/
   });
   await f.asleep;
   assert.equal(settled, false);
-  assert.deepEqual([...f.items], []);
+  assert.deepEqual(f.items.map(item => item.id), ['our-user']);
   f.wake();
   assert.equal((await completion).turn?.status, 'completed');
-  assert.deepEqual(f.items.map(item => item.text), ['DESKTOP_REPLY']);
+  assert.deepEqual(f.items.map(item => item.id), ['our-user', 'answer'], 'the native input receipt is emitted once across polls');
 });
 
 test('lost enqueue acknowledgement never retries or starts an alternate writer', async () => {
@@ -259,7 +265,8 @@ test('an interrupted desktop is continued through its verified owner, not its pa
     const f = ownerFixture({ previousStatus });
     const result = await f.run.run(f.input);
     assert.equal(result.turn?.id, 'desktop-owner-turn');
-    assert.deepEqual(f.emitted.map(item => item.text), ['The original owner continued']);
+    assert.deepEqual(f.emitted.map(item => item.id), ['desktop-user', 'desktop-answer']);
+    assert.equal(f.emitted[1].text, 'The original owner continued');
     assert.equal(f.calls.filter(call => call.method === 'owner/start').length, 1);
     assert.ok(!f.calls.some(call => ['thread/queue/add', 'thread/queue/delete', 'thread/resume', 'turn/start'].includes(call.method)));
   }
