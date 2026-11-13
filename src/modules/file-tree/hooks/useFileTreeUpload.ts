@@ -99,11 +99,12 @@ const uploadFormDataWithProgress = (
   projectId: string,
   formData: FormData,
   onProgress: (progress: number) => void,
+  apiBasePath?: string,
 ) =>
   new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
 
-    xhr.open('POST', api.uploadFilesUrl(projectId));
+    xhr.open('POST', api.uploadFilesUrl(projectId, apiBasePath));
 
     const token = getStoredAuthToken();
     if (!IS_PLATFORM && token) {
@@ -329,6 +330,7 @@ export const useFileTreeUpload = ({
                 : current,
             );
           },
+          selectedProject.fileApiBasePath,
         );
 
         const uploadedCount =

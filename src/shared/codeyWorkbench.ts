@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import type { WorkbenchFileContext, WorkbenchFileRoot } from '@/shared/types';
 
 /**
  * The Codey Workbench embeds this app in same-origin frames and lists the
@@ -57,8 +58,12 @@ const PAGE_MARK = 'codeyWorkbenchDirectories';
 const NAVIGATION_MARK = 'codeyWorkbenchNavigation';
 const NEW_SESSION_MARK = 'codeyWorkbenchNewSession';
 const READY_MARK = 'codeyWorkbenchReady';
+const FILES_MARK = 'codeyWorkbenchFiles';
 
 let current: WorkbenchDirectories | null = null;
+// The parent owns project membership; keep its latest snapshot through app lazy loading.
+let currentFiles: WorkbenchFileContext | null = null;
+const fileListeners = new Set<() => void>();
 const listeners = new Set<() => void>();
 const openSessionListeners = new Set<(sessionId: string) => void>();
 const newSessionListeners = new Set<(request: WorkbenchNewSession) => void>();
@@ -99,11 +104,38 @@ function readNewSession(data: Record<string, unknown>): WorkbenchNewSession | nu
   };
 }
 
+function readFiles(value: unknown): WorkbenchFileContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const context = value as WorkbenchFileContext;
+  if (typeof context.projectId !== 'string' || typeof context.name !== 'string'
+    || typeof context.sessionId !== 'string' || typeof context.currentRootId !== 'string'
+    || !Array.isArray(context.roots)) return null;
+  const ids = new Set<string>();
+  const valid = context.roots.every((root: WorkbenchFileRoot) => {
+    if (!root || typeof root !== 'object'
+      || !['id', 'nodeId', 'projectId', 'name', 'path', 'branch', 'machine', 'basePath']
+        .every((key) => typeof root[key as keyof WorkbenchFileRoot] === 'string')
+      || !root.id || ids.has(root.id)
+      || !['folder', 'repository', 'worktree'].includes(root.kind)
+      || typeof root.available !== 'boolean'
+      // Only a same-origin Codey node gateway may receive file requests.
+      || (root.basePath !== '' && !/^\/cloudcli\/[a-zA-Z0-9_-]+\/$/.test(root.basePath))) return false;
+    ids.add(root.id);
+    return true;
+  });
+  return valid && ids.has(context.currentRootId) ? context : null;
+}
+
 function handleMessage(event: MessageEvent): void {
   // Only the page that embeds this one, on this origin, says where sessions may start.
   if (event.source !== window.parent || event.origin !== window.location.origin) return;
   const data = event.data as Record<string, unknown> | null;
   if (!data || typeof data !== 'object') return;
+  if (data.type === 'codey-workbench:project-files') {
+    currentFiles = readFiles(data.context);
+    fileListeners.forEach((listener) => listener());
+    return;
+  }
   if (data.type === WORKBENCH_OPEN_SESSION_MESSAGE) {
     const { sessionId } = data;
     if (typeof sessionId === 'string' && sessionId) openSessionListeners.forEach((listener) => listener(sessionId));
@@ -134,6 +166,7 @@ export function markWorkbenchFrame(): void {
   dataset[PAGE_MARK] = '';
   dataset[NAVIGATION_MARK] = '';
   dataset[NEW_SESSION_MARK] = '';
+  dataset[FILES_MARK] = '';
 }
 
 /**
@@ -178,6 +211,17 @@ const getSnapshot = () => current;
 /** The directories the Workbench offers for the new session on this page, or null outside the Workbench. */
 export function useWorkbenchDirectories(): WorkbenchDirectories | null {
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+const subscribeFiles = (listener: () => void) => {
+  fileListeners.add(listener);
+  return () => fileListeners.delete(listener);
+};
+const getFilesSnapshot = () => currentFiles;
+
+/** File-tree uses the parent's project roots without changing the chat's selected project or session. */
+export function useWorkbenchFiles(): WorkbenchFileContext | null {
+  return useSyncExternalStore(subscribeFiles, getFilesSnapshot);
 }
 
 /** Asks the Workbench to open the new session page in another of the directories it offered. */

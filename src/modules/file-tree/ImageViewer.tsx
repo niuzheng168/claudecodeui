@@ -28,6 +28,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
 
         const response = await api.readFileBlob(file.projectId, file.path, {
           signal: controller.signal,
+          apiBasePath: file.fileApiBasePath,
         });
 
         if (!response.ok) {
@@ -56,7 +57,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [file.projectId, file.path]);
+  }, [file.projectId, file.path, file.fileApiBasePath]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
@@ -90,7 +91,7 @@ export default function ImageViewer({ file, onClose }: ImageViewerProps) {
         </div>
 
         <div className="border-t bg-gray-50 p-4 dark:bg-gray-800">
-          <p className="text-sm text-gray-600 dark:text-gray-400">{file.path}</p>
+          <p className="break-all text-sm text-gray-600 dark:text-gray-400">{file.fileRootLabel ? `${file.fileRootLabel} · ` : ''}{file.path}</p>
         </div>
       </div>
     </div>

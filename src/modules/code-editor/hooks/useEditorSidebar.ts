@@ -38,18 +38,23 @@ export const useEditorSidebar = ({
   const handleUnsavedChangesChange = useCallback((hasUnsavedChanges: boolean) => {
     hasUnsavedChangesRef.current = hasUnsavedChanges;
   }, []);
+  const selectedProjectId = selectedProject?.projectId;
+  const selectedApiBasePath = selectedProject?.fileApiBasePath;
 
   // Returns whether the file was opened, i.e. false when the user kept the
   // unsaved buffer, so callers can skip follow-ups such as switching tabs.
   const handleFileOpen = useCallback(
-    (filePath: string, diffInfo: CodeEditorDiffInfo | null = null, line: number | null = null): boolean => {
+    (filePath: string, diffInfo: CodeEditorDiffInfo | null = null, line: number | null = null, fileProject?: Project): boolean => {
+      const projectId = fileProject?.projectId ?? selectedProjectId;
+      const fileApiBasePath = fileProject ? fileProject.fileApiBasePath : selectedApiBasePath;
       // Only the open file of the same project (nested projects share absolute
       // paths) without a diff payload reuses the buffer; any other open reloads
       // it and would lose unsaved edits, so it asks like closing does.
       const openFile = editingFileRef.current;
       const reusesBuffer = openFile !== null
         && openFile.path === filePath
-        && openFile.projectId === selectedProject?.projectId
+        && openFile.projectId === projectId
+        && openFile.fileApiBasePath === fileApiBasePath
         && !openFile.diffInfo
         && !diffInfo;
       if (
@@ -71,13 +76,15 @@ export const useEditorSidebar = ({
         path: filePath,
         // DB projectId is forwarded to the editor so it can read/save files
         // via `/api/file-tree/projects/:projectId/file` endpoints.
-        projectId: selectedProject?.projectId,
+        projectId,
+        fileApiBasePath,
+        fileRootLabel: fileProject?.fileRootLabel,
         diffInfo,
         line,
       });
       return true;
     },
-    [selectedProject?.projectId, t],
+    [selectedProjectId, selectedApiBasePath, t],
   );
 
   const handleCloseEditor = useCallback(() => {

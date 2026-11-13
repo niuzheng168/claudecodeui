@@ -107,6 +107,13 @@
     }
   },
   "fileTree": {
+    "projectFiles": "Project files",
+    "rootCount": "{{count}} roots",
+    "sessionRoot": "Session",
+    "rootOffline": "Node unavailable",
+    "rootUnavailable": "Unable to open this directory. Check that it exists and the node is up to date.",
+    "rootScopeHint": "Search and file operations apply to the selected root. Your session stays unchanged.",
+    "rootKind": { "folder": "Folder", "repository": "Repository", "worktree": "Worktree" },
     "loading": "Loading files...",
     "files": "Files",
     "simpleView": "Simple view",

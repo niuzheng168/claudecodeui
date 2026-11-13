@@ -52,7 +52,7 @@ export default function CodeEditorMediaPreview({
   // this so a blob from a previously-opened file can never show under the new
   // file (the editor reuses this component instance across files).
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const sourceKey = `${projectId ?? ''}:${file.path}:${kind}`;
+  const sourceKey = `${file.fileApiBasePath ?? ''}:${projectId ?? ''}:${file.path}:${kind}`;
 
   useEffect(() => {
     if (!projectId) {
@@ -75,7 +75,7 @@ export default function CodeEditorMediaPreview({
         // The content endpoint requires the auth header, so we fetch the bytes
         // ourselves and hand the media element a blob URL instead of a bare src.
         // Fetching a blob (rather than streaming) also lets <video>/<audio> seek.
-        const response = await api.readFileBlob(projectId, file.path, { signal: controller.signal });
+        const response = await api.readFileBlob(projectId, file.path, { signal: controller.signal, apiBasePath: file.fileApiBasePath });
 
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`);
@@ -136,7 +136,7 @@ export default function CodeEditorMediaPreview({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [file.path, file.name, projectId, kind, sourceKey, labels.error]);
+  }, [file.path, file.name, file.fileApiBasePath, projectId, kind, sourceKey, labels.error]);
 
   // Only expose the blob once it matches the file currently being shown, so a
   // stale URL from the previous file is never rendered during a switch.
@@ -254,8 +254,9 @@ export default function CodeEditorMediaPreview({
 
   const header = (
     <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="min-w-0 flex-1">
         <h3 className="truncate text-sm font-medium text-gray-900 dark:text-white">{file.name}</h3>
+        {file.fileRootLabel && <p className="truncate text-xs text-muted-foreground" title={file.path}>{file.fileRootLabel} · {file.path}</p>}
       </div>
       {headerActions}
     </div>

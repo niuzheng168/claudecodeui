@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, type Dispatch, type SetStateAction, useState } from 'react';
 
 import { ChatInterface } from '@/modules/chat';
-import { FileTree } from '@/modules/file-tree';
+import { ProjectFileTree } from '@/modules/file-tree';
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
@@ -101,6 +101,9 @@ function WorkspaceMain({
   // Resolves bare/partial file references (e.g. links inside chat messages) to
   // real project files before opening them in the in-app editor.
   const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
+  const openProjectFile = useCallback((path: string, project: Project) => {
+    handleFileOpen(path, null, null, project);
+  }, [handleFileOpen]);
 
   useEffect(() => {
     if (!shouldShowTasksTab && activeTab === 'tasks') {
@@ -197,9 +200,10 @@ function WorkspaceMain({
 
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
-              <FileTree
+              <ProjectFileTree
                 selectedProject={selectedProject}
-                onFileOpen={handleFileOpen}
+                sessionId={selectedSession?.id}
+                onFileOpen={openProjectFile}
                 revealDirectory={revealDirectory}
               />
             </div>

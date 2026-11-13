@@ -29,7 +29,7 @@ const ask = (data: Record<string, unknown>, sender?: Sender) => post({ type: WOR
 
 const askNewSession = (data: Record<string, unknown>, sender?: Sender) => post({ type: WORKBENCH_NEW_SESSION_MESSAGE, ...data }, sender);
 
-const MARKS = ['data-codey-workbench-directories', 'data-codey-workbench-navigation', 'data-codey-workbench-new-session'];
+const MARKS = ['data-codey-workbench-directories', 'data-codey-workbench-navigation', 'data-codey-workbench-new-session', 'data-codey-workbench-files'];
 
 test('the entry marks a page in a frame with what it can do, and a page of its own not at all', () => {
   const marked = () => MARKS.filter((mark) => document.documentElement.hasAttribute(mark));

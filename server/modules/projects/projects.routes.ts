@@ -1,11 +1,11 @@
 import express from 'express';
 
-import { createProject, updateProjectDisplayName } from '@/modules/projects/services/project-management.service.js';
+import { createProject, resolveProjectDirectory, updateProjectDisplayName } from '@/modules/projects/services/project-management.service.js';
 import { createProjectCloneRouter } from '@/modules/projects/project-clone.routes.js';
 import { createPendingCloneRequests } from '@/modules/projects/services/project-clone-request.service.js';
 import { startCloneProject } from '@/modules/projects/services/project-clone.service.js';
 import { getProjectTaskMaster } from '@/modules/projects/services/projects-has-taskmaster.service.js';
-import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/index.js';
 import { getArchivedProjectsWithSessions, getProjectSessionsPage, getProjectsWithSessions } from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
 import { deleteOrArchiveProject, restoreArchivedProject } from '@/modules/projects/services/project-delete.service.js';
 import { applyLegacyStarredProjectIds, toggleProjectStar } from '@/modules/projects/services/project-star.service.js';
@@ -18,6 +18,11 @@ import { applyLegacyStarredProjectIds, toggleProjectStar } from '@/modules/proje
 const PENDING_CLONE_REQUEST_TTL_MS = 60_000;
 
 const router = express.Router();
+
+router.post('/resolve-directory', asyncHandler(async (req, res) => {
+  const projectPath = typeof req.body?.path === 'string' ? req.body.path : '';
+  res.json(await resolveProjectDirectory(projectPath));
+}));
 
 function readQueryStringValue(value: unknown): string {
   if (typeof value === 'string') {

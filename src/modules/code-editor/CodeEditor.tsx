@@ -266,7 +266,7 @@ export default function CodeEditor({
   if (isBinary) {
     return (
       <CodeEditorBinaryFile
-        key={`${file.projectId ?? ''}:${file.path}`}
+        key={`${file.fileApiBasePath ?? ''}:${file.projectId ?? ''}:${file.path}`}
         file={file}
         isSidebar={isSidebar}
         isFullscreen={isFullscreen}

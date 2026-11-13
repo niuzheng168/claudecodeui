@@ -67,3 +67,36 @@ test.each(['node-a', 'node-b'])('chat attachments and binary downloads use the s
   expect(uploadOptions.body).toBe(form);
   expect(uploadOptions.headers).not.toHaveProperty('Content-Type');
 });
+
+test('all file-root operations can target a different node without changing the chat deployment', async () => {
+  (window as DeploymentWindow).__CLOUDCLI_BASE_PATH__ = '/cloudcli/chat-node/';
+  const fetchMock = vi.fn().mockImplementation(async () => new Response('{}'));
+  vi.stubGlobal('fetch', fetchMock);
+  const options = { apiBasePath: '/cloudcli/files-node/' };
+  await api.resolveFileProject('/repo', options);
+  await api.listDirectory('p1', null, options);
+  await api.getFiles('p1', options);
+  await api.searchFiles('p1', { query: 'hello', limit: 100, refresh: true }, options);
+  await api.readFile('p1', '/repo/a', options);
+  await api.readFileBlob('p1', '/repo/a', options);
+  await api.saveFile('p1', '/repo/a', 'updated', options);
+  await api.createFile('p1', { path: '', name: 'new', type: 'file' }, options);
+  await api.renameFile('p1', { oldPath: '/repo/a', newName: 'b' }, options);
+  await api.deleteFile('p1', { path: '/repo/a', type: 'file' }, options);
+  expect(fetchMock).toHaveBeenCalledTimes(10);
+  for (const [url, request] of fetchMock.mock.calls) {
+    expect(url).toMatch(/^\/cloudcli\/files-node\/api\//);
+    expect(request).not.toHaveProperty('apiBasePath');
+  }
+  expect(api.uploadFilesUrl('p1', options.apiBasePath)).toBe('/cloudcli/files-node/api/file-tree/projects/p1/files/upload');
+  await api.readFile('p1', '/repo/a');
+  expect(fetchMock.mock.calls.at(-1)?.[0]).toMatch(/^\/cloudcli\/chat-node\//);
+});
+
+test.each(['https://outside.invalid/', '//outside.invalid/', '/cloudcli/../', '/api/'])('file scope rejects %s before sending credentials', (apiBasePath) => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  expect(() => api.readFile('p1', '/repo/file', { apiBasePath })).toThrow('Invalid file API scope');
+  expect(() => api.uploadFilesUrl('p1', apiBasePath)).toThrow('Invalid file API scope');
+  expect(fetchMock).not.toHaveBeenCalled();
+});

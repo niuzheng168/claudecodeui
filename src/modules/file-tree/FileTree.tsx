@@ -81,6 +81,7 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     refreshSearch,
   } = useFileTreeSearch({
     projectId: selectedProject?.projectId,
+    apiBasePath: selectedProject?.fileApiBasePath,
     files,
     searchOnServer: loadsFolders,
     expandDirectories,
@@ -192,6 +193,8 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
           // Image URL uses the DB projectId so ImageViewer can hit the
           // /api/file-tree/projects/:projectId/files/content endpoint directly.
           projectId: selectedProject.projectId,
+          fileApiBasePath: selectedProject.fileApiBasePath,
+          fileRootLabel: selectedProject.fileRootLabel,
         });
         return;
       }

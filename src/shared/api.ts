@@ -11,13 +11,24 @@ import type { CodeyProxySettingsUpdate, CodeyVoicePreferences, ComposerCompletio
 // defaults below can be merged with a caller's headers by spreading.
 export type ApiRequestOptions = Omit<RequestInit, 'headers'> & {
   headers?: Record<string, string>;
+  /** Override only file-root requests with another same-origin Codey node gateway. */
+  apiBasePath?: string;
 };
+
+function scopedApiUrl(url: string, apiBasePath?: string): string {
+  if (!apiBasePath) return withDeploymentBasePath(url);
+  if (!/^\/cloudcli\/[a-zA-Z0-9_-]+\/$/.test(apiBasePath) || !url.startsWith('/api/')) {
+    throw new Error('Invalid file API scope');
+  }
+  return `${apiBasePath}${url.slice(1)}`;
+}
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (
   url: string,
   options: ApiRequestOptions = {},
 ): Promise<Response> => {
+  const { apiBasePath, ...requestOptions } = options;
   const token = getStoredAuthToken();
 
   const defaultHeaders: Record<string, string> = {};
@@ -31,8 +42,8 @@ export const authenticatedFetch = (
     defaultHeaders['Authorization'] = `Bearer ${token}`;
   }
 
-  return fetch(withDeploymentBasePath(url), {
-    ...options,
+  return fetch(scopedApiUrl(url, apiBasePath), {
+    ...requestOptions,
     // Every response here can carry X-Refreshed-Token or X-Auth-Error, and a
     // served-from-cache response replays the headers it was stored with. Those
     // headers describe one moment in one session, so they must never be reused:
@@ -326,6 +337,9 @@ export const api = {
   deleteProject: (projectId: string, hardDelete = false) =>
     del(`/api/projects/${projectId}${query({ force: hardDelete })}`),
   createProject: (projectData: unknown) => post('/api/projects/create-project', projectData),
+  // Resolves/registers an existing directory only; never mkdir or unarchive while browsing.
+  resolveFileProject: (path: string, options: ApiRequestOptions = {}) =>
+    post('/api/projects/resolve-directory', { path }, options),
   migrateLegacyProjectStars: (projectIds: string[]) =>
     post('/api/projects/migrate-legacy-stars', { projectIds }),
   toggleProjectStar: (projectId: string) =>
@@ -393,14 +407,14 @@ export const api = {
   },
 
   // Workspace file tree
-  readFile: (projectId: string, filePath: string) =>
-    get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`),
+  readFile: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>
+    get(`/api/file-tree/projects/${projectId}/file${query({ filePath })}`, options),
   // Raw bytes for a workspace file. The endpoint requires the auth header, so
   // media call sites fetch a blob through here instead of using a bare `src`.
   readFileBlob: (projectId: string, filePath: string, options: ApiRequestOptions = {}) =>
     get(fileContentPath(projectId, filePath), options),
-  saveFile: (projectId: string, filePath: string, content: string) =>
-    put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
+  saveFile: (projectId: string, filePath: string, content: string, options: ApiRequestOptions = {}) =>
+    put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }, options),
   getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
   // `{ entries, truncated }`: one folder's entries without their children, the
@@ -421,17 +435,18 @@ export const api = {
   createFile: (
     projectId: string,
     { path, type, name }: { path: string; type: string; name: string },
-  ) => post(`/api/file-tree/projects/${projectId}/files/create`, { path, type, name }),
+    options: ApiRequestOptions = {},
+  ) => post(`/api/file-tree/projects/${projectId}/files/create`, { path, type, name }, options),
 
-  renameFile: (projectId: string, { oldPath, newName }: { oldPath: string; newName: string }) =>
-    put(`/api/file-tree/projects/${projectId}/files/rename`, { oldPath, newName }),
+  renameFile: (projectId: string, { oldPath, newName }: { oldPath: string; newName: string }, options: ApiRequestOptions = {}) =>
+    put(`/api/file-tree/projects/${projectId}/files/rename`, { oldPath, newName }, options),
 
-  deleteFile: (projectId: string, { path, type }: { path: string; type: string }) =>
-    del(`/api/file-tree/projects/${projectId}/files`, { path, type }),
+  deleteFile: (projectId: string, { path, type }: { path: string; type: string }, options: ApiRequestOptions = {}) =>
+    del(`/api/file-tree/projects/${projectId}/files`, { path, type }, options),
 
   // Progress uploads use XHR, bypassing authenticatedFetch's runtime node prefix.
-  uploadFilesUrl: (projectId: string) =>
-    withDeploymentBasePath(`/api/file-tree/projects/${encodeURIComponent(projectId)}/files/upload`),
+  uploadFilesUrl: (projectId: string, apiBasePath?: string) =>
+    scopedApiUrl(`/api/file-tree/projects/${encodeURIComponent(projectId)}/files/upload`, apiBasePath),
 
   // Browse filesystem for project suggestions
   browseFilesystem: (dirPath: string | null = null) =>

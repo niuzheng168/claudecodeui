@@ -8,6 +8,8 @@ export type { MemoryCheckpoint, ProjectMemoryJob } from './types.js';
 export { redactProjectMemoryText } from './utils.js';
 // Projects, Providers and Settings consume shared validation/error contracts through this barrel.
 export { AppError, normalizeProjectPath, validateWorkspacePath } from './utils.js';
+// Projects resolves existing file roots through the database's path-registration contracts.
+export type { CreateProjectPathResult, ProjectRepositoryRow } from './types.js';
 // Queued delivery uses exact persistence receipts and safe JSON parsing across module boundaries.
 export type { QueuedMessageOperation, QueuedSessionMessageRecord } from './types.js';
 export { readObjectRecord } from './utils.js';
@@ -36,8 +38,8 @@ export {
 } from './utils.js';
 // The Codex title generator and Activity's session summaries read Responses API answers alike.
 export { readResponsesOutputText } from './utils.js';
-// Project-memory routes use the shared async Express error adapter.
-export { asyncHandler } from './utils.js';
+// Project-memory and Projects routes use the shared Express adapter and response envelopes.
+export { asyncHandler, createApiSuccessResponse } from './utils.js';
 // Activity writes one-line session summaries for the Codey Portal: prompt, schema, validator and fallback.
 export {
   SESSION_SUMMARY_INSTRUCTIONS, SESSION_SUMMARY_SCHEMA, fallbackSessionSummary, parseSessionSummary,

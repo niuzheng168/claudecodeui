@@ -199,6 +199,10 @@ type ProjectTaskmasterInfo = {
 /** A workspace project as the UI knows it: identity, path, star state and its loaded sessions. */
 export type Project = {
   projectId: string;
+  /** File browsing only: the owning node's same-origin gateway, independent of the chat's node. */
+  fileApiBasePath?: string;
+  /** Human-readable machine/root shown beside previews, independent of the currently browsed root. */
+  fileRootLabel?: string;
   /** Transient Portal project for this new-session draft; never a Workspace directory/project ID. */
   workbenchProjectId?: string;
   displayName: string;
@@ -209,6 +213,29 @@ export type Project = {
   sessionMeta?: ProjectSessionMeta;
   taskmaster?: ProjectTaskmasterInfo;
   [key: string]: unknown;
+};
+
+/** A project file root supplied by Workbench; identity includes the machine, not just its path. */
+export type WorkbenchFileRoot = {
+  id: string;
+  nodeId: string;
+  projectId: string;
+  name: string;
+  path: string;
+  kind: 'folder' | 'repository' | 'worktree';
+  branch: string;
+  machine: string;
+  basePath: string;
+  available: boolean;
+};
+
+/** Project-wide file roots bound to a specific frame session, so stale navigation cannot leak roots. */
+export type WorkbenchFileContext = {
+  projectId: string;
+  name: string;
+  sessionId: string;
+  currentRootId: string;
+  roots: WorkbenchFileRoot[];
 };
 
 /** Progress payload streamed while the backend enumerates projects, used to drive the sidebar loading bar. */
@@ -1286,6 +1313,10 @@ export type CodeEditorFile = {
   // DB projectId; used by the editor to build `/api/file-tree/projects/:projectId/file`
   // URLs for reading and saving content.
   projectId?: string;
+  /** Owning file root's node; must remain fixed when browsing a different root. */
+  fileApiBasePath?: string;
+  /** Display-only origin captured when this file was opened. */
+  fileRootLabel?: string;
   diffInfo?: CodeEditorDiffInfo | null;
   // 1-based line to reveal when the file opens (from a `path:line` reference).
   line?: number | null;
@@ -1350,6 +1381,10 @@ export type FileTreeImageSelection = {
   projectPath?: string;
   // DB projectId; used by ImageViewer to build the raw content URL.
   projectId: string;
+  /** Owning file root's node for raw image requests. */
+  fileApiBasePath?: string;
+  /** Display-only origin captured when this image was opened. */
+  fileRootLabel?: string;
 };
 
 

@@ -6,8 +6,8 @@ import type {
   CreateProjectPathResult,
   ProjectRepositoryRow,
   WorkspacePathValidationResult,
-} from '@/shared/types.js';
-import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/index.js';
 
 type CreateProjectInput = {
   projectPath: string;
@@ -133,6 +133,46 @@ export async function createProject(
     outcome: persistedProject.outcome,
     project: mapProjectRowToApiView(projectRow),
   };
+}
+
+type ResolveDirectoryDependencies = {
+  validatePath: CreateProjectDependencies['validatePath'];
+  isDirectory: (projectPath: string) => Promise<boolean>;
+  getProjectByPath: CreateProjectDependencies['getProjectByPath'];
+  persistProjectPath: CreateProjectDependencies['persistProjectPath'];
+};
+
+/**
+ * Projects routes uses this idempotent resolver for multi-root file browsing.
+ * Register only an existing, policy-allowed directory; never create a missing
+ * checkout, rename an existing project, or unarchive one merely to preview it.
+ */
+export async function resolveProjectDirectory(
+  projectPath: string,
+  dependencies: ResolveDirectoryDependencies = {
+    validatePath: validateWorkspacePath,
+    isDirectory: async (candidate) => (await fs.stat(candidate)).isDirectory(),
+    getProjectByPath: defaultDependencies.getProjectByPath,
+    persistProjectPath: defaultDependencies.persistProjectPath,
+  },
+): Promise<{ project: ProjectApiView }> {
+  if (!projectPath || !path.isAbsolute(projectPath)) {
+    throw new AppError('An absolute directory path is required', { code: 'INVALID_PROJECT_PATH', statusCode: 400 });
+  }
+  const validation = await dependencies.validatePath(projectPath);
+  if (!validation.valid || !validation.resolvedPath) {
+    throw new AppError('Invalid project path', { code: 'INVALID_PROJECT_PATH', statusCode: 403 });
+  }
+  const resolvedPath = normalizeProjectPath(validation.resolvedPath);
+  if (!await dependencies.isDirectory(resolvedPath).catch(() => false)) {
+    throw new AppError('Directory does not exist or is not accessible', { code: 'PROJECT_DIRECTORY_NOT_FOUND', statusCode: 404 });
+  }
+  const existing = dependencies.getProjectByPath(resolvedPath);
+  const row = existing ?? dependencies.persistProjectPath(resolvedPath, null).project;
+  if (!row) {
+    throw new AppError('Failed to resolve directory', { code: 'PROJECT_RESOLVE_FAILED', statusCode: 500 });
+  }
+  return { project: mapProjectRowToApiView(row) };
 }
 
 /**

@@ -75,6 +75,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   // the fallback to `projectPath` preserves older callers that didn't yet
   // propagate the identifier.
   const fileProjectId = file.projectId ?? projectPath;
+  const apiBasePath = file.fileApiBasePath;
   const filePath = file.path;
   const fileName = file.name;
   const fileDiffNewString = file.diffInfo?.new_string;
@@ -135,7 +136,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
           throw new Error('Missing project identifier');
         }
 
-        const response = await api.readFile(fileProjectId, filePath);
+        const response = await api.readFile(fileProjectId, filePath, { apiBasePath });
         if (!response.ok) {
           throw new Error(await readFileError(response, 'Failed to load file'));
         }
@@ -165,7 +166,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     };
 
     void loadFileContent();
-  }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId]);
+  }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId, apiBasePath]);
 
   const handleSave = useCallback(async () => {
     // Preview-only and binary files have no editable text buffer; never write
@@ -189,7 +190,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         throw new Error('Missing project identifier');
       }
 
-      const response = await api.saveFile(fileProjectId, filePath, content);
+      const response = await api.saveFile(fileProjectId, filePath, content, { apiBasePath });
 
       if (!response.ok) {
         throw new Error(await readFileError(response, 'Save failed'));
@@ -219,7 +220,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         setSaving(false);
       }
     }
-  }, [content, filePath, fileProjectId, previewKind, fileName, loading, loadError]);
+  }, [content, filePath, fileProjectId, apiBasePath, previewKind, fileName, loading, loadError]);
 
   const handleDownload = useCallback(() => {
     if (loading || loadError) return;
@@ -234,13 +235,13 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       throw new Error('Missing project identifier');
     }
 
-    const response = await api.readFileBlob(fileProjectId, filePath);
+    const response = await api.readFileBlob(fileProjectId, filePath, { apiBasePath });
     if (!response.ok) {
       throw new Error(`Failed to download file (${response.status})`);
     }
 
     downloadBlob(await response.blob(), fileName);
-  }, [fileName, filePath, fileProjectId]);
+  }, [fileName, filePath, fileProjectId, apiBasePath]);
 
   // The baseline only changes on load and save, so it is not re-normalised on
   // every keystroke.

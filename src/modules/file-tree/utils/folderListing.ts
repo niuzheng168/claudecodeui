@@ -44,8 +44,9 @@ export async function fetchFolderListing(
   projectId: string,
   folderPath: string | null,
   signal?: AbortSignal,
+  apiBasePath?: string,
 ): Promise<FolderListingResult> {
-  const response = await api.listDirectory(projectId, folderPath, { signal });
+  const response = await api.listDirectory(projectId, folderPath, { signal, apiBasePath });
   const body = (await response.json().catch(() => null)) as unknown;
   if (signal?.aborted) {
     // An abort while the body was read is not an old node's app page.

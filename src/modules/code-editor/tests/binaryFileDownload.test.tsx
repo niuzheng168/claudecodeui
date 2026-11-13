@@ -75,7 +75,7 @@ test('the binary viewer downloads the original bytes under the original name', a
   });
 
   await waitFor(() => assert.equal(downloads.length, 1));
-  assert.deepEqual(readFileBlob.mock.calls, [['p1', file.path]]);
+  assert.deepEqual(readFileBlob.mock.calls, [['p1', file.path, { apiBasePath: undefined }]]);
   assert.equal(downloads[0].name, '보고서 résumé.docx');
   assert.equal(downloads[0].blob, ORIGINAL);
 });

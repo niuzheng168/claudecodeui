@@ -32,12 +32,26 @@ beforeEach(() => {
 test('loads and saves an absolute worktree link using the original project id', async () => {
   const { result } = renderHook(() => useCodeEditorDocument({ file: FILE }));
   await waitFor(() => expect(result.current.loading).toBe(false));
-  expect(readFile).toHaveBeenCalledWith('main-project', FILE.path);
+  expect(readFile).toHaveBeenCalledWith('main-project', FILE.path, { apiBasePath: undefined });
   expect(result.current.content).toBe('# design');
   act(() => result.current.setContent('# updated design'));
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith('main-project', FILE.path, '# updated design');
+  expect(saveFile).toHaveBeenCalledWith('main-project', FILE.path, '# updated design', { apiBasePath: undefined });
   expect(result.current.saveSuccess).toBe(true);
+});
+
+test('identical file paths and project IDs on different nodes are separate documents and save to their owner', async () => {
+  readFile.mockImplementation(async (_projectId, _path, { apiBasePath }) =>
+    jsonResponse({ content: apiBasePath === '/cloudcli/a/' ? 'from A' : 'from B' }));
+  const { result, rerender } = renderHook(({ file }) => useCodeEditorDocument({ file }), {
+    initialProps: { file: { ...FILE, fileApiBasePath: '/cloudcli/a/' } },
+  });
+  await waitFor(() => expect(result.current.content).toBe('from A'));
+  rerender({ file: { ...FILE, fileApiBasePath: '/cloudcli/b/' } });
+  await waitFor(() => expect(result.current.content).toBe('from B'));
+  act(() => result.current.setContent('updated B'));
+  await act(() => result.current.handleSave());
+  expect(saveFile).toHaveBeenLastCalledWith(FILE.projectId, FILE.path, 'updated B', { apiBasePath: '/cloudcli/b/' });
 });
 
 test('shows the backend denial reason and never saves or downloads the diagnostic buffer', async () => {
@@ -97,7 +111,7 @@ test('an empty file is valid and can still be saved', async () => {
   await waitFor(() => expect(result.current.loading).toBe(false));
   expect(result.current.content).toBe('');
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '');
+  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '', { apiBasePath: undefined });
 });
 
 test('saving is blocked until the pending read has completed', async () => {
@@ -109,7 +123,7 @@ test('saving is blocked until the pending read has completed', async () => {
   await act(async () => { finishRead(jsonResponse({ content: '# finished' })); });
   await waitFor(() => expect(result.current.loading).toBe(false));
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '# finished');
+  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '# finished', { apiBasePath: undefined });
 });
 
 test('a successful file switch clears a prior load failure and permits saving', async () => {
@@ -127,7 +141,7 @@ test('a successful file switch clears a prior load failure and permits saving', 
   await waitFor(() => expect(result.current.content).toBe('# design'));
   expect(result.current.saveError).toBeNull();
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, nextFile.path, '# design');
+  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, nextFile.path, '# design', { apiBasePath: undefined });
 });
 
 test.each([200, 403])('a late %i response for the previous file cannot replace the current document', async (status) => {
@@ -149,7 +163,7 @@ test.each([200, 403])('a late %i response for the previous file cannot replace t
   });
   expect(result.current.content).toBe('# design');
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, nextFile.path, '# design');
+  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, nextFile.path, '# design', { apiBasePath: undefined });
 });
 
 test('complete diff snapshots remain usable without reading the file', async () => {
@@ -161,7 +175,7 @@ test('complete diff snapshots remain usable without reading the file', async () 
   expect(readFile).not.toHaveBeenCalled();
   expect(result.current.content).toBe('# diff snapshot');
   await act(() => result.current.handleSave());
-  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '# diff snapshot');
+  expect(saveFile).toHaveBeenCalledWith(FILE.projectId, FILE.path, '# diff snapshot', { apiBasePath: undefined });
 });
 
 test.each(['design.png', 'archive.zip'])('does not load or save %s as text', async (name) => {

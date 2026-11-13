@@ -105,6 +105,13 @@
     }
   },
   "fileTree": {
+    "projectFiles": "项目文件",
+    "rootCount": "{{count}} 个根目录",
+    "sessionRoot": "当前会话",
+    "rootOffline": "节点不可用",
+    "rootUnavailable": "无法打开此目录，请检查目录是否存在、节点是否已更新。",
+    "rootScopeHint": "搜索与文件操作仅针对所选目录，不会切换当前会话。",
+    "rootKind": { "folder": "目录", "repository": "仓库", "worktree": "Worktree" },
     "loading": "正在加载文件...",
     "files": "文件",
     "simpleView": "简单视图",

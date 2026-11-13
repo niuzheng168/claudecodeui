@@ -64,6 +64,7 @@ export default function CodeEditorHeader({
   const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTitle = saveSuccess ? labels.saved : saving ? labels.saving : labels.save;
   const pathCopied = copiedPath === file.path;
+  const fileLocation = [file.fileRootLabel, file.path].filter(Boolean).join(' · ');
 
   useEffect(() => () => {
     if (copyResetTimeoutRef.current) {
@@ -104,7 +105,7 @@ export default function CodeEditorHeader({
             )}
           </div>
           <div className="flex min-w-0 items-center gap-1">
-            <p className="truncate text-xs text-gray-500 dark:text-gray-400" title={file.path}>{file.path}</p>
+            <p className="truncate text-xs text-gray-500 dark:text-gray-400" title={fileLocation}>{fileLocation}</p>
             <button
               type="button"
               onClick={handleCopyPath}

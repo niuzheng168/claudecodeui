@@ -8,6 +8,7 @@ import type { FileTreeNode } from '@/shared/types';
 
 type UseFileTreeSearchArgs = {
   projectId: string | undefined;
+  apiBasePath?: string;
   files: FileTreeNode[];
   // Ask the server, which searches the whole project. Otherwise `files` is
   // the whole tree an older node sent, and it is filtered here.
@@ -34,6 +35,7 @@ const SEARCH_DELAY_MS = 150;
 
 type FoundFiles = {
   projectId: string;
+  apiBasePath?: string;
   query: string;
   files: FileTreeNode[];
   limited: boolean;
@@ -41,6 +43,7 @@ type FoundFiles = {
 
 export function useFileTreeSearch({
   projectId,
+  apiBasePath,
   files,
   searchOnServer,
   expandDirectories,
@@ -69,7 +72,7 @@ export function useFileTreeSearch({
         const response = await api.searchFiles(
           projectId,
           { query: serverQuery, limit: SEARCH_LIMIT, refresh },
-          { signal: controller.signal },
+          { signal: controller.signal, apiBasePath },
         );
         const body = (await response.json().catch(() => null)) as { files?: FileSearchResult[] } | null;
         if (controller.signal.aborted) return;
@@ -83,6 +86,7 @@ export function useFileTreeSearch({
           : [];
         setFound({
           projectId,
+          apiBasePath,
           query: serverQuery,
           files: buildSearchTree(results),
           limited: results.length >= SEARCH_LIMIT,
@@ -90,7 +94,7 @@ export function useFileTreeSearch({
       } catch (error) {
         if ((error as { name?: string }).name === 'AbortError') return;
         console.error('Error searching files:', error);
-        setFound({ projectId, query: serverQuery, files: [], limited: false });
+        setFound({ projectId, apiBasePath, query: serverQuery, files: [], limited: false });
       }
     }, refresh ? 0 : SEARCH_DELAY_MS);
 
@@ -98,7 +102,7 @@ export function useFileTreeSearch({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [projectId, serverQuery, searchRefreshKey]);
+  }, [projectId, apiBasePath, serverQuery, searchRefreshKey]);
 
   // Clearing the search drops its answer, so the next one does not open on it.
   const updateSearchQuery = useCallback((nextQuery: string) => {
@@ -120,8 +124,8 @@ export function useFileTreeSearch({
     if (!query) return files;
     if (!searchOnServer) return filterFileTree(files, query.toLowerCase());
     // The last answer stays up until the next one arrives.
-    return found && found.projectId === projectId ? found.files : [];
-  }, [files, query, searchOnServer, found, projectId]);
+    return found && found.projectId === projectId && found.apiBasePath === apiBasePath ? found.files : [];
+  }, [files, query, searchOnServer, found, projectId, apiBasePath]);
 
   useEffect(() => {
     if (!query) {
@@ -131,7 +135,7 @@ export function useFileTreeSearch({
     expandDirectories(collectExpandedDirectoryPaths(filteredFiles));
   }, [expandDirectories, filteredFiles, query]);
 
-  const answered = found !== null && found.projectId === projectId && found.query === serverQuery;
+  const answered = found !== null && found.projectId === projectId && found.apiBasePath === apiBasePath && found.query === serverQuery;
   return {
     searchQuery,
     setSearchQuery: updateSearchQuery,

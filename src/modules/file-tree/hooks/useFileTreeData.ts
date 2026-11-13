@@ -31,6 +31,7 @@ const DEFAULT_LOAD_ERROR = 'Unable to load the file tree for this project.';
 
 type LoadedTree = {
   projectId: string;
+  apiBasePath?: string;
   // 'folders': `root` lists the project root, and each folder loads when it
   // is opened. 'whole': `root` is the whole tree an older node sent.
   mode: 'folders' | 'whole';
@@ -80,6 +81,7 @@ export function useFileTreeData(
     // File-tree requests use the DB projectId; the backend resolves it to the
     // project's absolute path through the projects table.
     const projectId = selectedProject?.projectId;
+    const apiBasePath = selectedProject?.fileApiBasePath;
 
     if (!projectId) {
       setTree(null);
@@ -97,22 +99,24 @@ export function useFileTreeData(
       setLoading(true);
       setError(null);
       try {
-        const rootResult = await fetchFolderListing(projectId, null, signal);
+        const rootResult = await fetchFolderListing(projectId, null, signal, apiBasePath);
+        if (signal.aborted) return;
 
         if (rootResult.kind === 'listed') {
           const previous = refreshStateRef.current;
-          const reopened = previous.tree?.projectId === projectId && previous.tree.mode === 'folders'
+          const reopened = previous.tree?.projectId === projectId && previous.tree.apiBasePath === apiBasePath && previous.tree.mode === 'folders'
             ? [...previous.listings.keys()].filter((folder) => previous.expandedDirs.has(folder))
             : [];
           const relisted = await Promise.all(reopened.map(async (folder) =>
-            [folder, await fetchFolderListing(projectId, folder, signal)] as const));
+            [folder, await fetchFolderListing(projectId, folder, signal, apiBasePath)] as const));
+          if (signal.aborted) return;
           const nextListings = new Map<string, FolderListing>();
           // A folder that is gone or unreadable now is left unloaded; if it
           // still shows, it is loaded again and reports why it failed.
           relisted.forEach(([folder, result]) => {
             if (result.kind === 'listed') nextListings.set(folder, result.listing);
           });
-          setTree({ projectId, mode: 'folders', root: rootResult.listing, controller, listing: new Set() });
+          setTree({ projectId, apiBasePath, mode: 'folders', root: rootResult.listing, controller, listing: new Set() });
           setListings(nextListings);
           setFolderFailures(NO_FAILURES);
           return;
@@ -124,9 +128,11 @@ export function useFileTreeData(
           return;
         }
 
-        const response = await api.getFiles(projectId, { signal });
+        const response = await api.getFiles(projectId, { signal, apiBasePath });
+        if (signal.aborted) return;
         if (!response.ok) {
           const errorText = await response.text();
+          if (signal.aborted) return;
           console.error('File fetch failed:', response.status, errorText);
           let body: unknown = null;
           try {
@@ -140,11 +146,12 @@ export function useFileTreeData(
         }
 
         const data = (await response.json()) as FileTreeNode[];
-        setTree({ projectId, mode: 'whole', root: { entries: data, truncated: false }, controller, listing: new Set() });
+        if (signal.aborted) return;
+        setTree({ projectId, apiBasePath, mode: 'whole', root: { entries: data, truncated: false }, controller, listing: new Set() });
         setListings(NO_LISTINGS);
         setFolderFailures(NO_FAILURES);
       } catch (error) {
-        if ((error as { name?: string }).name === 'AbortError') {
+        if (signal.aborted || (error as { name?: string }).name === 'AbortError') {
           return;
         }
 
@@ -163,7 +170,7 @@ export function useFileTreeData(
     return () => {
       controller.abort();
     };
-  }, [selectedProject?.projectId, refreshKey]);
+  }, [selectedProject?.projectId, selectedProject?.fileApiBasePath, refreshKey]);
 
   const files = useMemo(
     () => (tree ? attachFolderListings(tree.root.entries, listings) : []),
@@ -190,7 +197,7 @@ export function useFileTreeData(
           if (signal.aborted) return;
           setFolderFailures((previous) => new Map(previous).set(folder, message));
         };
-        fetchFolderListing(tree.projectId, folder, signal).then((result) => {
+        fetchFolderListing(tree.projectId, folder, signal, tree.apiBasePath).then((result) => {
           tree.listing.delete(folder);
           if (signal.aborted) return;
           if (result.kind === 'listed') {
@@ -232,7 +239,7 @@ export function useFileTreeData(
     if (loaded) {
       return attachFolderListings(loaded.entries, listings);
     }
-    const result = await fetchFolderListing(tree.projectId, folderPath);
+    const result = await fetchFolderListing(tree.projectId, folderPath, undefined, tree.apiBasePath);
     if (result.kind !== 'listed') {
       throw new Error(result.kind === 'failed' ? result.error : DEFAULT_LOAD_ERROR);
     }

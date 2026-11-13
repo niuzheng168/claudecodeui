@@ -81,6 +81,7 @@ export default function CodeEditorBinaryFile({
         <div>
           <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
           <p className="text-sm text-muted-foreground">{message}</p>
+          {file.fileRootLabel && <p className="mt-2 break-all text-xs">{file.fileRootLabel} · {file.path}</p>}
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
           <button

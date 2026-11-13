@@ -395,6 +395,27 @@ test('switching to another file while dirty asks first and keeps the current one
   assert.equal(result.current.editingFile?.path, '/repo/b.txt');
 });
 
+test('opening a same-named file on another root keeps its scope and guards unsaved edits', () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
+  const rootA = { ...project, fileApiBasePath: '/cloudcli/a/' };
+  const rootB = { ...project, fileApiBasePath: '/cloudcli/b/', fileRootLabel: 'B · repo · main' };
+  act(() => result.current.handleFileOpen('/repo/a.txt', null, null, rootA));
+  act(() => result.current.handleUnsavedChangesChange(true));
+  act(() => {
+    assert.equal(result.current.handleFileOpen('/repo/a.txt', null, null, rootB), false);
+  });
+  assert.equal(result.current.editingFile?.fileApiBasePath, '/cloudcli/a/');
+  confirm.mockReturnValue(true);
+  act(() => result.current.handleFileOpen('/repo/a.txt', null, null, rootB));
+  assert.equal(result.current.editingFile?.fileApiBasePath, '/cloudcli/b/');
+  assert.equal(result.current.editingFile?.fileRootLabel, 'B · repo · main');
+  // Chat's project has not changed; its next open still uses the original scope.
+  act(() => result.current.handleUnsavedChangesChange(false));
+  act(() => result.current.handleFileOpen('/repo/chat.txt'));
+  assert.equal(result.current.editingFile?.fileApiBasePath, undefined);
+});
+
 test('re-opening the open file, or opening while clean, never asks', () => {
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
