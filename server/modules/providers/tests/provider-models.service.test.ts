@@ -600,40 +600,40 @@ test('Codey-managed Codex sessions preserve a recorded model absent from the cat
 });
 
 test('Codey-managed Codex sessions retain an explicitly selected Astra model and effort', async () => {
-  const sessions = createSessionStore({ 'session-1': 'gpt-6.1-sol' }, { 'session-1': 'high' });
+  const sessions = createSessionStore({ 'session-1': 'gpt-6.2-sol' }, { 'session-1': 'high' });
   const { service } = createTestService({
     sessions,
     codeyManaged: true,
     models: { codex: CODEY_MANAGED_CODEX_MODELS },
   });
-  service.setSessionModel('codex', 'session-1', 'gpt-6-astra');
+  service.setSessionModel('codex', 'session-1', 'gpt-6.2-astra');
 
   const resolved = await service.resolveSessionModel('codex', {
-    sessionId: 'session-1', requestedModel: 'gpt-6.1-sol',
+    sessionId: 'session-1', requestedModel: 'gpt-6.2-sol',
   });
 
-  assert.equal(resolved.model, 'gpt-6-astra');
+  assert.equal(resolved.model, 'gpt-6.2-astra');
   assert.equal(resolved.effort, 'high');
   assert.equal(resolved.source, 'session');
-  assert.equal(sessions.sessions.get('session-1')?.model, 'gpt-6-astra');
-  assert.equal(await service.resolveResumeModel('codex', 'session-1'), 'gpt-6-astra');
-  assert.equal(await service.resolveResumeModel('codex', 'session-1', 'gpt-6.1-sol'), 'gpt-6.1-sol');
+  assert.equal(sessions.sessions.get('session-1')?.model, 'gpt-6.2-astra');
+  assert.equal(await service.resolveResumeModel('codex', 'session-1'), 'gpt-6.2-astra');
+  assert.equal(await service.resolveResumeModel('codex', 'session-1', 'gpt-6.2-sol'), 'gpt-6.2-sol');
 });
 
 test('Codey-managed Codex honors selectable models before the first turn', async () => {
   const { service } = createTestService({
     codeyManaged: true,
     models: { codex: CODEY_MANAGED_CODEX_MODELS },
-    activeModel: () => 'gpt-6.1-sol',
+    activeModel: () => 'gpt-6.2-sol',
   });
 
   for (const sessionId of [undefined, 'new-session']) {
     const resolved = await service.resolveSessionModel('codex', {
-      sessionId, requestedModel: ' gpt-6-astra ',
+      sessionId, requestedModel: ' gpt-6.2-astra ',
     });
-    assert.equal(resolved.model, 'gpt-6-astra');
+    assert.equal(resolved.model, 'gpt-6.2-astra');
     assert.equal(resolved.source, 'session');
-    assert.equal(await service.resolveResumeModel('codex', sessionId, 'gpt-6-astra'), 'gpt-6-astra');
+    assert.equal(await service.resolveResumeModel('codex', sessionId, 'gpt-6.2-astra'), 'gpt-6.2-astra');
   }
 });
 
@@ -648,7 +648,7 @@ test('Codey-managed Codex custom models are selectable without changing the defa
 
   assert.equal((await service.resolveSessionModel('codex', { sessionId: 'session-1' })).model, 'owner/custom');
   assert.equal(await service.resolveResumeModel('codex', 'session-1'), 'owner/custom');
-  assert.equal((await service.getProviderModels('codex')).DEFAULT, 'gpt-6.1-sol');
+  assert.equal((await service.getProviderModels('codex')).DEFAULT, 'gpt-6.2-sol');
 });
 
 test('Codey-managed Codex never substitutes the default for an unavailable selected model', async () => {
@@ -672,17 +672,17 @@ test('Codey-managed Codex honors a requested model instead of provider-global st
   const { service } = createTestService({
     codeyManaged: true,
     models: { codex: CODEY_MANAGED_CODEX_MODELS },
-    activeModel: () => 'gpt-6.1-sol',
+    activeModel: () => 'gpt-6.2-sol',
   });
 
   const resolved = await service.resolveSessionModel('codex', {
     sessionId: 'new-session',
-    requestedModel: 'gpt-6-astra',
+    requestedModel: 'gpt-6.2-astra',
   });
-  assert.equal(resolved.model, 'gpt-6-astra');
+  assert.equal(resolved.model, 'gpt-6.2-astra');
   assert.equal(resolved.source, 'session');
   assert.equal(await service.resolveResumeModel('codex', undefined), undefined);
-  assert.equal((await service.resolveSessionModel('codex')).model, 'gpt-6.1-sol');
+  assert.equal((await service.resolveSessionModel('codex')).model, 'gpt-6.2-sol');
 });
 
 test('resolveSessionModel uses provider session state for unrecorded external sessions', async () => {
