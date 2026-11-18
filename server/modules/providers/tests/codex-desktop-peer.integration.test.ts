@@ -18,7 +18,7 @@ import type { AnyRecord, ICodexRpcClient, ProviderRuntimeContext } from '@/share
 // localhost model. This validates writer/storage/queue semantics, not the
 // actual desktop UI. No real credentials or existing conversation is used.
 for (const historyMode of ['paginated', 'legacy'] as const) {
-  test(`real private-stdio ${historyMode} sessions allow bidirectional peer input, queueing and Stop`, {
+  test(`real private-stdio ${historyMode} sessions allow bidirectional v13 peer input, queueing and Stop`, {
     skip: process.env.CODEY_TEST_NATIVE_INTEROP !== '1', timeout: 90_000, concurrency: false,
   }, async () => {
     const executable = process.env.CODEY_TEST_CODEX_EXECUTABLE;
@@ -114,12 +114,15 @@ enabled = false
             if (!message.params.following) return;
             const history = await turns();
             send({
-              type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'native-owner',
+              type: 'broadcast', method: 'thread-stream-state-changed', version: 13, sourceClientId: 'native-owner',
               params: { hostId: 'local', conversationId: threadId, change: {
                 type: 'snapshot', revision: 1,
                 conversationState: {
-                  id: threadId, cwd: workspace,
-                  turns: history.map(turn => ({ turnId: turn.id, status: turn.status })),
+                  id: threadId, cwd: workspace, turns: [],
+                  turnHistory: { kind: 'canonical', history: {
+                    entitiesByKey: Object.fromEntries(history.map(turn => [turn.id, { turnId: turn.id, status: turn.status }])),
+                    islands: [{ entries: history.map(turn => ({ value: turn.id })), newerBoundary: { status: 'exhausted' } }],
+                  } },
                 },
               } },
             });
@@ -138,6 +141,7 @@ enabled = false
             assert.equal(message.params.conversationId, threadId);
             send({ ...response, result: { supportsUntrustedAppInput: true } });
           } else if (message.method === 'thread-follower-start-turn') {
+            assert.equal(message.version, 2);
             assert.equal(message.targetClientId, 'native-owner');
             assert.deepEqual(message.params.turnStart.context, { inheritThreadSettings: true });
             // The real UI reads this array before native parsing adds defaults.

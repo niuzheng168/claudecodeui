@@ -13,6 +13,9 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 // on both Windows named pipes and Linux/macOS Unix sockets.
 const MAX_SNAPSHOT_FRAME_BYTES = 64 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 8;
+// These state broadcasts share the same revision and turn-tail format.
+// The follower control requests have independent protocol versions.
+const SUPPORTED_STREAM_STATE_VERSIONS = new Set([11, 13]);
 
 type PendingRequest = {
   resolve: (response: AnyRecord) => void;
@@ -297,7 +300,7 @@ export class CodexDesktopPeerClient implements ICodexDesktopThreadOwner {
 
   private receiveSnapshot(message: AnyRecord): void {
     if (message.sourceClientId !== this.ownerClientId
-      || message.method !== 'thread-stream-state-changed' || message.version !== 11
+      || message.method !== 'thread-stream-state-changed' || !SUPPORTED_STREAM_STATE_VERSIONS.has(message.version)
       || message.params?.hostId !== 'local' || message.params.conversationId !== this.threadId) return;
     const change = readObjectRecord(message.params.change);
     if (!change || !Number.isSafeInteger(change.revision) || change.revision < 0

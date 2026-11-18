@@ -14,7 +14,8 @@ async function fixture(
   options: {
     noOwner?: boolean; rejectStart?: boolean; lostAck?: boolean; wrongOwner?: boolean;
     invalidHandshake?: boolean; invalidFrame?: boolean;
-    state?: AnyRecord; staleSnapshot?: boolean; staleRevision?: boolean; wrongTurn?: boolean; noTurnReceipt?: boolean;
+    state?: AnyRecord; stateVersion?: number; staleSnapshot?: boolean; staleRevision?: boolean;
+    wrongTurn?: boolean; noTurnReceipt?: boolean;
     rejectControl?: boolean; ownerDisconnected?: boolean;
     timeoutMs?: number;
   } = {},
@@ -54,7 +55,8 @@ async function fixture(
         if (message.type === 'broadcast' && message.method === 'thread-stream-following-changed') {
           if (!message.params.following) continue;
           const snapshot = {
-            type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'desktop-owner',
+            type: 'broadcast', method: 'thread-stream-state-changed',
+            version: options.stateVersion ?? 11, sourceClientId: 'desktop-owner',
             params: { hostId: 'local', conversationId: 'desktop-thread', change: {
               type: 'snapshot', revision: 1,
               conversationState: options.state ?? {
@@ -362,6 +364,40 @@ test('canonical desktop history selects only its current ordered tail, not an ol
       assert.ok(!f.calls.some(x => x.method === 'thread-follower-steer-turn'));
     } finally { client.close(); }
   }, { state });
+});
+
+for (const [status, activeTurnId] of [['completed', null], ['inProgress', 'own-turn']] as const) {
+  test(`v13 reads the ${status} canonical tail when the desktop owner's turns array is empty`, async () => {
+    const state = {
+      id: 'desktop-thread', cwd: '/workspace', turns: [],
+      turnHistory: { kind: 'canonical', history: {
+        entitiesByKey: { last: { turnId: 'own-turn', status } },
+        islands: [{ entries: [{ value: 'last' }], newerBoundary: { status: 'exhausted' } }],
+      } },
+    };
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        assert.deepEqual(await client.readState(), { activeTurnId, cwd: '/workspace' });
+        assert.ok(!f.calls.some(call => call.method?.startsWith('thread-follower-')));
+      } finally { client.close(); }
+    }, { stateVersion: 13, state });
+  });
+}
+
+test('unverified desktop state versions cannot authorize input even with a valid-looking snapshot', async () => {
+  for (const stateVersion of [12, 14]) {
+    await fixture(async f => {
+      const client = await f.connect();
+      assert.ok(client);
+      try {
+        await assert.rejects(client.steerTurn('own-turn', [{ type: 'text', text: 'Not sent' }], 'unsent'),
+          { code: 'STEER_UNAVAILABLE' });
+        assert.ok(!f.calls.some(call => call.method?.startsWith('thread-follower-')));
+      } finally { client.close(); }
+    }, { stateVersion });
+  }
 });
 
 test('large desktop snapshots survive fragmented named-pipe/Unix frames without changing owner or sending input', async () => {
